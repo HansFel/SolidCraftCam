@@ -1071,7 +1071,7 @@ fn dielectric_preflight_and_start_resolve_refraction_without_broadening_boundari
             let status = handle.wait_timeout(std::time::Duration::from_secs(10)).unwrap();
             assert!(
                 matches!(status.progress.phase, solidcraft_render::job::Phase::Cancelled | solidcraft_render::job::Phase::Completed),
-                "phase {:?}, error {:?}",
+                "phase {:?}, error {:?}; full status {status:?}",
                 status.progress.phase,
                 status.error
             );
@@ -1196,4 +1196,23 @@ fn a_setup_saved_with_exposure_renders_and_names_the_controls_it_leaves_out() {
     finish(&host);
     let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
     assert_eq!(s.execute("render.status", &json!({"job":id})).unwrap()["progress"]["phase"], "completed");
+}
+
+#[test]
+fn output_viewer_copy_validates_completed_job_without_mutation_or_pixel_payloads() {
+    let (mut s, host) = session();
+    let job = start(&mut s);
+    assert!(s.execute("render.result.copy", &json!({"job":job})).is_err());
+    finish(&host);
+    let document = s.doc.clone();
+    let before = (s.revision, s.undo.len(), s.redo.len(), host.admitted_bytes());
+    let copied = s.execute("render.result.copy", &json!({"job":job})).unwrap();
+    assert_eq!(copied["frame"]["job"], json!(job));
+    assert_eq!(copied["frame"]["width"], 16);
+    assert!(copied.get("png").is_none());
+    for params in [json!({}), json!(null), json!({"job":job,"extra":true}), json!({"job":{"session":0,"serial":0,"generation":0}})] {
+        assert!(s.execute("render.result.copy", &params).is_err());
+    }
+    assert!(Arc::ptr_eq(&document, &s.doc));
+    assert_eq!(before, (s.revision, s.undo.len(), s.redo.len(), host.admitted_bytes()));
 }

@@ -70,8 +70,10 @@ pub(super) fn local_geometry(f: &Feature, components: &std::collections::HashMap
         return false;
     }
     match &f.kind {
+        // A cylinder placed by reference edges follows the body it stands on.
+        FeatureKind::Cylinder { references, .. } if !references.is_empty() => false,
         FeatureKind::Box { corner: _, length: _, width: _, height: _, operation: Operation::NewBody }
-        | FeatureKind::Cylinder { base: _, axis: _, radius: _, height: _, operation: Operation::NewBody }
+        | FeatureKind::Cylinder { base: _, axis: _, radius: _, height: _, operation: Operation::NewBody, references: _ }
         | FeatureKind::Sphere { center: _, radius: _, operation: Operation::NewBody }
         | FeatureKind::Torus { center: _, major: _, minor: _, operation: Operation::NewBody }
         | FeatureKind::Import { file: _, step: _, components: _, skip: _ }
@@ -135,6 +137,7 @@ fn same_geometry_inputs(a: &Document, b: &Document) -> bool {
         browser_order,
         named_views,
         visibility,
+        point_clouds,
     } = a;
     (Arc::ptr_eq(render, &b.render) || *render == b.render)
         && *cam == b.cam
@@ -170,6 +173,7 @@ fn same_geometry_inputs(a: &Document, b: &Document) -> bool {
         && *browser_order == b.browser_order
         && *named_views == b.named_views
         && *visibility == b.visibility
+        && *point_clouds == b.point_clouds
 }
 
 /// Compare feature definitions without traversing immutable imported payloads. A replacement
