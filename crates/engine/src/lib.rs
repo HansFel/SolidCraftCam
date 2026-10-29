@@ -43,6 +43,7 @@ use solidcraft_doc::{Document, Model, ModelState};
 use solidcraft_geom::Vec3;
 
 pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command, resolve_design_links, standard_view};
+pub use solidcraft_cam as cam;
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
@@ -1811,6 +1812,7 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         named_views,
         visibility,
         next_component_color_index,
+        cam,
     } = a;
     *render == b.render
         && *format == b.format
@@ -1845,4 +1847,5 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         && *named_views == b.named_views
         && *visibility == b.visibility
         && *next_component_color_index == b.next_component_color_index
+        && *cam == b.cam
 }

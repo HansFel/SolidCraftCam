@@ -1,0 +1,416 @@
+//! Contracts for CAM drilling and the guided LinuxCNC job form.
+use super::NumberExpr;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ToolParams {
+    pub number: u32,
+    pub diameter: f64,
+    pub flute_length: f64,
+    pub kind: Option<String>,
+    pub description: Option<String>,
+    pub flutes: Option<u32>,
+    pub spindle_rpm: Option<f64>,
+    pub feed: Option<f64>,
+    pub plunge_feed: Option<f64>,
+    pub stepdown: Option<f64>,
+    pub stepover: Option<f64>,
+    /// Cutting data by material group: `{"aluminium": {vc, fz, ap, ae}, …}`.
+    pub cutting: Option<std::collections::BTreeMap<String, CuttingParams>>,
+}
+
+/// vc m/min; fz mm per tooth (a drill: per revolution); ap and ae as shares of the diameter.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CuttingParams {
+    pub vc: f64,
+    pub fz: f64,
+    pub ap: f64,
+    pub ae: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ToolRemoveParams {
+    pub number: u32,
+}
+
+/// A CNC machine's limits. Travel as [lowest, highest] position per axis (mm).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MachineParams {
+    pub name: String,
+    pub x: [f64; 2],
+    pub y: [f64; 2],
+    pub z: [f64; 2],
+    /// The rotary A axis: `{kind: "limited", min, max}` in degrees, or `{kind: "endless"}`.
+    pub a: Option<serde_json::Value>,
+    /// Slowest and fastest spindle speed (rev/min).
+    pub spindle_min: f64,
+    pub spindle_max: f64,
+    /// Fastest feed (mm/min).
+    pub max_feed: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MachineRemoveParams {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct MachineResult {
+    pub machine: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SetupParams {
+    pub name: Option<String>,
+    /// Material group name, or null to clear it.
+    pub material: Option<serde_json::Value>,
+    /// Highest spindle speed (rev/min), or null to clear it.
+    pub max_rpm: Option<serde_json::Value>,
+    pub work_offset: Option<u8>,
+    pub tool_axis: Option<[f64; 3]>,
+    pub x_axis: Option<[f64; 3]>,
+    pub work_origin: Option<[f64; 3]>,
+    pub stock: Option<serde_json::Value>,
+    pub delete: Option<bool>,
+    pub stock_spec: Option<serde_json::Value>,
+    pub wcs: Option<serde_json::Value>,
+    pub wcs_orientation: Option<serde_json::Value>,
+    pub wcs_origin_mode: Option<serde_json::Value>,
+    pub box_point: Option<serde_json::Value>,
+    pub flip_z: Option<bool>,
+    pub flip_x: Option<bool>,
+    pub model_bodies: Option<Vec<String>>,
+    pub operation_type: Option<serde_json::Value>,
+    pub post_opts: Option<serde_json::Value>,
+    /// A machine's name, a machine as `cam.machine.define` takes it (copied into the design), or null.
+    pub machine: Option<serde_json::Value>,
+    pub post: Option<serde_json::Value>,
+    /// Programmed +Z out of the flat face picked here.
+    pub z_face: Option<PickParams>,
+    /// Programmed +X along the straight edge picked here (square to the tool axis).
+    pub x_edge: Option<PickParams>,
+    /// Part zero on the edge picked here: a round edge's centre, else the edge's middle.
+    pub zero_edge: Option<PickParams>,
+    /// Part zero axis by axis: each pick sets zero along that work axis only.
+    pub zero_axes: Option<ZeroAxesParams>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ZeroAxesParams {
+    pub x: Option<AxisPickParams>,
+    pub y: Option<AxisPickParams>,
+    pub z: Option<AxisPickParams>,
+}
+
+/// A point picked for one axis's zero; `edge`: on an edge (a round edge gives its centre).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AxisPickParams {
+    pub body: String,
+    pub at: [f64; 3],
+    pub edge: Option<bool>,
+}
+
+/// A point picked on a body, in model coordinates.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PickParams {
+    pub body: String,
+    pub at: [f64; 3],
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MillingParams {
+    pub setup: String,
+    pub name: String,
+    pub tool: u32,
+    pub sketch: Option<super::IdOrName>,
+    pub profiles: Option<super::ProfilesParam>,
+    pub faces: Option<serde_json::Value>,
+    pub edges: Option<serde_json::Value>,
+    /// A step's stored geometry, unchanged (as `cam.list` shows it).
+    pub geometry: Option<serde_json::Value>,
+    pub start: Option<[f64; 3]>,
+    pub outer: Option<Vec<[f64; 2]>>,
+    pub holes: Option<Vec<Vec<[f64; 2]>>>,
+    pub regions: Option<serde_json::Value>,
+    pub side: Option<String>,
+    pub climb: Option<bool>,
+    /// Material left on the walls.
+    pub stock_to_leave: Option<NumberExpr>,
+    /// Material left on the floor.
+    pub floor_stock: Option<NumberExpr>,
+    /// Facing: how far the tool's edge runs past the stock.
+    pub overrun: Option<NumberExpr>,
+    pub tolerance: Option<NumberExpr>,
+    pub ramp_angle: Option<NumberExpr>,
+    pub clearance: Option<NumberExpr>,
+    pub retract: Option<NumberExpr>,
+    pub top: Option<NumberExpr>,
+    pub bottom: Option<NumberExpr>,
+    pub stepdown: Option<NumberExpr>,
+    pub stepover: Option<NumberExpr>,
+    pub feed: Option<NumberExpr>,
+    pub plunge_feed: Option<NumberExpr>,
+    pub cut: Option<serde_json::Value>,
+    pub spindle_rpm: Option<f64>,
+    pub coolant: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct RemoveParams {
+    pub setup: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PostParams {
+    pub setup: String,
+    pub post: Option<String>,
+    pub program: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ListParams {}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ToolResult {
+    pub tool: serde_json::Value,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DeleteResult {
+    pub deleted: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SetupResult {
+    Setup { setup: serde_json::Value },
+    Delete { deleted: String },
+}
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PostResult {
+    pub gcode: String,
+    pub extension: String,
+    pub post: String,
+    pub operations: usize,
+    pub work_offset: u8,
+    pub readback: serde_json::Value,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListResult {
+    pub tools: Vec<serde_json::Value>,
+    pub machines: Vec<serde_json::Value>,
+    pub setups: Vec<serde_json::Value>,
+    pub posts: Vec<String>,
+    pub builtin_posts: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrillParams {
+    pub setup: String,
+    pub name: String,
+    pub tool: u32,
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    /// Picked bores: `{body, at, edge?}`; an edge gives its centre, a flat face its round holes.
+    pub holes: Option<Vec<AxisPickParams>>,
+    pub bottom: NumberExpr,
+    pub clearance: Option<NumberExpr>,
+    pub retract: Option<NumberExpr>,
+    pub top: Option<NumberExpr>,
+    pub stepdown: Option<NumberExpr>,
+    pub feed: Option<NumberExpr>,
+    pub plunge_feed: Option<NumberExpr>,
+    pub spindle_rpm: Option<f64>,
+    #[serde(default)]
+    pub dwell: f64,
+    #[serde(default)]
+    pub coolant: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct OperationResult {
+    pub setup: String,
+    pub operation: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MoveParams {
+    pub setup: String,
+    pub name: String,
+    /// The operation's new place in the machining order, from 0.
+    pub to: usize,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SkipParams {
+    pub setup: String,
+    pub name: String,
+    /// True leaves the operation out when posting; false puts it back.
+    pub skip: bool,
+}
+
+/// The setup's operations in machining order after the change.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct OrderResult {
+    pub setup: String,
+    pub order: Vec<String>,
+    pub skipped: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SpeedsParams {
+    pub tool: u32,
+    /// Material group; omitted, the setup's.
+    pub material: Option<String>,
+    /// Takes the material and the highest spindle speed from this setup.
+    pub setup: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SpeedsResult {
+    pub tool: u32,
+    pub material: String,
+    /// The cutting data used: the tool's own, else starting values.
+    pub cutting: serde_json::Value,
+    /// Whether these are the tool's own data (false: starting values to check).
+    pub own: bool,
+    pub spindle_rpm: f64,
+    pub feed: f64,
+    pub plunge_feed: f64,
+    pub stepdown: f64,
+    pub stepover: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    Contour,
+    Pocket,
+    Drill,
+    /// Facing the setup's stock.
+    Face,
+}
+
+/// Millimetres, mm/min and rpm. The rectangle is in setup work XY unless `sketch` or `faces`
+/// pick the geometry; drill uses `points`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobParams {
+    pub setup: String,
+    pub name: String,
+    pub kind: JobKind,
+    pub tool: u32,
+    pub diameter: f64,
+    pub flute_length: f64,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    /// Picked geometry instead of the rectangle: a sketch with `profiles`, planar `faces`
+    /// (`{body, name, at}`) or the contours through picked `edges` (`{body, at}`), as
+    /// `cam.op.contour` takes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sketch: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<serde_json::Value>,
+    /// A step's stored geometry, unchanged: what an edit keeps when nothing new is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<serde_json::Value>,
+    /// Sent by the dialogs with sketch profiles; a picked profile is always its own region here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_regions: Option<bool>,
+    /// The setup's material group; omitted, the setup keeps its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    /// Where a contour starts: each loop at its point nearest this model point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<[f64; 3]>,
+    /// The contour's side: auto, outside, inside or on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    /// Climb milling (default); false: conventional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub climb: Option<bool>,
+    /// Material left on the walls for a finishing pass (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock_to_leave: Option<f64>,
+    /// Material left on the floor for a finishing pass (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor_stock: Option<f64>,
+    /// Facing: how far the tool's edge runs past the stock (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrun: Option<f64>,
+    pub top: f64,
+    pub bottom: f64,
+    pub clearance: f64,
+    pub retract: f64,
+    pub stepdown: f64,
+    pub stepover: f64,
+    pub feed: f64,
+    pub plunge_feed: f64,
+    pub spindle_rpm: f64,
+    #[serde(default)]
+    pub coolant: bool,
+    #[serde(default)]
+    pub dwell: f64,
+    pub work_offset: u8,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PreviewPoint {
+    /// Setup work coordinates.
+    pub position: [f64; 3],
+    /// The same point in model coordinates, for drawing on the model.
+    pub model: [f64; 3],
+    pub cutting: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct JobResult {
+    pub setup: String,
+    pub operation: String,
+    pub gcode: String,
+    pub extension: String,
+    pub points: Vec<PreviewPoint>,
+    pub cut_minutes: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportParams {
+    pub setup: String,
+    pub path: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ExportResult {
+    pub path: String,
+    pub bytes: usize,
+}

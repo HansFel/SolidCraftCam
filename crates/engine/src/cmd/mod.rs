@@ -22,6 +22,8 @@ macro_rules! planned {
 
 mod bom;
 mod browser;
+mod cam;
+mod cam_job;
 pub(crate) mod clearance;
 mod clipboard;
 mod compare;
@@ -35,6 +37,7 @@ mod edit;
 mod face;
 mod features;
 mod features_more;
+pub use cam::{CamToolpath, SetupOutline};
 pub(crate) use face::{FaceRefForm, face_ref_form};
 pub(crate) use features::profiles as feature_profiles;
 pub(crate) use features::{EdgeRefForm, axis_dir_form, edge_ref_form, sketch_key};
@@ -291,6 +294,8 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(construct::COMMANDS.iter());
     v.extend(sheet::COMMANDS.iter());
     v.extend(plastic::COMMANDS.iter());
+    v.extend(cam::COMMANDS.iter());
+    v.extend(cam_job::COMMANDS.iter());
     v.extend(frame::COMMANDS.iter());
     v.extend(component::COMMANDS.iter());
     v.extend(component_link::COMMANDS.iter());
