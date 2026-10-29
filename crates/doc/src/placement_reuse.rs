@@ -101,6 +101,7 @@ pub(super) fn local_geometry(f: &Feature, components: &std::collections::HashMap
 fn same_geometry_inputs(a: &Document, b: &Document) -> bool {
     let Document {
         render,
+        cam,
         format,
         format_pending,
         name,
@@ -136,6 +137,7 @@ fn same_geometry_inputs(a: &Document, b: &Document) -> bool {
         visibility,
     } = a;
     (Arc::ptr_eq(render, &b.render) || *render == b.render)
+        && *cam == b.cam
         && *format == b.format
         && *format_pending == b.format_pending
         && *name == b.name
