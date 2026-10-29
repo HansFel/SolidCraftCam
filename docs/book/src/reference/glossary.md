@@ -372,6 +372,14 @@ A feature type has one name: its design-file key, such as `sheet_flange`. The la
 its display name. Replies and scripts should use the design-file key; today `timeline.inspect`
 reports a different name (`EdgeFlangeFeature`), so a script can't match one against the other.
 
+## Manufacturing
+
+| Term | Definition | In SolidCraft |
+|---|---|---|
+| CAM setup | A group of machining operations sharing a work coordinate system. | `cam.setup`, the design's `cam.setups` |
+| Peck drilling | Drilling in depth increments with retraction between increments to clear chips. | `cam.op.drill`, `stepdown` |
+| Postprocessor | A converter from planned toolpaths into a controller's G-code dialect. | `cam.post`, `cam.export`, `post` |
+
 ## Open questions for the maintainer
 
 - **British or American spelling** for labels and docs. Today both are in use (colour and color,
