@@ -981,6 +981,8 @@ pub const READY_POLL: std::time::Duration = std::time::Duration::from_millis(200
 pub const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What one look at the session bus came to.
+/// Elsewhere than Unix `bus_list` only ever says `Unknown`, so the other two are never built.
+#[cfg_attr(any(target_arch = "wasm32", not(unix)), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 enum Bus {
     /// The names, one line each.

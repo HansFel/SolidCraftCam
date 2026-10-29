@@ -43,7 +43,7 @@ model or the engine but not yet everywhere (UI, posts, checks); **Planned** is n
 | Item | Status |
 |---|---|
 | Remove the setup labels in `crates/doc/src/cam.rs` that followed one commercial product's dialog text too closely (they were unused; UI text lives in the locale files) | Done |
-| Fix the dead-code warning in `crates/engine/src/slicers.rs` that blocks `cargo xtask ci` (pre-existing, separate PR) | Planned |
+| Fix the dead-code warning in `crates/engine/src/slicers.rs` that blocks `cargo xtask ci` (pre-existing, separate PR) | Done |
 | Split the branch into claimable PRs: CAM core, document format, commands, UI panel, tool library | Planned |
 | Real screenshots of the panel and the form for each UI PR | Planned |
 
