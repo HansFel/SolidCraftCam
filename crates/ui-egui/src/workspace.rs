@@ -13,7 +13,7 @@ pub fn tab_label(tab: &str) -> &str {
     tab.strip_prefix("RENDER ").unwrap_or(tab)
 }
 
-pub const TABS: &[&str] = &["MODEL", "SURFACE", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW"];
+pub const TABS: &[&str] = &["MODEL", "SURFACE", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "MACHINING", "VIEW"];
 
 /// Reading order of the compact, three-column constraint gallery. Icons come from each spec.
 pub const CONSTRAINT_GALLERY: &[&str] = &[
@@ -199,6 +199,16 @@ pub const SECTIONS: &[Section] = &[
         promoted: 2,
         ids: &["document.units", "timeline.compute_all", "edit.checkpoint", "edit.restore_checkpoint"],
     },
+    // Machining follows the CAM order: a setup, its milling operations, then drilling. Each
+    // button opens the guided job form with that operation chosen.
+    Section {
+        tab: "MACHINING",
+        panel: "SETUP",
+        promoted: 3,
+        ids: &["cam.setup", "cam.list", "cam.tool.define", "cam.machine.define", "cam.job.create"],
+    },
+    Section { tab: "MACHINING", panel: "MILLING", promoted: 3, ids: &["cam.op.face", "cam.op.contour", "cam.op.pocket"] },
+    Section { tab: "MACHINING", panel: "DRILLING", promoted: 1, ids: &["cam.op.drill"] },
     Section {
         tab: "VIEW",
         panel: "VIEWS",
@@ -375,6 +385,11 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("render.settings.apply", "Saved Camera"),
     ("render.preflight", "Check"),
     ("appearance.assign", "Appearance"),
+    ("cam.job.create", "CAM Job"),
+    ("cam.list", "Job list"),
+    ("cam.machine.define", "Machine list"),
+    ("cam.setup", "New setup"),
+    ("cam.tool.define", "Tool library"),
     ("component.capture_position", "Capture Pos."),
     ("component.create", "New Comp."),
     ("component.from_bodies", "From Bodies"),

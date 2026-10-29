@@ -18,6 +18,7 @@ pub mod bom_panel;
 pub mod browser;
 pub mod browser_canvas;
 pub mod browser_prompts;
+pub mod cam_panel;
 pub mod canvas;
 pub mod cli_link;
 #[cfg(test)]
@@ -37,11 +38,13 @@ mod dialog_descriptor;
 pub mod dialogs;
 pub mod dialogs_appearance;
 pub mod dialogs_assembly;
+pub mod dialogs_cam_setup;
 pub mod dialogs_coupling;
 pub mod dialogs_frame;
 mod dialogs_hole;
 pub mod dialogs_insert_drawing;
 pub mod dialogs_library;
+pub mod dialogs_milling;
 pub mod dialogs_motion;
 pub mod dialogs_move;
 pub mod dialogs_part_size;
@@ -459,6 +462,8 @@ pub struct SolveApp {
     pub design_properties: Option<design_properties::DesignProperties>,
     /// The Bill of Materials window, when open.
     pub bom: Option<bom_panel::BomPanel>,
+    /// The CAM window (job list and tool library) while it is open.
+    pub cam_window: Option<cam_panel::CamPanel>,
     material_card_review: Option<material_card_review::ReviewWindow>,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
@@ -671,6 +676,7 @@ impl SolveApp {
             params: None,
             design_properties: None,
             bom: None,
+            cam_window: None,
             material_card_review: None,
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
@@ -1370,6 +1376,17 @@ impl SolveApp {
         }
         if id == "assembly.bom" {
             bom_panel::open(self);
+            return;
+        }
+        if matches!(id, "cam.list" | "cam.tool.define" | "cam.machine.define") {
+            cam_panel::open(
+                self,
+                match id {
+                    "cam.tool.define" => 1,
+                    "cam.machine.define" => 2,
+                    _ => 0,
+                },
+            );
             return;
         }
         if id == "sketch.finish" {
@@ -2307,6 +2324,7 @@ impl SolveApp {
         params_dialog::show(self, ui.ctx());
         design_properties::show(self, ui.ctx());
         bom_panel::show(self, ui.ctx());
+        cam_panel::show(self, ui.ctx());
         material_card_review::show(self, ui.ctx());
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());

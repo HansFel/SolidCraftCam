@@ -5,6 +5,8 @@ use crate::ui_kit::{choice_row, expr_row, hint_row};
 
 pub(super) fn command(kind: &Kind) -> Option<&'static str> {
     match kind {
+        Kind::Milling(_) => Some("cam.job.create"),
+        Kind::CamSetup(_) => Some("cam.setup"),
         Kind::Material { .. } => Some("material.assign"),
         Kind::Appearance(_) => Some("appearance.assign"),
         Kind::Motion(k) => Some(match k {
@@ -187,11 +189,25 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
     if matches!(&d.kind, Kind::Hole { opts, .. } if !opts.multiple) {
         // Each reference edge with its distance (#37).
         enter |= crate::hole_refs::input_rows(d, ui, &app.session);
+    } else if let Kind::CamSetup(form) = &mut d.kind {
+        // The part-zero mode chooses which pick rows show; a hidden row takes no picks.
+        crate::dialogs_cam_setup::head_rows(ui, form);
+        let shown = crate::dialogs_cam_setup::shown_inputs(form);
+        if !shown.iter().any(|r| r.contains(&d.active))
+            && let Some(first) = shown.first()
+        {
+            d.active = first.start;
+        }
+        for range in shown {
+            input_rows_range(d, ui, &app.session, range);
+        }
     } else {
         input_rows(d, ui, &app.session);
     }
     d.sync_material(&app.session);
     match &mut d.kind {
+        Kind::Milling(form) => crate::dialogs_milling::rows(app, ui, form, &mut d.inputs),
+        Kind::CamSetup(form) => crate::dialogs_cam_setup::rows(app, ui, form),
         Kind::Material { index, editor } => crate::material_editor::rows(app, ui, index, editor),
         Kind::Appearance(k) => enter |= crate::dialogs_appearance::rows(app, ui, k, &mut d.inputs),
         Kind::Motion(k) => enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs),
@@ -961,6 +977,390 @@ mod tests {
 
     const COMMANDS: [&str; 6] =
         ["solid.extrude", "solid.fillet", "solid.chamfer", "solid.hole", "solid.pattern.rectangular", "solid.pattern.circular"];
+
+    #[test]
+    fn linuxcnc_cam_form_opens_and_saves_a_job_without_opening_a_file_dialog() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.step(&json!({"start":"cam.job.create"})).unwrap();
+        h.frames(3);
+        assert!(matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(Kind::Milling(_))));
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.session.doc.cam.setups.len(), 1);
+        assert_eq!(h.app.session.doc.cam.setups[0].operations.len(), 1);
+        assert!(h.app.file_picker.is_none());
+        // The new step shows in the job list.
+        assert!(h.app.cam_window.is_some());
+    }
+
+    #[test]
+    fn linuxcnc_cam_form_takes_library_cutting_data_and_the_job_list_shows_the_steps() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        // The library drops broken and duplicate rows and keeps the rest in tool order.
+        h.app.preferences.cam_tools = serde_json::from_value(json!([
+            {"number": 3, "kind": "flat_endmill", "diameter": 6, "flute_length": 20, "cutting": {"wood": {"vc": 300, "fz": 0.1, "ap": 0.5, "ae": 0.5}}},
+            null,
+            {"number": 3, "kind": "drill", "diameter": 5, "flute_length": 30},
+            {"number": 1, "kind": "flat_endmill", "diameter": -1, "flute_length": 20},
+            {"number": 2, "kind": "drill", "diameter": 5, "flute_length": 30},
+        ]))
+        .unwrap();
+        assert_eq!(h.app.preferences.cam_tools.0.iter().map(|t| t.number).collect::<Vec<_>>(), [2, 3]);
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(3);
+        let tool = h.app.preferences.cam_tools.find(3).cloned();
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::Milling(form) = &mut d.kind else { panic!("the contour form") };
+        // No material: nothing to take.
+        assert!(form.take_cutting(&h.app).is_err());
+        form.choose_tool(tool);
+        form.material = Some("wood".into());
+        form.take_cutting(&h.app).unwrap();
+        // n = 300 · 1000 / (π · 6), vf = n · 2 · 0.1.
+        let p = form.params().unwrap();
+        assert_eq!(
+            (p["tool"].as_u64(), p["spindle_rpm"].as_f64(), p["feed"].as_f64(), p["material"].as_str()),
+            (Some(3), Some(15915.0), Some(3183.0), Some("wood"))
+        );
+        h.app.dialog = Some(d);
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        // The tool came into the design with its cutting data, the setup took the material.
+        let cam = &h.app.session.doc.cam;
+        assert_eq!(cam.tool(3).map(|t| t.cutting.len()), Some(1));
+        assert_eq!(cam.setups[0].material.as_deref(), Some("wood"));
+        // The next step goes into the same setup; the job list shows both in order.
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.cam.setups.len(), 1);
+        // A second pocket gets a free name and never replaces the first.
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(2);
+        let names: Vec<String> = h.app.session.doc.cam.setups[0].operations.iter().map(|o| o.name().to_string()).collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(names.get(2).map(String::as_str), names.get(1).map(|n| format!("{n} 2")).as_deref());
+        // A typed name that is taken is refused, not replaced.
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        if let Some(Kind::Milling(form)) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+            form.set_name(&names[0]);
+        }
+        h.frames(2);
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the pocket form") };
+        assert!(form.params().is_err());
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.cam.setups[0].operations.len(), 3);
+        h.app.dialog = None;
+        h.step(&json!({"start":"cam.list"})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.cam_window.as_ref().map(|w| w.tab), Some(0));
+        let names: Vec<String> = h.app.session.doc.cam.setups[0].operations.iter().map(|o| o.name().to_string()).collect();
+        for name in &names {
+            assert!(h.widget(name).is_some(), "{name} is listed");
+        }
+        assert!(h.widget("Export G-code…").is_some());
+        // Editing a step fills the form with its values and geometry; OK replaces it in place.
+        let setup = h.app.session.doc.cam.setups[0].clone();
+        let first = setup.operations.first().cloned().unwrap();
+        let form = crate::dialogs_milling::Milling::edit(&h.app, &setup, &first);
+        let p = form.params().unwrap();
+        assert_eq!((p["name"].as_str(), p["tool"].as_u64(), p["spindle_rpm"].as_f64()), (Some(first.name()), Some(3), Some(15915.0)));
+        assert!(p.get("geometry").is_some());
+        h.app.run("cam.job.create", p).unwrap();
+        assert_eq!(h.app.session.doc.cam.setups[0].operations, setup.operations);
+        assert!(h.widget("Edit").is_some());
+        h.step(&json!({"start":"cam.tool.define"})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.cam_window.as_ref().map(|w| w.tab), Some(1));
+        assert!(h.widget("New tool").is_some());
+    }
+
+    #[test]
+    fn cam_machine_list_holds_cutting_data_and_the_form_sets_side_direction_and_stock() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h);
+        // The machine list drops broken and duplicate rows and keeps the rest by name.
+        h.app.preferences.cam_machines = serde_json::from_value(json!([
+            {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "a": {"kind": "endless"}, "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000},
+            {"name": "Portal", "x": [0, 1], "y": [0, 1], "z": [0, 1], "spindle_min": 1, "spindle_max": 2, "max_feed": 1},
+            {"name": "Broken", "x": [5, 0], "y": [0, 1], "z": [0, 1], "spindle_min": 1, "spindle_max": 2, "max_feed": 1},
+            {"name": "Mini", "x": [0, 200], "y": [0, 150], "z": [-60, 0], "spindle_min": 1000, "spindle_max": 24000, "max_feed": 3000},
+        ]))
+        .unwrap();
+        let listed: Vec<&str> = h.app.preferences.cam_machines.0.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(listed, ["Mini", "Portal"]);
+        h.step(&json!({"start":"cam.machine.define"})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.cam_window.as_ref().map(|w| w.tab), Some(2));
+        let portal = h.app.preferences.cam_machines.find("Portal").cloned();
+        assert!(h.widget(&crate::cam_panel::machine_label(portal.as_ref().unwrap())).is_some());
+        // Each machine is made once: a new one, or a renamed one, may not take an existing name.
+        let list = &h.app.preferences.cam_machines;
+        let taken = Err(crate::i18n::tr("ui.cam.machine_exists").to_string());
+        assert_eq!((list.name_free("Portal", None), list.name_free("Portal", Some("Mini"))), (taken.clone(), taken));
+        assert_eq!((list.name_free("Portal", Some("Portal")), list.name_free("Fräse", None)), (Ok(()), Ok(())));
+        // The setup form copies the chosen machine into the design.
+        let mut setup = crate::dialogs_cam_setup::CamSetupForm::new(&h.app);
+        setup.set_machine(portal.clone());
+        let mut p = setup.params(&crate::dialogs_cam_setup::inputs()).unwrap();
+        p["material"] = json!("wood");
+        h.app.run("cam.setup", p).unwrap();
+        let cam = &h.app.session.doc.cam;
+        assert_eq!((cam.setups[0].machine.as_deref(), cam.machine("Portal")), (Some("Portal"), portal.as_ref()));
+        // Cutting data are held to the machine: 15915 rev/min becomes 12000, the feed stops at 2000.
+        h.app.preferences.cam_tools = serde_json::from_value(json!([
+            {"number": 3, "kind": "flat_endmill", "diameter": 6, "flute_length": 20, "cutting": {"wood": {"vc": 300, "fz": 0.1, "ap": 0.5, "ae": 0.5}}},
+        ]))
+        .unwrap();
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(3);
+        let tool = h.app.preferences.cam_tools.find(3).cloned();
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::Milling(form) = &mut d.kind else { panic!("the contour form") };
+        form.choose_tool(tool);
+        form.take_cutting(&h.app).unwrap();
+        // An inside contour, milled conventionally, leaving 0.5 mm on the wall and 0.2 mm on the floor.
+        form.set_cutting(2, false, "0.5", "0.2");
+        let p = form.params().unwrap();
+        assert_eq!((p["spindle_rpm"].as_f64(), p["feed"].as_f64()), (Some(12000.0), Some(2000.0)));
+        assert_eq!(
+            (p["side"].as_str(), p["climb"].as_bool(), p["stock_to_leave"].as_f64(), p["floor_stock"].as_f64()),
+            (Some("inside"), Some(false), Some(0.5), Some(0.2))
+        );
+        h.app.dialog = Some(d);
+        h.frames(2);
+        // The form shows the choices.
+        for label in ["Inside the contour", "Conventional", "Wall stock to leave (mm)", "Floor stock to leave (mm)"] {
+            assert!(h.widget(label).is_some(), "{label} is shown");
+        }
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let setup = h.app.session.doc.cam.setups[0].clone();
+        let op = setup.operations.first().cloned().unwrap();
+        let solidcraft_engine::doc::cam::CamOperation::Contour { params, .. } = &op else { panic!("a contour") };
+        assert_eq!((params.side, params.climb), (solidcraft_engine::doc::cam::CamSide::Inside, false));
+        // Editing brings the choices back unchanged.
+        let again = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op).params().unwrap();
+        assert_eq!(
+            (again["side"].as_str(), again["climb"].as_bool(), again["stock_to_leave"].as_f64(), again["floor_stock"].as_f64()),
+            (Some("inside"), Some(false), Some(0.5), Some(0.2))
+        );
+        let edited = crate::dialogs_cam_setup::CamSetupForm::edit(&h.app, &setup).params(&crate::dialogs_cam_setup::inputs()).unwrap();
+        assert_eq!(edited["machine"]["name"].as_str(), Some("Portal"));
+    }
+
+    #[test]
+    fn cam_form_starts_at_the_stock_top_takes_shares_of_the_diameter_and_faces_the_stock() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h);
+        // Part zero on the model's top, 2 mm of stock above it and 3 mm at the sides.
+        let stock =
+            json!({"kind": "relative_box", "mode": "sides_and_top_bottom", "side_offset": 3, "top_offset": 2, "bottom_offset": 0, "round_up": 0});
+        h.app
+            .run(
+                "cam.setup",
+                json!({"name": "Top", "wcs_origin_mode": "model_box_point",
+                "box_point": {"x": "negative", "y": "negative", "z": "positive"}, "stock_spec": stock}),
+            )
+            .unwrap();
+        assert_eq!(crate::dialogs_milling::stock_top(&h.app.session, "Top"), Some(2.0));
+        // A new step starts at the stock's top; the retract height moves above it.
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(2);
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the contour form") };
+        let p = form.params().unwrap();
+        // Stepdown 100 % and stepover 50 % of the 6 mm cutter.
+        assert_eq!(
+            (p["top"].as_f64(), p["retract"].as_f64(), p["stepdown"].as_f64(), p["stepover"].as_f64()),
+            (Some(2.0), Some(4.0), Some(6.0), Some(3.0))
+        );
+        assert!(h.widget("Start depth").is_some() && h.widget("Start depth Z (mm)").is_some());
+        h.app.dialog = None;
+        // Facing: the whole stock from its top down to part zero.
+        h.step(&json!({"start":"cam.op.face"})).unwrap();
+        h.frames(2);
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the facing form") };
+        let p = form.params().unwrap();
+        assert_eq!(
+            (p["kind"].as_str(), p["top"].as_f64(), p["bottom"].as_f64(), p["overrun"].as_f64()),
+            (Some("face"), Some(2.0), Some(0.0), Some(2.0))
+        );
+        assert!(h.widget("Overrun (mm)").is_some());
+        assert!(h.widget("Wall stock to leave (mm)").is_none());
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let setup = h.app.session.doc.cam.setup("Top").cloned().unwrap();
+        let op = setup.operations.first().cloned().unwrap();
+        assert!(matches!(&op, solidcraft_engine::doc::cam::CamOperation::Face { .. }), "{op:?}");
+        let paths = h.app.session.cam_toolpaths();
+        assert!(paths.first().is_some_and(|p| p.points.as_ref().is_ok_and(|v| v.iter().any(|(_, c)| *c))));
+        // Editing brings it back as facing.
+        let again = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op).params().unwrap();
+        assert_eq!((again["kind"].as_str(), again["overrun"].as_f64()), (Some("face"), Some(2.0)));
+    }
+
+    #[test]
+    fn cam_contour_pick_of_a_round_rim_counts_once() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        // The real sample plate: its holes are round rims of two halves.
+        let script = solidcraft_engine::sample::script();
+        for c in script["commands"].as_array().unwrap() {
+            h.app.run(c["command"].as_str().unwrap(), c["params"].clone()).unwrap();
+        }
+        h.app.run("cam.setup", json!({"name": "Top"})).unwrap();
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(2);
+        // A round rim of the sample: two halves, one contour.
+        let st = h.app.session.world_state();
+        let body = st.bodies.first().unwrap();
+        let mesh = body.mesh();
+        let index = mesh
+            .edges
+            .iter()
+            .position(|e| e.len() > 3 && e.iter().all(|p| (p.z - 8.0).abs() < 1e-6 && (p.x - 12.0).hypot(p.y - 25.0) < 6.0))
+            .unwrap();
+        let edge = &mesh.edges[index];
+        let item = Sel::Edge { body: body.name.clone(), index, point: edge[edge.len() / 2] };
+        let mut d = h.app.dialog.take().unwrap();
+        d.pick(&h.app.session, item);
+        assert_eq!(d.inputs[0].items.len(), 2);
+        assert_eq!(crate::dialogs_milling::pick_count(&h.app.session, &d.inputs[0].items), 1);
+        h.app.dialog = Some(d);
+        h.frames(2);
+        // Side and direction are offered for the contour.
+        assert!(h.widget("Automatic").is_some() && h.widget("Climb").is_some());
+    }
+
+    #[test]
+    fn cam_setup_form_puts_part_zero_on_the_model_and_the_job_list_edits_it() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h);
+        let body = h.app.session.world_state().bodies.first().map(|b| b.name.clone()).unwrap();
+        // Unpicked, a new setup's part zero is the top corner of the model's box at low X and Y.
+        h.step(&json!({"start":"cam.setup"})).unwrap();
+        h.frames(3);
+        assert!(matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(Kind::CamSetup(_))));
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let first = h.app.session.doc.cam.setups.first().cloned().unwrap();
+        assert_eq!((first.name.as_str(), first.work_origin), ("Setup 1", [0.0, 0.0, 5.0]));
+        // A picked final depth is a height in the setup's frame: the box's bottom is 5 below zero.
+        let floor = solidcraft_engine::geom::Vec3::new(3.0, 3.0, 0.0);
+        assert_eq!(crate::dialogs_milling::work_z(&h.app.session, "Setup 1", floor), -5.0);
+        assert_eq!(crate::dialogs_milling::work_z(&h.app.session, "Not yet", floor), 0.0);
+        assert!(h.app.session.cam_setup_outline("Setup 1").is_some_and(|o| o.stock.is_some()));
+        // A picked straight edge puts part zero at its middle.
+        h.step(&json!({"start":"cam.setup"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::CamSetup(form) = &mut d.kind else { panic!("the setup form") };
+        form.zero = 0;
+        // Without a pick a new setup has no part zero to take.
+        assert!(form.params(&d.inputs).is_err());
+        let edge = Sel::Edge { body: body.clone(), index: 0, point: solidcraft_engine::geom::Vec3::new(5.0, 0.0, 5.0) };
+        d.inputs.first_mut().unwrap().items = vec![edge];
+        let p = form.params(&d.inputs).unwrap();
+        assert_eq!(p["zero_edge"]["body"].as_str(), Some(body.as_str()));
+        h.app.run("cam.setup", p).unwrap();
+        let second = h.app.session.doc.cam.setup("Setup 2").cloned().unwrap();
+        assert!(second.work_origin.iter().zip([5.0, 0.0, 5.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{:?}", second.work_origin);
+        // Zero axis by axis: X from a corner, Z from the top face; Y from the model's box (low Y).
+        h.step(&json!({"start":"cam.setup"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::CamSetup(form) = &mut d.kind else { panic!("the setup form") };
+        form.zero = 1;
+        assert_eq!(form.params(&d.inputs).ok().and_then(|p| p["wcs_origin_mode"].as_str().map(str::to_owned)).as_deref(), Some("model_box_point"));
+        let at = solidcraft_engine::geom::Vec3::new;
+        d.inputs[1].items = vec![Sel::Vertex { body: body.clone(), point: at(10.0, 0.0, 0.0) }];
+        d.inputs[3].items = vec![Sel::Face { body: body.clone(), index: 0, point: at(5.0, 5.0, 5.0) }];
+        let p = form.params(&d.inputs).unwrap();
+        assert!(p["zero_axes"].get("y").is_none());
+        h.app.run("cam.setup", p).unwrap();
+        assert_eq!(h.app.session.doc.cam.setup("Setup 3").map(|s| s.work_origin), Some([10.0, 0.0, 5.0]));
+        // The job list offers each setup for editing and deleting.
+        h.step(&json!({"start":"cam.list"})).unwrap();
+        h.frames(3);
+        assert!(h.widget("Edit").is_some() && h.widget("Delete").is_some());
+    }
+
+    #[test]
+    fn cam_forms_show_their_texts_in_full() {
+        fn elided(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.elided => out.push(t.galley.job.text.clone()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| elided(s, out)),
+                _ => {}
+            }
+        }
+        // Labels, picks, choices and hints of every CAM form, in English and German, at two sizes.
+        let mut cut = Vec::new();
+        for (w, ht, language) in [
+            (1400.0, 1000.0, "en"),
+            (1400.0, 1000.0, "de"),
+            (1920.0, 1080.0, "de"),
+            (1400.0, 1000.0, "ja"),
+            (1400.0, 1000.0, "zh"),
+            (1400.0, 1000.0, "ar"),
+            (1400.0, 1000.0, "he"),
+            (1400.0, 1000.0, "vi"),
+        ] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.call("ui.resize", json!({"width":w,"height":ht}));
+            h.call("ui.prefs", json!({"language":language}));
+            sample(&mut h);
+            h.app.run("cam.setup", json!({"name": "Setup A"})).unwrap();
+            let mut show = |h: &mut Harness, what: &str| {
+                h.frames(4);
+                let mut output =
+                    h.ctx.run_ui(egui::RawInput { screen_rect: Some(h.ctx.content_rect()), focused: true, ..Default::default() }, |ui| {
+                        h.app.logic(ui.ctx());
+                        h.app.ui(ui);
+                    });
+                output.textures_delta.clear();
+                let mut out = Vec::new();
+                output.shapes.iter().for_each(|s| elided(&s.shape, &mut out));
+                if !out.is_empty() {
+                    cut.push(format!("{language} {w}: {what} cuts off {out:?}"));
+                }
+            };
+            for cmd in ["cam.setup", "cam.op.contour", "cam.op.pocket", "cam.op.drill", "cam.op.face"] {
+                h.app.dialog = None;
+                h.step(&json!({"start":cmd})).unwrap();
+                show(&mut h, cmd);
+                if cmd == "cam.setup" {
+                    if let Some(Kind::CamSetup(form)) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+                        form.zero = 1;
+                    }
+                    show(&mut h, "setup per axis");
+                }
+            }
+            h.app.dialog = None;
+            for tab in 0..3 {
+                crate::cam_panel::open(&mut h.app, tab);
+                show(&mut h, &format!("panel {tab}"));
+            }
+        }
+        assert!(cut.is_empty(), "{cut:#?}");
+    }
 
     fn sample(h: &mut Harness) {
         h.app.run("sketch.create", json!({"plane":"XY","name":"Base"})).unwrap();

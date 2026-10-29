@@ -723,6 +723,12 @@ preference_settings! {
     /// Personal Hole parameter combinations, shared by every design in this profile.
     /// No page reset discards this user-authored library.
     hole_presets: crate::hole_presets::Library = crate::hole_presets::Library::default();
+    /// The personal CAM tool library with cutting data by material, shared by every design in
+    /// this profile. No page reset discards it.
+    cam_tools: crate::cam_panel::Library = crate::cam_panel::Library::default();
+    /// The personal CAM machine list (travel, spindle speeds, fastest feed), shared by every
+    /// design in this profile. No page reset discards it.
+    cam_machines: crate::cam_panel::Machines = crate::cam_panel::Machines::default();
     /// Save as mesh: the last format (`stl` or `3mf`). Older versions also kept a "send to slicer"
     /// choice here (`save_mesh_send`, `save_mesh_slicer`); a settings file that still has them loads,
     /// and they are ignored.

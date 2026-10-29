@@ -297,6 +297,13 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
     if app.dialog.is_none() && app.tool.is_none() {
         crate::browser::occurrence_triad(app, ui, painter, proj);
     }
+    // With the CAM panel open, every setup shows its part zero, axes and stock, and every step its path.
+    if app.dialog.is_none() && app.cam_window.is_some() {
+        for setup in &app.session.doc.cam.setups {
+            crate::dialogs_cam_setup::draw_setup(&app.session, painter, proj, &setup.name);
+        }
+    }
+    crate::cam_panel::draw_paths(app, painter, proj);
     let Some(mut d) = app.dialog.take() else { return };
     if matches!(d.kind, Kind::Assembly(_)) {
         crate::dialogs_assembly::overlay(app, painter, proj, &mut d);
@@ -306,6 +313,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
     if crate::dialogs_sheet::overlay(app, painter, proj.rect, &d) {
         app.dialog = Some(d);
         return;
+    }
+    if let Kind::Milling(form) = &d.kind {
+        crate::dialogs_milling::overlay(painter, proj, form);
+    }
+    if let Kind::CamSetup(form) = &d.kind {
+        crate::dialogs_cam_setup::overlay(&app.session, painter, proj, form);
     }
     if let Kind::Measure { result: Some(r), show, .. } = &d.kind {
         measure_line(app, painter, proj, r, *show);

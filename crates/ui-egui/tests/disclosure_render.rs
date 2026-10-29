@@ -12,6 +12,39 @@ use solidcraft_ui_egui::{
 use std::collections::HashMap;
 
 #[test]
+fn linuxcnc_cam_form_renders_real_controls_in_both_themes() {
+    let previous = theme::is_dark();
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cam-review");
+    std::fs::create_dir_all(&dir).unwrap();
+    for dark in [false, true] {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1200,"height":1400}));
+        h.call("ui.set", json!({"dark":dark}));
+        h.app.ui.layout = LayoutMode::Floating;
+        h.step(&json!({"start":"cam.job.create"})).unwrap();
+        h.step(&json!({"widget":"Preview toolpaths"})).unwrap();
+        while matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(solidcraft_ui_egui::dialogs::Kind::Milling(form)) if form.computing()) {
+            h.frames(1);
+            std::thread::yield_now();
+        }
+        assert!(h.widget("Copy LinuxCNC G-code").is_some());
+        h.ctx = egui::Context::default();
+        solidcraft_ui_egui::fonts::setup_fonts(&h.ctx);
+        theme::apply(&h.ctx);
+        let mut textures = HashMap::new();
+        for _ in 0..8 {
+            raster::paint(&mut h, &mut textures, vec![]);
+        }
+        let output = raster::paint(&mut h, &mut textures, vec![]);
+        let screenshot = raster::raster(&mut h, &textures, output);
+        screenshot.save(dir.join(if dark { "cam-dark.png" } else { "cam-light.png" })).unwrap();
+        assert!(scenario::rect_of("dialog:header").is_some());
+    }
+    theme::set_dark(previous);
+}
+
+#[test]
 fn appearance_and_browser_folds_keep_handles_and_render_both_states() {
     let previous = theme::is_dark();
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/disclosure-review");

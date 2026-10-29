@@ -32,6 +32,15 @@ const SELECT_MANIP: &[Scope] = &[Scope::Selection, Scope::Manipulator, Scope::Fe
 
 /// Per-tool modifier descriptors owned by this host file (SOLID / construct / inspect dialogs).
 pub const MODIFIERS: &[ToolModifiers] = &[
+    ToolModifiers { tool: "cam.job.create", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.list", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.machine.define", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.contour", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.drill", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.face", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.pocket", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.setup", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.tool.define", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "sketch.create", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.extrude", scopes: SELECT_MANIP, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.revolve", scopes: SELECT_MANIP, bindings: &[], audit: Audit::VerifiedNoOp },
@@ -353,6 +362,9 @@ crate::dialog_descriptor::dialog_descriptors! {
             /// Pick what the agent chat's next message is about (#2286): elements, features and bodies.
             /// OK hands the picks to the chat (`agent_chat::pick_done`); nothing is run.
             ChatContext,
+            Milling(crate::dialogs_milling::Milling),
+            /// A CAM setup: part zero and axes picked on the model, stock (`dialogs_cam_setup`).
+            CamSetup(crate::dialogs_cam_setup::CamSetupForm),
             /// Joints and components (`dialogs_assembly`).
             Assembly(crate::dialogs_assembly::Asm),
             /// Sheet metal (`dialogs_sheet`).
@@ -588,7 +600,7 @@ fn display_quality(app: &SolveApp) -> solidcraft_engine::doc::display_quality::D
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
     let wait = app.apply_off_thread?;
-    if !d.previews() {
+    if !d.previews() && !matches!(d.kind, Kind::Milling(_)) {
         return None;
     }
     let computation = DialogComputation::new(app, d).ok()?;
@@ -782,6 +794,14 @@ impl Dialog {
         let s = &app.session;
         let has_bodies = !s.world_state().bodies.is_empty();
         let mut d = match id {
+            // Contours and pockets take picked contours (edges, planar faces, sketch profiles) and a
+            // start point instead of the rectangle.
+            "cam.job.create" => Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::new(app)), crate::dialogs_milling::inputs()),
+            "cam.setup" => Dialog::new(Kind::CamSetup(crate::dialogs_cam_setup::CamSetupForm::new(app)), crate::dialogs_cam_setup::inputs()),
+            // The Machining tab's operation buttons open the same guided form with their operation chosen.
+            "cam.op.contour" | "cam.op.pocket" | "cam.op.drill" | "cam.op.face" => {
+                Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::for_operation(app, id)), crate::dialogs_milling::inputs())
+            }
             "sketch.create" => Dialog::new(Kind::Sketch, vec![SelInput::new("Plane", PLANES | PLANAR_FACES, false)]),
             "solid.extrude" => Dialog::new(
                 Kind::Extrude {
@@ -2048,6 +2068,8 @@ fn publish_check(ui: &egui::Ui, response: &egui::Response, selected: bool) {
 
 fn title(k: &Kind) -> &'static str {
     match k {
+        Kind::Milling(_) => "cmd.cam.job.create",
+        Kind::CamSetup(_) => "cmd.cam.setup",
         Kind::Sketch => "CREATE SKETCH",
         Kind::Extrude { .. } => "EXTRUDE",
         Kind::Revolve { .. } => "REVOLVE",
@@ -2371,7 +2393,12 @@ pub(crate) fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, r
                     } else if !inp.multi {
                         inp.items.first().map(|item| selection_label(s, d, inp, item)).unwrap_or_default()
                     } else {
-                        let count = if i == 0 { shell_count.unwrap_or(inp.items.len()) } else { inp.items.len() };
+                        let count = match &d.kind {
+                            // The milling form counts contours, not the halves of a round rim.
+                            Kind::Milling(_) => crate::dialogs_milling::pick_count(s, &inp.items),
+                            _ if i == 0 => shell_count.unwrap_or(inp.items.len()),
+                            _ => inp.items.len(),
+                        };
                         crate::i18n::format("dialog.selected_count", &[("count", &count.to_string())])
                     })
                     .color(t.on_accent)
@@ -2756,7 +2783,7 @@ pub(crate) fn docks(d: &Dialog) -> bool {
 /// The width a dialog's card asks for: the managers' wider form, a study's table, or a card.
 pub(crate) fn card_width(d: &Dialog) -> f32 {
     let t = Tokens::get();
-    if matches!(d.kind, Kind::Appearance(_) | Kind::Material { .. }) {
+    if matches!(d.kind, Kind::Appearance(_) | Kind::Material { .. } | Kind::Milling(_) | Kind::CamSetup(_)) {
         t.form_card_width + t.form_label_width + t.space_6
     } else if matches!(&d.kind, Kind::Motion(k) if k.wide()) {
         t.form_card_width * 3.0
@@ -3176,6 +3203,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     if !keep || cancel {
         app.session.feature_edit_sketch = None;
         crate::dialogs_motion::closed(app, &mut d, applied);
+        // A step made in the milling form shows in the job list, its path in the view.
+        if applied && matches!(d.kind, Kind::Milling(_)) {
+            crate::cam_panel::open(app, 0);
+        }
         if let Kind::Text(k) = &mut d.kind {
             crate::sketch_text::closed(app, k, applied);
         }
@@ -3604,6 +3635,9 @@ fn section_turns_off(s: &Session, inputs: &[selection::SelInput]) -> bool {
 }
 
 pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
+    if let Kind::Milling(form) = &d.kind {
+        return crate::dialogs_milling::run(app, form);
+    }
     if let Kind::ViewDxf { dashed, tolerance } = &d.kind {
         return crate::dialogs_view_dxf::run(app, *dashed, *tolerance);
     }
@@ -4530,6 +4564,8 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             )
         }
         Kind::EditParam { name, expr } => ("parameters.change", json!({"name": name, "expression": expr})),
+        Kind::Milling(form) => ("cam.job.create", form.params()?),
+        Kind::CamSetup(form) => ("cam.setup", form.params(&d.inputs)?),
         Kind::Rename { feature, name } => ("timeline.rename", json!({"feature": feature, "name": name})),
         Kind::ConfirmDelete { features, groups, .. } => ("timeline.delete", crate::timeline::delete_params(features, groups)),
         Kind::Sketch | Kind::Measure { .. } => return Ok(Vec::new()),
