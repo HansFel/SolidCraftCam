@@ -630,6 +630,7 @@ pub fn tab_icon(tab: &str) -> &'static str {
         "INSERT" => "import",
         "INSPECT" => "measure",
         "MANAGE" => "params",
+        "MACHINING" => "cut",
         "VIEW" => "camera",
         _ => SPECIALTY_TABS.iter().find(|o| o.tab == tab).map_or("", |o| o.icon),
     }
@@ -1093,7 +1094,7 @@ mod tests {
         let rows: Vec<_> = crate::toolbar_custom::toolbar_items(&h.app).into_iter().filter(|i| i.id == "ui.toolbarTab").collect();
         assert_eq!(
             rows.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
-            ["Model", "Surface", "Assemble", "Insert", "Inspect", "Manage", "View", "Sheet Metal", "Weldments"]
+            ["Model", "Surface", "Assemble", "Insert", "Inspect", "Manage", "Machining", "View", "Sheet Metal", "Weldments"]
         );
         assert!(rows.iter().all(|i| i.shortcut == "current"), "all existing tabs stay on by default");
         h.step(&json!({"click":{"handle":"ribbon:add_tab"}})).unwrap();
