@@ -1166,6 +1166,32 @@ mod tests {
         assert_eq!(visible_tabs(&h.app), choosable_tabs().collect::<Vec<_>>(), "defaults restore Sheet Metal and Weldments too");
     }
 
+    /// The workspace switcher's caption is the longest word the card shows; a language whose word
+    /// for "Workspace" is wider than the card made it elide ("Arbeitsbereich", "ワークスペース").
+    #[test]
+    fn the_workspace_caption_fits_the_switcher_in_every_language() {
+        let mut h = crate::scenario::Harness::new();
+        for language in ["en", "de", "ja", "he", "vi"] {
+            h.app.preferences.language = language.to_owned();
+            let _language = crate::i18n::scope(language);
+            h.frames(2);
+            let caption = crate::i18n::tr("ui.ribbon_workspace").to_string();
+            let (mut painted, mut cut) = (false, false);
+            for s in &h.shapes {
+                crate::test_support::each_shape(&s.shape, &mut |shape| {
+                    if let egui::Shape::Text(t) = shape
+                        && t.galley.job.text == caption
+                    {
+                        painted = true;
+                        cut |= t.galley.elided;
+                    }
+                });
+            }
+            assert!(painted, "{language}: the workspace caption {caption:?} is not drawn");
+            assert!(!cut, "{language}: the workspace caption {caption:?} is cut off in the switcher");
+        }
+    }
+
     /// Parameters and Configurations are on the design tabs they were on before the redesign, and a
     /// fresh document reaches Sheet Metal (to flange a sketch or convert a solid) by its tab.
     #[test]

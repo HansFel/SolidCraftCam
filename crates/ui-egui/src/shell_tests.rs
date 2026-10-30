@@ -1,5 +1,6 @@
 use super::*;
 use crate::scenario::{Harness, rect_of};
+use crate::toolbar;
 use serde_json::json;
 
 #[test]

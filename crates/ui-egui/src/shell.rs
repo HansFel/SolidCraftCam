@@ -3,7 +3,7 @@ use crate::ui_kit::{Container, Surface};
 use egui::{Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::{SolveApp, theme::Tokens, toolbar};
+use crate::{SolveApp, theme::Tokens};
 
 /// Saved workspace layout; automation may override it for a session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +70,9 @@ pub(crate) struct Cards {
 }
 
 impl Cards {
-    pub fn new(available: Rect, mode: LayoutMode, ribbon_height: f32) -> Self {
+    /// `workspace_width` is the switcher card's width, room for the workspace caption in the
+    /// current language (`toolbar::workspace_card_width`); it never grows past `available`.
+    pub fn new(available: Rect, mode: LayoutMode, ribbon_height: f32, workspace_width: f32) -> Self {
         let margin = Container::for_layout(mode, Surface::Chrome).gap();
         let gap = margin;
         let left = available.left() + margin;
@@ -79,7 +81,7 @@ impl Cards {
         let workspace = Rect::from_min_size(
             pos2(left, top),
             vec2(
-                toolbar::WORKSPACE_WIDTH.min((right - left).max(0.0)),
+                workspace_width.min((right - left).max(0.0)),
                 ribbon_height - if !Container::for_layout(mode, Surface::Chrome).floating() { 1.0 } else { 0.0 },
             ),
         );

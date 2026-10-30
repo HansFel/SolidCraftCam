@@ -2608,7 +2608,7 @@ impl SolveApp {
         dialogs::sync_feature_edit_sketch(self);
         let full = ui.available_rect_before_wrap();
         if floating {
-            let cards = toolbar::shell_cards(self, full);
+            let cards = toolbar::shell_cards(self, full, toolbar::workspace_card_width(ui.ctx()));
             self.shell.cards = vec![cards.workspace, cards.ribbon];
             self.shell.history = if left_timeline {
                 let below_ribbon = egui::Rect::from_min_max(egui::pos2(full.left(), cards.bottom), full.max);

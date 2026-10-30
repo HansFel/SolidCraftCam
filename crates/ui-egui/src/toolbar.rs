@@ -1216,12 +1216,21 @@ pub(crate) fn shell_layout(app: &SolveApp) -> crate::shell::LayoutMode {
     if crate::render_workspace::active(app) { crate::shell::LayoutMode::Floating } else { app.ui.layout }
 }
 
-pub(crate) fn shell_cards(app: &SolveApp, available: Rect) -> crate::shell::Cards {
+pub(crate) fn shell_cards(app: &SolveApp, available: Rect, workspace_width: f32) -> crate::shell::Cards {
     if crate::render_workspace::active(app) {
         crate::ui_kit::StageBar::cards(available)
     } else {
-        crate::shell::Cards::new(available, shell_layout(app), ribbon_height(app.preferences.ribbon_labels))
+        crate::shell::Cards::new(available, shell_layout(app), ribbon_height(app.preferences.ribbon_labels), workspace_width)
     }
+}
+
+/// The workspace card's width: room for the caption it shows in the current language, which
+/// the card used to cut off ("Arbeitsbereich", "ワークスペース", "Không gian làm việc").
+pub(crate) fn workspace_card_width(ctx: &egui::Context) -> f32 {
+    let t = Tokens::get();
+    let caption = crate::i18n::tr("ui.ribbon_workspace");
+    let text = ctx.fonts_mut(|f| f.layout_no_wrap(caption.to_string(), egui::FontId::proportional(t.font_small), t.text_dim)).size().x;
+    WORKSPACE_WIDTH.max(text.ceil() + 2.0 * t.space_8 + t.space_12)
 }
 
 pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -1234,7 +1243,8 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
     let group_height = if labels { GROUP_HEIGHT } else { ICON_GROUP_HEIGHT };
     let ribbon_height = ribbon_height(labels);
     let gallery_width = if labels { CONSTRAINT_GRID_WIDTH } else { 6.0 * 27.0 };
-    let cards = shell_cards(app, ui.available_rect_before_wrap());
+    let ws_width = workspace_card_width(ui.ctx());
+    let cards = shell_cards(app, ui.available_rect_before_wrap(), ws_width);
     let height = if floating { cards.bottom - ui.available_rect_before_wrap().top() } else { ribbon_height };
     let fill = if floating { Color32::TRANSPARENT } else { t.toolbar };
     let host = Container::for_layout(layout, Surface::Chrome);
@@ -1242,7 +1252,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
     let frame = host.edge_frame(fill);
     let chrome = ribbon.exact_size(height).show_separator_line(false).frame(frame).show(ui, |ui| {
         let r = if floating { Rect::from_min_max(cards.workspace.min, cards.ribbon.max) } else { frame.outer_rect(ui.max_rect()) };
-        let ws = if floating { cards.workspace } else { Rect::from_min_size(r.left_top(), vec2(WORKSPACE_WIDTH, ribbon_height - 1.0)) };
+        let ws = if floating { cards.workspace } else { Rect::from_min_size(r.left_top(), vec2(ws_width, ribbon_height - 1.0)) };
         let ribbon_left = if floating { cards.ribbon.left() } else { ws.right() };
         if floating {
             for card in [ws, cards.ribbon] {
