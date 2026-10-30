@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use solidcraft_geom::{Region2, Vec2, Vec3};
 
 use crate::check::verify;
+use crate::lead::{Leads, lead_in, lead_out};
 use crate::offset::{Shape, reversed};
+use crate::open::{OpenContourParams, OpenPath, side_normal};
 use crate::path::{MAX_MOVES, Move, Toolpath};
 use crate::piece::Piece;
 use crate::tool::{Tool, ToolKind};
@@ -20,7 +22,7 @@ const MAX_RINGS: usize = 2_000;
 /// Most times a ramp goes round its loop; a loop too short for that is plunged into instead.
 const MAX_RAMP_LAPS: f64 = 2000.0;
 /// Largest coordinate or height (mm).
-const MAX_COORD: f64 = 1.0e6;
+pub(crate) const MAX_COORD: f64 = 1.0e6;
 
 /// Peck drilling in work XY. Every peck feeds from retract height and fully retracts for
 /// chip clearance. `stepdown` is the maximum peck depth; no canned cycle state is required.
@@ -284,6 +286,20 @@ impl Builder {
         }
     }
 
+    /// Up to the retract height (if below it), then across to `p` at that height: the return
+    /// between passes, where the tool goes back to where it plunges.
+    fn return_to(&mut self, p: Vec2) -> Result<()> {
+        if let Some(q) = self.pos
+            && q.z < self.h.retract
+        {
+            self.push(Move::Rapid { to: Vec3::new(q.x, q.y, self.h.retract) })?;
+        }
+        if !self.at(p) {
+            self.push(Move::Rapid { to: p.extend(self.h.retract) })?;
+        }
+        Ok(())
+    }
+
     fn retract(&mut self) -> Result<()> {
         match self.pos {
             Some(q) if q.z < self.h.clearance => self.push(Move::Rapid { to: Vec3::new(q.x, q.y, self.h.clearance) }),
@@ -343,12 +359,20 @@ pub fn contour(regions: &[Region2], tool: &Tool, params: &ContourParams, cut: &C
 
 /// [`contour`], each loop starting at its point nearest to `start` (work XY) when given.
 pub fn contour_from(regions: &[Region2], tool: &Tool, params: &ContourParams, cut: &Cut, start: Option<Vec2>) -> Result<Toolpath> {
+    contour_with(regions, tool, params, &Leads::default(), cut, start)
+}
+
+/// [`contour_from`] with leads: the tool comes onto each loop from its free side, and leaves it
+/// to the free side, along `leads` (a closed loop ramps down along itself only with `Direct`
+/// leads and no overlap).
+pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, leads: &Leads, cut: &Cut, start: Option<Vec2>) -> Result<Toolpath> {
     if start.is_some_and(|p| !p.is_finite() || p.x.abs() > MAX_COORD || p.y.abs() > MAX_COORD) {
         return invalid("the start point must be finite and within 1e6 mm");
     }
     tool.validate()?;
     mills(tool)?;
     cut.validate()?;
+    leads.validate()?;
     check_leave(params.stock_to_leave)?;
     check_ramp(params.ramp_angle)?;
     let shape = Shape::from_regions(regions, params.tolerance)?;
@@ -373,17 +397,169 @@ pub fn contour_from(regions: &[Region2], tool: &Tool, params: &ContourParams, cu
             None => lp,
         };
         let Some(first) = lp.first() else { continue };
-        b.travel_to(first.start())?;
-        // Down to the last pass (through what it cut), then into the material along the loop.
-        b.plunge_to(cut.heights.top)?;
-        for &z in &levels {
-            b.ramp_loop(&lp, z, params.ramp_angle)?;
-            b.cut_loop(&lp, z)?;
-            b.cut_to(first.start(), z)?;
+        if leads.is_direct() {
+            b.travel_to(first.start())?;
+            // Down to the last pass (through what it cut), then into the material along the loop.
+            b.plunge_to(cut.heights.top)?;
+            for &z in &levels {
+                b.ramp_loop(&lp, z, params.ramp_angle)?;
+                b.cut_loop(&lp, z)?;
+                b.cut_to(first.start(), z)?;
+            }
+        } else {
+            cut_loop_with_leads(&mut b, &shape, tool, params, leads, &levels, &lp)?;
         }
         b.retract()?;
     }
     b.finish()
+}
+
+/// One closed loop, every depth pass with its lead-in and lead-out: plunge at the lead-in's
+/// start, lead in, cut the loop (and the overlap past its start), lead out; then back to the
+/// plunge point for the next pass.
+fn cut_loop_with_leads(
+    b: &mut Builder,
+    shape: &Shape,
+    tool: &Tool,
+    params: &ContourParams,
+    leads: &Leads,
+    levels: &[f64],
+    lp: &[Piece],
+) -> Result<()> {
+    let Some(first) = lp.first() else { return Ok(()) };
+    let s = first.start();
+    let t_in = first.tangent_at(0.0);
+    let in_piece = lead_in(&leads.lead_in, s, t_in, free_normal(shape, params.side, s, t_in));
+    if let Some(piece) = &in_piece
+        && !lead_is_clear(shape, params.side, piece, tool.radius())
+    {
+        return invalid("the lead-in would cut into the part: make it shorter or pick another");
+    }
+    let mut run = lp.to_vec();
+    if leads.overlap > 0.0 {
+        run_overlap(&mut run, lp, leads.overlap)?;
+    }
+    let Some(run_end) = run.last() else { return Ok(()) };
+    let e = run_end.end();
+    let t_out = run_end.tangent_at(1.0);
+    let out_piece = lead_out(&leads.lead_out, e, t_out, free_normal(shape, params.side, e, t_out));
+    if let Some(piece) = &out_piece
+        && !lead_is_clear(shape, params.side, piece, tool.radius())
+    {
+        return invalid("the lead-out would cut into the part: make it shorter or pick another");
+    }
+    let plunge = in_piece.map_or(s, |piece| piece.start());
+    b.travel_to(plunge)?;
+    for (k, &z) in levels.iter().enumerate() {
+        if k > 0 {
+            b.return_to(plunge)?;
+        }
+        b.plunge_to(z)?;
+        if let Some(piece) = &in_piece {
+            b.cut_piece(piece, z, z)?;
+        }
+        b.cut_loop(&run, z)?;
+        if let Some(piece) = &out_piece {
+            b.cut_piece(piece, z, z)?;
+        }
+    }
+    Ok(())
+}
+
+/// The unit normal of the side the tool is on at `p`, where the contour runs along `t`:
+/// away from the region around a part and into an opening (both the side farther from the
+/// boundary), the left of the travel on it.
+fn free_normal(shape: &Shape, side: Side, p: Vec2, t: Vec2) -> Vec2 {
+    let n = t.perp();
+    if side == Side::On {
+        return n;
+    }
+    let probe = (shape.dist(p) * 0.5).max(1e-3);
+    if shape.dist(p + n * probe) >= shape.dist(p - n * probe) { n } else { -n }
+}
+
+/// Whether a lead stays clear of the part. The tool may touch an open contour it rides on.
+fn lead_is_clear(shape: &Shape, side: Side, piece: &Piece, r: f64) -> bool {
+    let n = ((piece.length() / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 512.0) as usize;
+    (0..=n).all(|i| {
+        let p = piece.point_at(i as f64 / n as f64);
+        match side {
+            Side::Inside => shape.clear(p, r),
+            Side::Outside => shape.dist(p) >= r - 1e-6,
+            // The whole loop rides the boundary: only the free side can be told.
+            Side::On => true,
+        }
+    })
+}
+
+/// Appends the first `overlap` mm of `lp` to `run`, the loop running on past its start.
+fn run_overlap(run: &mut Vec<Piece>, lp: &[Piece], overlap: f64) -> Result<()> {
+    let total: f64 = lp.iter().map(Piece::length).sum();
+    if !(overlap < total) {
+        return invalid("the overlap must be shorter than the contour");
+    }
+    let mut left = overlap;
+    for piece in lp {
+        if !(left > 1e-9) {
+            break;
+        }
+        let len = piece.length();
+        if len >= left {
+            run.push(piece.sub(0.0, left / len));
+            left = 0.0;
+        } else {
+            run.push(*piece);
+            left -= len;
+        }
+    }
+    Ok(())
+}
+
+/// Follows each open path, offset by the tool radius (+ stock) to `side`, through every depth
+/// pass, each pass in the same direction: lead in, cut, lead out, up, back to the plunge point.
+pub fn contour_open(paths: &[OpenPath], tool: &Tool, params: &OpenContourParams, leads: &Leads, cut: &Cut) -> Result<Toolpath> {
+    tool.validate()?;
+    mills(tool)?;
+    cut.validate()?;
+    params.validate()?;
+    leads.validate()?;
+    if paths.is_empty() || paths.len() > 1_000 {
+        return invalid("open milling needs 1 to 1000 paths");
+    }
+    let levels = cut.levels()?;
+    let mut b = Builder::new(cut);
+    for path in paths {
+        let chain = crate::open::offset_path(path, params, tool.radius())?;
+        cut_open_chain(&mut b, &chain, params, leads, &levels)?;
+        b.retract()?;
+    }
+    b.finish()
+}
+
+fn cut_open_chain(b: &mut Builder, chain: &[Piece], params: &OpenContourParams, leads: &Leads, levels: &[f64]) -> Result<()> {
+    let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
+        return invalid("the tool does not fit the open contour");
+    };
+    let t_in = first.tangent_at(0.0);
+    let in_piece = lead_in(&leads.lead_in, first.start(), t_in, side_normal(params.side, t_in));
+    let t_out = last.tangent_at(1.0);
+    let out_piece = lead_out(&leads.lead_out, last.end(), t_out, side_normal(params.side, t_out));
+    let plunge = in_piece.map_or(first.start(), |piece| piece.start());
+    b.travel_to(plunge)?;
+    for (k, &z) in levels.iter().enumerate() {
+        if k > 0 {
+            b.return_to(plunge)?;
+        }
+        b.plunge_to(z)?;
+        if let Some(piece) = &in_piece {
+            b.cut_piece(piece, z, z)?;
+        }
+        b.cut_loop(chain, z)?;
+        if let Some(piece) = &out_piece {
+            b.cut_piece(piece, z, z)?;
+        }
+    }
+    Ok(())
 }
 
 /// Clears `regions` (holes are islands) with rings parallel to the boundary, from the inside out.

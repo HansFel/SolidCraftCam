@@ -129,6 +129,53 @@ impl Piece {
             Piece::Arc { c, r, a0, sweep } => Seg2::Arc { center: c, radius: r, start: a0, sweep },
         }
     }
+    /// Where the two pieces cross, allowing parameters outside `[0, 1]` (the lines and arcs
+    /// extended): the crossing nearest to `self`'s end and `o`'s start, which is the corner
+    /// between them. `None` when they are parallel or do not meet.
+    pub fn intersect_extended(&self, o: &Piece) -> Option<(f64, f64)> {
+        let mut hits: Vec<(f64, f64)> = Vec::new();
+        match (*self, *o) {
+            (Piece::Line { a: a1, b: b1 }, Piece::Line { a: a2, b: b2 }) => {
+                let (d1, d2) = (b1 - a1, b2 - a2);
+                let den = d1.cross(d2);
+                if den.abs() > 1e-12 * d1.len() * d2.len() {
+                    let w = a2 - a1;
+                    hits.push((w.cross(d2) / den, w.cross(d1) / den));
+                }
+            }
+            (Piece::Line { a, b }, Piece::Arc { c, r, a0, sweep }) => {
+                for t in line_circle_parameters(a, b, c, r) {
+                    let theta = (a + (b - a) * t - c).angle();
+                    if let Some(u) = arc_param_extended(a0, sweep, theta) {
+                        hits.push((t, u));
+                    }
+                }
+            }
+            (Piece::Arc { .. }, Piece::Line { .. }) => {
+                let (u, t) = o.intersect_extended(self)?;
+                hits.push((t, u));
+            }
+            (Piece::Arc { c: c1, r: r1, a0: s1, sweep: w1 }, Piece::Arc { c: c2, r: r2, a0: s2, sweep: w2 }) => {
+                let between = c2 - c1;
+                let d = between.len();
+                if d > 1e-12 && d <= r1 + r2 + 1e-9 && d >= (r1 - r2).abs() - 1e-9 {
+                    let along = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+                    let h = (r1 * r1 - along * along).max(0.0).sqrt();
+                    let dir = between / d;
+                    let base = c1 + dir * along;
+                    let pts = if h > 1e-12 { vec![base + dir.perp() * h, base - dir.perp() * h] } else { vec![base] };
+                    for p in pts {
+                        if let (Some(t), Some(u)) = (arc_param_extended(s1, w1, (p - c1).angle()), arc_param_extended(s2, w2, (p - c2).angle())) {
+                            hits.push((t, u));
+                        }
+                    }
+                }
+            }
+        }
+        hits.into_iter()
+            .filter(|(t, u)| t.is_finite() && u.is_finite())
+            .min_by(|a, b| ((a.0 - 1.0).abs() + a.1.abs()).total_cmp(&((b.0 - 1.0).abs() + b.1.abs())))
+    }
     /// Where the two pieces cross: `(parameter on self, parameter on o)` pairs. Pieces lying
     /// along each other (collinear lines, arcs of one circle) report nothing.
     pub fn intersections(&self, o: &Piece, out: &mut Vec<(f64, f64)>) {
@@ -197,6 +244,36 @@ fn arc_param(a0: f64, sweep: f64, theta: f64) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// The parameter at which an arc from `a0` sweeping `sweep` passes angle `theta`, counting turns
+/// past its end (for extended arcs).
+fn arc_param_extended(a0: f64, sweep: f64, theta: f64) -> Option<f64> {
+    let span = sweep.abs();
+    if !(span > 0.0) {
+        return None;
+    }
+    let delta = if sweep > 0.0 { (theta - a0).rem_euclid(TAU) } else { (a0 - theta).rem_euclid(TAU) };
+    Some(delta / span)
+}
+
+/// Where the segment `a`–`b` meets the circle, as parameters along the segment (which may lie
+/// outside `[0, 1]`).
+fn line_circle_parameters(a: Vec2, b: Vec2, c: Vec2, r: f64) -> Vec<f64> {
+    let d = b - a;
+    let len2 = d.len2();
+    if !(len2 > 1e-24) {
+        return Vec::new();
+    }
+    let f = a - c;
+    let (bq, cq) = (2.0 * f.dot(d), f.len2() - r * r);
+    let disc = bq * bq - 4.0 * len2 * cq;
+    if disc < 0.0 {
+        return Vec::new();
+    }
+    let root = disc.sqrt();
+    let ts = if root > 1e-12 { vec![(-bq - root) / (2.0 * len2), (-bq + root) / (2.0 * len2)] } else { vec![-bq / (2.0 * len2)] };
+    ts.into_iter().filter(|t| t.is_finite()).collect()
 }
 
 /// Where the segment `a`–`b` meets the circle: `(parameter, point)`.

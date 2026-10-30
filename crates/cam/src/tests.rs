@@ -1,9 +1,11 @@
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI};
 
-use solidcraft_geom::{Loop2, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Region2, Seg2, Vec2, Vec3};
 
 use super::*;
+use crate::lead::{lead_in, lead_out};
 use crate::offset::Shape;
+use crate::piece::Piece;
 
 #[test]
 fn peck_drilling_reaches_depth_retracts_and_reads_back_for_linuxcnc() {
@@ -862,4 +864,218 @@ fn facing_clears_the_whole_stock_in_passes_and_goes_down_in_the_air() {
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &FaceParams { stepover: 7.0, ..params }, &c).is_err());
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &FaceParams { overrun: -1.0, ..params }, &c).is_err());
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &params, &cut(0.0, 0.0, 1.0)).is_err());
+}
+
+/// An open path of straight segments through `pts`.
+fn open(pts: &[(f64, f64)]) -> OpenPath {
+    OpenPath { segs: pts.windows(2).map(|w| Seg2::Line { a: v(w[0].0, w[0].1), b: v(w[1].0, w[1].1) }).collect() }
+}
+
+fn open_params(side: OpenSide, reverse: bool, extend_start: f64, extend_end: f64) -> OpenContourParams {
+    OpenContourParams { side, reverse, stock_to_leave: 0.0, tolerance: 0.01, extend_start, extend_end }
+}
+
+fn length(pieces: &[Piece]) -> f64 {
+    pieces.iter().map(Piece::length).sum()
+}
+
+#[test]
+fn a_quarter_turn_lead_comes_from_the_free_side_and_joins_the_contour_tangentially() {
+    let (s, t, f) = (v(10.0, 5.0), v(1.0, 0.0), v(0.0, 1.0));
+    let lead = Lead::Arc { radius: 3.0, sweep: FRAC_PI_2 };
+    let piece = lead_in(&lead, s, t, f).unwrap();
+    // It ends exactly on the contour, going the way the contour runs.
+    close(piece.end().dist(s), 0.0, 1e-9);
+    close(piece.tangent_at(1.0).dist(t), 0.0, 1e-9);
+    // It starts on the free side, a radius from the centre it turns about.
+    assert!((piece.start() - s).dot(f) > 0.0);
+    close(piece.start().dist(s), 2.0f64.sqrt() * 3.0, 1e-9);
+    // The lead-out is the same arc, leaving along the tangent.
+    let out = lead_out(&lead, s, t, f).unwrap();
+    close(out.start().dist(s), 0.0, 1e-9);
+    close(out.tangent_at(0.0).dist(t), 0.0, 1e-9);
+    assert!((out.end() - s).dot(f) > 0.0);
+    // A sweep other than a quarter turn still lands on the contour tangentially.
+    let half = lead_in(&Lead::Arc { radius: 2.0, sweep: PI }, s, t, f).unwrap();
+    close(half.end().dist(s), 0.0, 1e-9);
+    close(half.tangent_at(1.0).dist(t), 0.0, 1e-9);
+    // The free side decides which way the arc curls.
+    let below = lead_in(&lead, s, t, v(0.0, -1.0)).unwrap();
+    assert!((below.start() - s).dot(v(0.0, -1.0)) > 0.0, "{:?}", below.start());
+}
+
+#[test]
+fn tangent_and_perpendicular_leads_run_in_line_and_square_to_the_contour() {
+    let (s, t, f) = (v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0));
+    let tangent = lead_in(&Lead::Tangent { length: 4.0 }, s, t, f).unwrap();
+    close(tangent.length(), 4.0, 1e-12);
+    close(tangent.start().dist(v(-4.0, 0.0)), 0.0, 1e-9);
+    close(tangent.tangent_at(1.0).dist(t), 0.0, 1e-9);
+    let square = lead_in(&Lead::Perpendicular { length: 4.0 }, s, t, f).unwrap();
+    close(square.start().dist(v(0.0, 4.0)), 0.0, 1e-9);
+    assert!((square.start() - s).dot(f) > 0.0);
+    let out = lead_out(&Lead::Perpendicular { length: 4.0 }, s, t, f).unwrap();
+    close(out.end().dist(v(0.0, 4.0)), 0.0, 1e-9);
+    // Bad leads are refused.
+    let bad = [
+        Lead::Arc { radius: 0.0, sweep: FRAC_PI_2 },
+        Lead::Arc { radius: 1.0, sweep: 0.0 },
+        Lead::Arc { radius: 1.0, sweep: PI + 0.1 },
+        Lead::Arc { radius: f64::NAN, sweep: FRAC_PI_2 },
+        Lead::Tangent { length: -1.0 },
+        Lead::Perpendicular { length: f64::INFINITY },
+    ];
+    for lead in bad {
+        assert!(lead.validate().is_err(), "{lead:?}");
+    }
+    assert!(Lead::Tangent { length: 2.0 }.validate().is_ok());
+    assert!(Leads { overlap: -1.0, ..Leads::default() }.validate().is_err());
+    assert!(Leads::default().is_direct());
+}
+
+#[test]
+fn contour_leads_cut_from_and_to_the_free_side_without_touching_the_part() {
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let c = cut(0.0, -3.0, 3.0);
+    let params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let lead = Lead::Arc { radius: 3.0, sweep: FRAC_PI_2 };
+    let leads = Leads { lead_in: lead, lead_out: lead, overlap: 1.0 };
+    let path = contour_with(&regions, &tool(6.0), &params, &leads, &c, None).unwrap();
+    verify(&path, &c.heights).unwrap();
+    assert!(path.moves.iter().any(|m| matches!(m, Move::Arc { .. })), "the arcs stay arcs");
+    // Everything cut at depth keeps the tool's edge off the part: the leads come from outside.
+    for p in cutting_points(&path, 0.0) {
+        let outside = (p.x.clamp(0.0, 40.0) - p.x).hypot(p.y.clamp(0.0, 30.0) - p.y);
+        assert!(outside >= 3.0 - 1e-6, "{p:?} is {outside} mm from the part");
+    }
+    // The last move of the pass is the lead-out's end, farther out than the contour it left.
+    let last_cut = path.moves.iter().rev().find_map(|m| match m {
+        Move::Arc { to, .. } | Move::Feed { to, .. } => Some(*to),
+        _ => None,
+    });
+    assert!(last_cut.is_some_and(|p| (p.x.clamp(0.0, 40.0) - p.x).hypot(p.y.clamp(0.0, 30.0) - p.y) > 3.0 + 1e-6));
+    // The overlap runs on past the start, so the pass is longer than the loop alone.
+    let plain = Leads { lead_in: lead, lead_out: lead, overlap: 0.0 };
+    let shorter = contour_with(&regions, &tool(6.0), &params, &plain, &c, None).unwrap();
+    close(path.stats().cut_length - shorter.stats().cut_length, 1.0, 1e-6);
+}
+
+#[test]
+fn a_lead_that_would_cut_into_the_part_is_refused() {
+    let c = cut(0.0, -3.0, 3.0);
+    let inside = ContourParams { side: Side::Inside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    // A 10 mm opening with the loop 3 mm in from its walls leaves 2 mm to the centre: a 6 mm
+    // lead towards the middle runs the tool's edge into the far wall.
+    let small = [rect(0.0, 0.0, 10.0, 10.0)];
+    let leads = Leads { lead_in: Lead::Perpendicular { length: 6.0 }, ..Leads::default() };
+    let err = contour_with(&small, &tool(6.0), &inside, &leads, &c, None).unwrap_err();
+    assert!(format!("{err}").contains("the lead-in would cut into the part"), "{err}");
+    // The lead-out is checked the same way.
+    let leads = Leads { lead_out: Lead::Perpendicular { length: 6.0 }, ..Leads::default() };
+    let err = contour_with(&small, &tool(6.0), &inside, &leads, &c, None).unwrap_err();
+    assert!(format!("{err}").contains("the lead-out would cut into the part"), "{err}");
+    // A roomy opening takes the same lead.
+    let roomy = [rect(0.0, 0.0, 60.0, 60.0)];
+    let leads = Leads { lead_in: Lead::Perpendicular { length: 6.0 }, ..Leads::default() };
+    assert!(contour_with(&roomy, &tool(6.0), &inside, &leads, &c, None).is_ok());
+}
+
+#[test]
+fn an_open_l_path_offsets_to_each_side_round_its_corners() {
+    let l = open(&[(0.0, 0.0), (30.0, 0.0), (30.0, 20.0)]);
+    // Left: the corner closes towards the tool, so the offset lines are trimmed to their crossing.
+    let left = crate::open::offset_path(&l, &open_params(OpenSide::Left, false, 0.0, 0.0), 3.0).unwrap();
+    close(length(&left), 27.0 + 17.0, 1e-9);
+    close(left.first().map_or(0.0, |p| p.start().dist(v(0.0, 3.0))), 0.0, 1e-9);
+    close(left.last().map_or(0.0, |p| p.end().dist(v(27.0, 20.0))), 0.0, 1e-9);
+    // Right: the corner opens away from the tool, so an arc of the tool's radius goes round it.
+    let right = crate::open::offset_path(&l, &open_params(OpenSide::Right, false, 0.0, 0.0), 3.0).unwrap();
+    close(length(&right), 30.0 + 3.0 * FRAC_PI_2 + 20.0, 1e-9);
+    assert!(right.iter().any(|p| matches!(p, Piece::Arc { .. })), "the corner is an arc");
+    // On the path itself; the extensions run on along the first and last tangents.
+    let on = crate::open::offset_path(&l, &open_params(OpenSide::On, false, 5.0, 2.0), 3.0).unwrap();
+    close(length(&on), 30.0 + 20.0 + 7.0, 1e-9);
+    close(on.first().map_or(f64::NAN, |p| p.start().dist(v(-5.0, 0.0))), 0.0, 1e-9);
+    close(on.last().map_or(f64::NAN, |p| p.end().dist(v(30.0, 22.0))), 0.0, 1e-9);
+    // Reversed, the tool cuts the other way, so the same side sees the other corners.
+    let reversed_left = crate::open::offset_path(&l, &open_params(OpenSide::Left, true, 0.0, 0.0), 3.0).unwrap();
+    close(length(&reversed_left), 20.0 + 3.0 * FRAC_PI_2 + 30.0, 1e-9);
+    assert!(reversed_left.iter().any(|p| matches!(p, Piece::Arc { .. })));
+    // Stock to leave widens the offset.
+    let stock =
+        crate::open::offset_path(&l, &OpenContourParams { stock_to_leave: 2.0, ..open_params(OpenSide::Left, false, 0.0, 0.0) }, 3.0).unwrap();
+    close(stock.first().map_or(0.0, |p| p.start().dist(v(0.0, 5.0))), 0.0, 1e-9);
+}
+
+#[test]
+fn an_open_path_that_the_tool_cannot_follow_is_refused() {
+    let c = cut(0.0, -3.0, 3.0);
+    let params = open_params(OpenSide::Left, false, 0.0, 0.0);
+    // An arc tighter than the tool's radius.
+    let tight = OpenPath { segs: vec![Seg2::Arc { center: v(0.0, 0.0), radius: 2.0, start: 0.0, sweep: FRAC_PI_2 }] };
+    let err = contour_open(&[tight], &tool(6.0), &params, &Leads::default(), &c).unwrap_err();
+    assert!(format!("{err}").contains("the tool does not fit the open contour"), "{err}");
+    // Segments that do not join end to end.
+    let broken = OpenPath { segs: vec![Seg2::Line { a: v(0.0, 0.0), b: v(10.0, 0.0) }, Seg2::Line { a: v(12.0, 0.0), b: v(12.0, 10.0) }] };
+    assert!(contour_open(&[broken], &tool(3.0), &params, &Leads::default(), &c).is_err());
+    // A chain that closes belongs to the regions.
+    let closed = open(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 0.0)]);
+    assert!(contour_open(&[closed], &tool(3.0), &params, &Leads::default(), &c).is_err());
+    // Bad parameters are refused, not panicked on.
+    assert!(
+        contour_open(&[open(&[(0.0, 0.0), (10.0, 0.0)])], &tool(3.0), &open_params(OpenSide::On, false, -1.0, 0.0), &Leads::default(), &c).is_err()
+    );
+    assert!(contour_open(&[], &tool(3.0), &params, &Leads::default(), &c).is_err());
+}
+
+#[test]
+fn an_open_contour_cuts_every_depth_pass_the_same_way() {
+    let l = open(&[(0.0, 0.0), (30.0, 0.0), (30.0, 20.0)]);
+    let c = cut(0.0, -6.0, 3.0);
+    let params = open_params(OpenSide::Left, false, 1.0, 1.0);
+    let lead = Lead::Arc { radius: 3.0, sweep: FRAC_PI_2 };
+    let leads = Leads { lead_in: lead, lead_out: lead, overlap: 0.0 };
+    let path = contour_open(&[l], &tool(6.0), &params, &leads, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let at = |z: f64| {
+        path.points(0.005).into_iter().filter(move |(p, cutting)| *cutting && (p.z - z).abs() < 1e-9).map(|(p, _)| (p.x, p.y)).collect::<Vec<_>>()
+    };
+    let (first, second) = (at(-3.0), at(-6.0));
+    assert!(first.len() > 5, "{first:?}");
+    assert_eq!(first.len(), second.len(), "both passes run the same path");
+    for (a, b) in first.iter().zip(&second) {
+        close(a.0, b.0, 1e-6);
+        close(a.1, b.1, 1e-6);
+    }
+    // Between the passes the tool goes up to the retract height and back to where it plunges.
+    let retracts = path.moves.iter().filter(|m| matches!(m, Move::Rapid { to } if (to.z - c.heights.retract).abs() < 1e-9)).count();
+    assert!(retracts >= 2, "{retracts} moves at the retract height");
+    // The pass is longer than the path alone: four quarter-turn leads (in and out, two passes)
+    // are cut too.
+    let bare = contour_open(&[open(&[(0.0, 0.0), (30.0, 0.0), (30.0, 20.0)])], &tool(6.0), &params, &Leads::default(), &c).unwrap();
+    close(path.stats().cut_length - bare.stats().cut_length, 4.0 * FRAC_PI_2 * 3.0, 1e-6);
+}
+
+#[test]
+fn an_open_contour_keeps_arcs_as_arcs_and_reads_back() {
+    let path = OpenPath {
+        segs: vec![
+            Seg2::Line { a: v(0.0, 0.0), b: v(20.0, 0.0) },
+            Seg2::Arc { center: v(20.0, 10.0), radius: 10.0, start: -FRAC_PI_2, sweep: FRAC_PI_2 },
+        ],
+    };
+    let c = cut(0.0, -3.0, 3.0);
+    let params = open_params(OpenSide::Right, false, 0.0, 0.0);
+    let toolpath = contour_open(&[path], &tool(6.0), &params, &Leads::default(), &c).unwrap();
+    verify(&toolpath, &c.heights).unwrap();
+    assert!(toolpath.moves.iter().any(|m| matches!(m, Move::Arc { .. })), "the arc came out as an arc");
+    let program = Program {
+        name: "Open".into(),
+        operations: vec![Operation { name: "Open".into(), tool: tool(6.0), spindle_rpm: 2000.0, coolant: false, path: toolpath }],
+        work_offset: None,
+    };
+    let post = Post::builtin("linuxcnc").unwrap();
+    let text = emit(&program, &post).unwrap();
+    assert!(text.contains("G3") || text.contains("G2"), "an arc move in the program");
+    assert!(readback(&text, &program, &post).unwrap().within());
 }

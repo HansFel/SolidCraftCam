@@ -16,8 +16,10 @@
 mod check;
 mod cutting;
 mod gcode;
+mod lead;
 mod machine;
 mod offset;
+mod open;
 mod ops;
 mod path;
 mod piece;
@@ -28,9 +30,13 @@ mod tool;
 pub use check::verify;
 pub use cutting::{CuttingData, MATERIALS, Speeds, valid_material};
 pub use gcode::{Operation, Program, emit, parse, work_offset_code};
+pub use lead::{Lead, Leads};
 pub use machine::{MAX_MACHINE_NAME, Machine, RotaryAxis, reach};
 pub use offset::offset_regions;
-pub use ops::{ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, drill, face, pocket};
+pub use open::{OpenContourParams, OpenPath, OpenSide};
+pub use ops::{
+    ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, drill, face, pocket,
+};
 pub use path::{Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
