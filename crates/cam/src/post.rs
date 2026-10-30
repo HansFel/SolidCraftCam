@@ -152,15 +152,75 @@ impl Post {
         post
     }
 
+    /// GRBL (public GRBL 1.1 G-code notes): no tool change at all — the operator fits the tool,
+    /// so the program only stops the spindle and says which one — and no tool length offset
+    /// (`G43`); moves are written the same way, peck by peck, so no canned cycle is used.
+    /// Dwells are `G4 P` in seconds, arcs take relative `I` `J` like every GRBL program, and
+    /// work offsets are `G54` to `G59`.
+    pub fn grbl() -> Post {
+        Post {
+            name: "grbl".into(),
+            extension: "nc".into(),
+            units: Units::Mm,
+            decimals: 3,
+            feed_decimals: 1,
+            line_numbers: None,
+            comments: CommentStyle::Parentheses,
+            header: lines(&["G17 G21 G90 G94 {work_offset}"]),
+            // No `M6`: GRBL has no tool changer. The comment tells the operator which tool.
+            tool_change: lines(&["M5", "(change tool T{tool})"]),
+            tool_change_first: true,
+            spindle_on: lines(&["S{rpm} M3"]),
+            spindle_off: lines(&["M5"]),
+            coolant_on: lines(&["M8"]),
+            coolant_off: lines(&["M9"]),
+            footer: lines(&["M30"]),
+            arcs: true,
+            arc_tolerance: 0.005,
+            helical_arcs: true,
+            trailing_decimal: false,
+            two_digit_codes: false,
+            dwell: default_dwell(),
+        }
+    }
+
+    /// Mach3 (public Mach3 G-code reference): tool change `M6 T`, tool length offset `G43 H`,
+    /// cutter and length compensation off, canned cycles cancelled, dwells `G4 P` in seconds.
+    /// Every number carries a decimal point, so `X10` can never read as ten machine steps.
+    pub fn mach3() -> Post {
+        let mut post = Self::rs274();
+        post.name = "mach3".into();
+        post.extension = "tap".into();
+        post.header = lines(&["G17 G21 G40 G49 G80 G90 G94 {work_offset}"]);
+        post.tool_change = lines(&["M5", "M6 T{tool}", "G43 H{tool}"]);
+        post.trailing_decimal = true;
+        post
+    }
+
+    /// Centroid (public Centroid G-code programming manual): `T M6` tool change with `G43 H`,
+    /// compensation off, dwells `G4 P` in seconds, decimals on every number.
+    pub fn centroid() -> Post {
+        let mut post = Self::rs274();
+        post.name = "centroid".into();
+        post.extension = "nc".into();
+        post.header = lines(&["G17 G21 G40 G49 G80 G90 G94 {work_offset}"]);
+        post.tool_change = lines(&["M5", "T{tool} M6", "G43 H{tool}"]);
+        post.trailing_decimal = true;
+        post
+    }
+
     pub fn builtin(name: &str) -> Option<Post> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "rs274" => Some(Post::rs274()),
+            "centroid" => Some(Post::centroid()),
+            "grbl" => Some(Post::grbl()),
             "linuxcnc" => Some(Post::linuxcnc()),
+            "mach3" => Some(Post::mach3()),
+            "rs274" => Some(Post::rs274()),
             _ => None,
         }
     }
 
-    pub const BUILTIN: &'static [&'static str] = &["linuxcnc", "rs274"];
+    pub const BUILTIN: &'static [&'static str] = &["centroid", "grbl", "linuxcnc", "mach3", "rs274"];
 
     /// Whether the post writes the work offset (a `{work_offset}` in its header or tool change).
     pub fn writes_work_offset(&self) -> bool {

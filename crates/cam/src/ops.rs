@@ -12,6 +12,7 @@ use crate::offset::{Shape, reversed};
 use crate::open::{OpenContourParams, OpenPath, side_normal};
 use crate::path::{MAX_MOVES, Move, Toolpath};
 use crate::piece::Piece;
+use crate::tabs::Tabs;
 use crate::tool::{Tool, ToolKind};
 use crate::{CamError, Result, invalid};
 
@@ -300,6 +301,15 @@ impl Builder {
         Ok(())
     }
 
+    /// Up to `z` at a rapid: over a tab the tool must not cut.
+    fn lift_to(&mut self, z: f64) -> Result<()> {
+        let Some(q) = self.pos else { return Err(CamError::Unsafe("a lift before the first positioning move".into())) };
+        if z > q.z + 1e-9 {
+            self.push(Move::Rapid { to: Vec3::new(q.x, q.y, z) })?;
+        }
+        Ok(())
+    }
+
     fn retract(&mut self) -> Result<()> {
         match self.pos {
             Some(q) if q.z < self.h.clearance => self.push(Move::Rapid { to: Vec3::new(q.x, q.y, self.h.clearance) }),
@@ -366,6 +376,22 @@ pub fn contour_from(regions: &[Region2], tool: &Tool, params: &ContourParams, cu
 /// to the free side, along `leads` (a closed loop ramps down along itself only with `Direct`
 /// leads and no overlap).
 pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, leads: &Leads, cut: &Cut, start: Option<Vec2>) -> Result<Toolpath> {
+    contour_with_tabs(regions, tool, params, leads, &Tabs::default(), cut, start)
+}
+
+/// [`contour_with`] also leaving holding tabs (`bridges`) on each loop: on every depth pass that
+/// reaches below a tab's top the tool lifts over the tab and crosses it at that height, so the
+/// part stays attached to the stock until the tabs are cut by hand.
+#[allow(clippy::too_many_arguments)]
+pub fn contour_with_tabs(
+    regions: &[Region2],
+    tool: &Tool,
+    params: &ContourParams,
+    leads: &Leads,
+    tabs: &Tabs,
+    cut: &Cut,
+    start: Option<Vec2>,
+) -> Result<Toolpath> {
     if start.is_some_and(|p| !p.is_finite() || p.x.abs() > MAX_COORD || p.y.abs() > MAX_COORD) {
         return invalid("the start point must be finite and within 1e6 mm");
     }
@@ -373,6 +399,7 @@ pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, le
     mills(tool)?;
     cut.validate()?;
     leads.validate()?;
+    tabs.validate()?;
     check_leave(params.stock_to_leave)?;
     check_ramp(params.ramp_angle)?;
     let shape = Shape::from_regions(regions, params.tolerance)?;
@@ -397,7 +424,7 @@ pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, le
             None => lp,
         };
         let Some(first) = lp.first() else { continue };
-        if leads.is_direct() {
+        if leads.is_direct() && tabs.is_empty() {
             b.travel_to(first.start())?;
             // Down to the last pass (through what it cut), then into the material along the loop.
             b.plunge_to(cut.heights.top)?;
@@ -407,7 +434,7 @@ pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, le
                 b.cut_to(first.start(), z)?;
             }
         } else {
-            cut_loop_with_leads(&mut b, &shape, tool, params, leads, &levels, &lp)?;
+            cut_loop_with_leads(&mut b, &shape, tool, params, leads, tabs, cut, &levels, &lp)?;
         }
         b.retract()?;
     }
@@ -416,13 +443,16 @@ pub fn contour_with(regions: &[Region2], tool: &Tool, params: &ContourParams, le
 
 /// One closed loop, every depth pass with its lead-in and lead-out: plunge at the lead-in's
 /// start, lead in, cut the loop (and the overlap past its start), lead out; then back to the
-/// plunge point for the next pass.
+/// plunge point for the next pass. Passes below the tabs' top lift over each tab.
+#[allow(clippy::too_many_arguments)]
 fn cut_loop_with_leads(
     b: &mut Builder,
     shape: &Shape,
     tool: &Tool,
     params: &ContourParams,
     leads: &Leads,
+    tabs: &Tabs,
+    cut: &Cut,
     levels: &[f64],
     lp: &[Piece],
 ) -> Result<()> {
@@ -448,6 +478,13 @@ fn cut_loop_with_leads(
     {
         return invalid("the lead-out would cut into the part: make it shorter or pick another");
     }
+    // Tabs: their centres along the loop, so the overlap past the start meets the same ones.
+    let loop_len: f64 = lp.iter().map(Piece::length).sum();
+    let run_len: f64 = run.iter().map(Piece::length).sum();
+    let (centres, step) = tabs.centres(loop_len)?;
+    tabs.check_fit(step, cut.heights.top - cut.heights.bottom)?;
+    let windows = tab_windows(&centres, tabs.width, loop_len, run_len);
+    let tab_top = cut.heights.bottom + tabs.height;
     let plunge = in_piece.map_or(s, |piece| piece.start());
     b.travel_to(plunge)?;
     for (k, &z) in levels.iter().enumerate() {
@@ -458,9 +495,75 @@ fn cut_loop_with_leads(
         if let Some(piece) = &in_piece {
             b.cut_piece(piece, z, z)?;
         }
-        b.cut_loop(&run, z)?;
+        if windows.is_empty() || z >= tab_top - 1e-9 {
+            b.cut_loop(&run, z)?;
+        } else {
+            cut_run_with_tabs(b, &run, z, tab_top, &windows)?;
+        }
         if let Some(piece) = &out_piece {
             b.cut_piece(piece, z, z)?;
+        }
+    }
+    Ok(())
+}
+
+/// The tab windows as arc-length spans along the cut, the overlap past the start included.
+fn tab_windows(centres: &[f64], width: f64, loop_len: f64, run_len: f64) -> Vec<(f64, f64)> {
+    if centres.is_empty() {
+        return Vec::new();
+    }
+    let half = width * 0.5;
+    let mut windows: Vec<(f64, f64)> = centres.iter().map(|&c| (c - half, (c + half).min(loop_len))).collect();
+    let overlap = (run_len - loop_len).max(0.0);
+    if overlap > 0.0 {
+        let first_run = windows.clone();
+        for (a, b) in first_run {
+            let (a, b) = (a + loop_len, (b + loop_len).min(run_len));
+            if a < run_len - 1e-9 {
+                windows.push((a, b));
+            }
+        }
+    }
+    windows.sort_by(|x, y| x.0.total_cmp(&y.0));
+    windows
+}
+
+/// Cuts `run` at depth `z`, lifting over each tab window to `tab_top` and crossing it there.
+fn cut_run_with_tabs(b: &mut Builder, run: &[Piece], z: f64, tab_top: f64, windows: &[(f64, f64)]) -> Result<()> {
+    let mut pos = 0.0;
+    for piece in run {
+        let len = piece.length();
+        let (from, to) = (pos, pos + len);
+        pos = to;
+        if !(len > 1e-12) {
+            continue;
+        }
+        let mut cuts = vec![from, to];
+        for &(a, b) in windows {
+            if a > from + 1e-9 && a < to - 1e-9 {
+                cuts.push(a);
+            }
+            if b > from + 1e-9 && b < to - 1e-9 {
+                cuts.push(b);
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|x, y| (*x - *y).abs() <= 1e-9);
+        for pair in cuts.windows(2) {
+            let (s0, s1) = (pair[0], pair[1]);
+            if !(s1 > s0 + 1e-12) {
+                continue;
+            }
+            let (t0, t1) = (((s0 - from) / len).clamp(0.0, 1.0), ((s1 - from) / len).clamp(0.0, 1.0));
+            let part = piece.sub(t0, t1);
+            let mid = (s0 + s1) * 0.5;
+            if windows.iter().any(|&(a, b)| mid > a && mid < b) {
+                b.lift_to(tab_top)?;
+                b.cut_piece(&part, tab_top, tab_top)?;
+                b.plunge_to(z)?;
+            } else {
+                b.cut_piece(&part, z, z)?;
+            }
         }
     }
     Ok(())

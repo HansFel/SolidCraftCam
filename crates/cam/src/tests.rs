@@ -1079,3 +1079,111 @@ fn an_open_contour_keeps_arcs_as_arcs_and_reads_back() {
     assert!(text.contains("G3") || text.contains("G2"), "an arc move in the program");
     assert!(readback(&text, &program, &post).unwrap().within());
 }
+
+#[test]
+fn every_builtin_post_writes_and_reads_back_a_contour_and_a_drill_job() {
+    assert!(Post::BUILTIN.windows(2).all(|w| w[0] < w[1]), "the built-in posts stay sorted");
+    let contour_path = contour(
+        &[rect(0.0, 0.0, 40.0, 30.0)],
+        &tool(6.0),
+        &ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 },
+        &cut(0.0, -4.0, 2.0),
+    )
+    .unwrap();
+    let drill_tool = Tool::new(3, ToolKind::Drill, 5.0, 40.0);
+    let drill_path = drill(&[v(10.0, 15.0), v(25.0, 15.0)], &drill_tool, &cut(0.0, -5.0, 2.0), 0.25).unwrap();
+    let program = Program {
+        name: "Post test".into(),
+        operations: vec![
+            Operation { name: "Contour".into(), tool: tool(6.0), spindle_rpm: 6000.0, coolant: true, path: contour_path },
+            Operation { name: "Drill".into(), tool: drill_tool, spindle_rpm: 3000.0, coolant: false, path: drill_path },
+        ],
+        work_offset: Some(2),
+    };
+    for name in Post::BUILTIN {
+        let post = Post::builtin(name).unwrap();
+        assert_eq!(post.name, *name);
+        post.validate().unwrap();
+        let text = emit(&program, &post).unwrap();
+        let back = readback(&text, &program, &post).unwrap();
+        assert!(back.within(), "{name}: {back:?}");
+        // Every preset writes the offset it was given and the dwell in seconds.
+        assert!(text.contains("G55"), "{name} writes no work offset");
+        assert!(text.lines().filter(|l| l.contains("G4 P0.25")).count() == 2, "{name}: dwells as G4 P in seconds");
+        match *name {
+            "grbl" => {
+                // No tool changer and no tool length offset; the operator is told which tool.
+                assert_eq!(post.extension, "nc");
+                assert!(!text.contains("M6") && !text.contains("G43"), "GRBL has no M6 or G43:\n{text}");
+                assert!(text.contains("(change tool T3)") && text.contains("(change tool T1)"));
+            }
+            "mach3" => {
+                assert_eq!(post.extension, "tap");
+                assert!(text.contains("M6 T3") && text.contains("G43 H3"));
+            }
+            "centroid" => {
+                assert!(text.contains("T3 M6") && text.contains("G43 H3"));
+            }
+            "linuxcnc" => assert!(text.contains("G91.1 G61 G97") && text.contains("T3 M6")),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn tabs_lift_the_tool_over_them_on_the_passes_below_them() {
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let c = cut(0.0, -6.0, 3.0);
+    let params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    // Four tabs 2 mm long, keeping 2 mm of the wall above the -6 mm bottom: their top is at -4.
+    let tabs = Tabs { count: 4, spacing: 0.0, width: 2.0, height: 2.0 };
+    let path = contour_with_tabs(&regions, &tool(6.0), &params, &Leads::default(), &tabs, &c, None).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let lifts = path.moves.iter().filter(|m| matches!(m, Move::Rapid { to } if (to.z + 4.0).abs() < 1e-9)).count();
+    assert_eq!(lifts, 4, "one lift over each tab on the lower pass");
+    // The upper pass is above the tabs' top, so it cuts the whole loop at -3.
+    let loop_len = 140.0 + 6.0 * PI;
+    // Length cut at `z`, counting only moves that stay at that height (the lift over a tab is not
+    // part of it).
+    let cut_at = |z: f64| {
+        let pts = path.points(0.001);
+        pts.windows(2)
+            .filter(|w| (w[0].0.z - z).abs() < 1e-9 && (w[1].0.z - z).abs() < 1e-9)
+            .map(|w| (w[1].0.x - w[0].0.x).hypot(w[1].0.y - w[0].0.y))
+            .sum::<f64>()
+    };
+    close(cut_at(-3.0), loop_len, 0.01);
+    // The lower pass leaves the four 2 mm tabs uncut below their top.
+    close(cut_at(-6.0), loop_len - 4.0 * 2.0, 0.01);
+    // Each tab is crossed at its top and the tool goes back down behind it.
+    close(cut_at(-4.0), 4.0 * 2.0, 0.01);
+    // Spacing instead of a count: a 158.8 mm loop takes 7 tabs 20 mm apart.
+    let spaced = Tabs { count: 0, spacing: 20.0, width: 2.0, height: 2.0 };
+    let path = contour_with_tabs(&regions, &tool(6.0), &params, &Leads::default(), &spaced, &c, None).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let lifts = path.moves.iter().filter(|m| matches!(m, Move::Rapid { to } if (to.z + 4.0).abs() < 1e-9)).count();
+    assert_eq!(lifts, 7);
+}
+
+#[test]
+fn tabs_that_do_not_fit_are_refused() {
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let c = cut(0.0, -6.0, 3.0);
+    let params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let run = |tabs: Tabs| contour_with_tabs(&regions, &tool(6.0), &params, &Leads::default(), &tabs, &c, None);
+    // Wider than the gap between them.
+    let err = run(Tabs { count: 200, spacing: 0.0, width: 2.0, height: 2.0 }).unwrap_err();
+    assert!(format!("{err}").contains("the tab width must be at most"), "{err}");
+    // Taller than the cut.
+    let err = run(Tabs { count: 4, spacing: 0.0, width: 2.0, height: 6.0 }).unwrap_err();
+    assert!(format!("{err}").contains("the tab height must be less than the depth"), "{err}");
+    // Nothing to leave behind.
+    assert!(run(Tabs { count: 4, spacing: 0.0, width: 0.0, height: 2.0 }).is_err());
+    assert!(run(Tabs { count: 4, spacing: 0.0, width: 2.0, height: 0.0 }).is_err());
+    assert!(run(Tabs { count: 4, spacing: 0.0, width: f64::NAN, height: 2.0 }).is_err());
+    // No tabs at all is fine, by count or by spacing.
+    assert!(run(Tabs::default()).is_ok());
+    assert!(run(Tabs { count: 0, spacing: 0.0, width: 2.0, height: 2.0 }).is_ok());
+    assert!(Tabs { count: 0, spacing: 0.0, width: 2.0, height: 2.0 }.is_empty());
+    assert!(!Tabs { count: 0, spacing: 20.0, width: 2.0, height: 2.0 }.is_empty());
+}

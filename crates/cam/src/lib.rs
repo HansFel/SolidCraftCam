@@ -25,6 +25,7 @@ mod path;
 mod piece;
 mod post;
 mod readback;
+mod tabs;
 mod tool;
 
 pub use check::verify;
@@ -35,11 +36,13 @@ pub use machine::{MAX_MACHINE_NAME, Machine, RotaryAxis, reach};
 pub use offset::offset_regions;
 pub use open::{OpenContourParams, OpenPath, OpenSide};
 pub use ops::{
-    ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, drill, face, pocket,
+    ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, contour_with_tabs, drill,
+    face, pocket,
 };
 pub use path::{Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
+pub use tabs::Tabs;
 pub use tool::{Tool, ToolKind};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
