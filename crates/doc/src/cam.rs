@@ -551,6 +551,8 @@ pub enum CamGeometry {
     },
     /// Outlines of planar body faces (inner loops are islands).
     Faces { faces: Vec<CamFaceRef> },
+    /// Picked body edges joined end to end into closed contours, seen along the tool axis.
+    Edges { edges: Vec<CamEdgeRef> },
     /// Explicit polylines in work XY (tests and commands that do not name a sketch).
     Polygons { regions: Vec<PolygonRegion> },
     /// Hole centres in setup work XY, used only by drill operations.
@@ -571,6 +573,13 @@ pub struct CamFaceRef {
     /// absent: the whole face with its holes as islands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contour_at: Option<[f64; 3]>,
+}
+
+/// A body edge: the one on `body` nearest the model point `at`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamEdgeRef {
+    pub body: String,
+    pub at: [f64; 3],
 }
 
 impl CamFaceRef {
@@ -599,6 +608,20 @@ impl CamGeometry {
                     }
                     if f.at.iter().chain(f.contour_at.iter().flatten()).any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                         return Err(DocError::Invalid("face point must be finite and within 1e6 mm".into()));
+                    }
+                }
+                Ok(())
+            }
+            CamGeometry::Edges { edges } => {
+                if edges.is_empty() || edges.len() > MAX_REGIONS {
+                    return Err(DocError::Invalid(format!("an operation needs 1 to {MAX_REGIONS} edges")));
+                }
+                for e in edges {
+                    if e.body.is_empty() || e.body.len() > 128 {
+                        return Err(DocError::Invalid("each edge needs a body of at most 128 characters".into()));
+                    }
+                    if e.at.iter().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
+                        return Err(DocError::Invalid("edge point must be finite and within 1e6 mm".into()));
                     }
                 }
                 Ok(())
@@ -651,6 +674,80 @@ pub struct CamContourParams {
     /// Where each contour starts: its point nearest this model point. Absent: at a corner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<[f64; 3]>,
+    /// How the tool gets onto each contour, and off it again.
+    #[serde(default, skip_serializing_if = "CamLead::is_direct")]
+    pub lead_in: CamLead,
+    #[serde(default, skip_serializing_if = "CamLead::is_direct")]
+    pub lead_out: CamLead,
+    /// Closed contours: how far the cut runs on past its start before the lead-out.
+    #[serde(default = "zero_mm", skip_serializing_if = "is_zero_mm")]
+    pub overlap: Expr,
+    /// Open contours (an edge chain that does not close): the side the tool rides, seen along the
+    /// direction it cuts.
+    #[serde(default, skip_serializing_if = "CamOpenSide::is_left")]
+    pub open_side: CamOpenSide,
+    /// Open contours: cut from the chain's end to its start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reverse: bool,
+    /// Open contours: run on along the tangent this far before the start and after the end.
+    #[serde(default = "zero_mm", skip_serializing_if = "is_zero_mm")]
+    pub extend_start: Expr,
+    #[serde(default = "zero_mm", skip_serializing_if = "is_zero_mm")]
+    pub extend_end: Expr,
+}
+
+/// How the tool gets onto, or off, a contour.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CamLead {
+    /// Straight down on the contour (a closed one ramps along itself at `ramp_angle`), straight
+    /// up where the cut ends.
+    #[default]
+    Direct,
+    /// An arc tangent to the contour, from (to) the side the tool rides on.
+    Arc {
+        radius: Expr,
+        #[serde(default = "quarter_turn")]
+        sweep: Expr,
+    },
+    /// A straight line in line with the contour where it starts (ends).
+    Tangent { length: Expr },
+    /// A straight line square to the contour, from (to) the side the tool rides on.
+    Perpendicular { length: Expr },
+}
+
+impl CamLead {
+    pub fn is_direct(&self) -> bool {
+        matches!(self, CamLead::Direct)
+    }
+
+    fn validate(&self, label: &str) -> Result<()> {
+        match self {
+            CamLead::Direct => Ok(()),
+            CamLead::Arc { radius, sweep } => {
+                check_expr(radius, label)?;
+                check_expr(sweep, label)
+            }
+            CamLead::Tangent { length } | CamLead::Perpendicular { length } => check_expr(length, label),
+        }
+    }
+}
+
+/// Which side of an open contour the tool rides, seen along the direction it cuts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CamOpenSide {
+    #[default]
+    Left,
+    Right,
+    /// Tool centre on the contour.
+    On,
+}
+
+impl CamOpenSide {
+    pub fn is_left(&self) -> bool {
+        *self == CamOpenSide::Left
+    }
 }
 
 /// Pocket settings held as expressions.
@@ -719,6 +816,10 @@ fn tol_mm() -> Expr {
 
 fn zero_deg() -> Expr {
     Expr::new("0 deg")
+}
+
+fn quarter_turn() -> Expr {
+    Expr::new("90 deg")
 }
 
 fn clearance_mm() -> Expr {
@@ -885,6 +986,11 @@ impl CamOperation {
                 check_expr(&params.floor_stock, "floor_stock")?;
                 check_expr(&params.tolerance, "tolerance")?;
                 check_expr(&params.ramp_angle, "ramp_angle")?;
+                params.lead_in.validate("lead_in")?;
+                params.lead_out.validate("lead_out")?;
+                check_expr(&params.overlap, "overlap")?;
+                check_expr(&params.extend_start, "extend_start")?;
+                check_expr(&params.extend_end, "extend_end")?;
                 if params.start.iter().flatten().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                     return Err(DocError::Invalid("the start point must be finite and within 1e6 mm".into()));
                 }
@@ -927,6 +1033,13 @@ pub fn default_contour_params() -> CamContourParams {
         tolerance: tol_mm(),
         ramp_angle: zero_deg(),
         start: None,
+        lead_in: CamLead::Direct,
+        lead_out: CamLead::Direct,
+        overlap: zero_mm(),
+        open_side: CamOpenSide::Left,
+        reverse: false,
+        extend_start: zero_mm(),
+        extend_end: zero_mm(),
     }
 }
 

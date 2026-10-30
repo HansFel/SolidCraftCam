@@ -147,13 +147,16 @@ Project
 | Pocket | Done |
 | Drill (peck, dwell), at picked round edges or every round hole of a picked face | Done |
 | Facing of the stock in passes, with overrun past its edges | Done |
+| Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
 | Slot (along a line or arc) | Planned |
 | Chamfer and deburr along edges (chamfer cutter) | Planned |
 | Bore and helical bore | Planned |
 | Thread milling and tapping (rigid or floating) | Planned |
 | Engraving along sketch text and curves | Planned |
 | Tabs (bridges) on through contours | Planned |
-| Lead-in and lead-out arcs | Planned |
+| Lead-in and lead-out: tangent arc, tangent line, square line or direct/ramp, with overlap | Done |
+| Open contours along an edge chain: side, direction, run-on at both ends | Done |
+| Edge chains: picked edges joined into contours, and a chain found in its plane from one edge | Done |
 | Final depth picked on the model (a face, edge or corner), then free to change | Done |
 | Start depth picked the same way, the stock's top by default | Done |
 | Stepdown and stepover in mm or % of the tool diameter (stepdown default one diameter) | Done |

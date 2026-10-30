@@ -5,13 +5,13 @@
 
 use serde_json::{Value, json};
 use solidcraft_cam::{
-    ContourParams, Cut, FaceParams, Feeds, Heights, Machine, Operation, PocketParams, Post, Program, Side, Tool, ToolKind, contour_from, drill, emit,
-    face, pocket, readback,
+    ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
+    Program, Side, Tool, ToolKind, contour_open, contour_with, drill, emit, face, pocket, readback,
 };
 use solidcraft_doc::cam::{
-    BoxAxisRef, CamContourParams, CamCut, CamFaceRef, CamGeometry, CamOperation, CamPocketParams, CamSettings, CamSetup, CamSide, CamStock,
-    MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode, WorkCoordinateSystem,
-    default_contour_params, default_cut, default_face_params, default_pocket_params,
+    BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
+    CamSetup, CamSide, CamStock, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
+    WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params,
 };
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
@@ -59,6 +59,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.contour", "2D Contour", crate::checked!("cam.op.contour", contour_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?: as solid.extrude; faces?: [{body, name, at?, contour_at?}]; \
          edges?: [{body, at}] (each the contour of a face square to the tool axis through that edge point); \
+         chain?: bool (the picked edges themselves, joined end to end into closed contours seen along the tool axis; \
+         also taken when an edge bounds no such face); \
          geometry?: a step's stored geometry as cam.list shows it (an edit hands it back); \
          start?: [x,y,z] model point each contour starts nearest; or outer: [[x,y],…] (or regions: [{outer, holes?}]); holes?: [[[x,y],…]]; \
          side?: auto|outside|inside|on (default auto: around an outline, inside a picked hole; outside and inside are of each \
@@ -72,10 +74,12 @@ pub static COMMANDS: &[CommandSpec] = &[
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
-        "setup; name; tool (number); outer?: [[x,y],…] a rectangle in work XY (default: the setup's stock outline); \
+        "setup; name; tool (number); faces?/edges?: a picked face, whose outline's box is faced (the base faces the \
+         whole footprint); outer?: [[x,y],…] a rectangle in work XY (default: the setup's stock outline); \
          stepover? (default 70 % of the tool diameter); overrun?: how far the tool's edge runs past the stock (default 2 mm); \
-         top? (default the stock's top); bottom (the faced height); stepdown? (default the tool diameter); \
-         clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
+         bottom? (the finished height; default part zero); allowance?: the material \
+         above it, where facing starts (default: up from the stock's top, or top?); stepdown? (default the tool \
+         diameter); clearance?/retract? (raised above the start when lower); feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.remove", "Remove CAM Operation", crate::checked!("cam.op.remove", delete_op)).contract(&crate::schema::TypedContract::<crate::schema::cam::RemoveParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>).icon("delete").params("setup; name"),
     CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("hole")
@@ -105,6 +109,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "tool; material?: group (aluminium, steel, stainless, brass, plastic, wood or the tool's own); setup?: takes its material and \
              highest spindle speed (held to its machine's range too) → spindle_rpm, feed, plunge_feed, stepdown, stepover from n = vc·1000/(π·D), vf = n·z·fz",
+        ),
+    CommandSpec::new("cam.edges.chain", "Find Edge Chain", crate::checked!("cam.edges.chain", chain_cmd))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::ChainParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::ChainResult>)
+        .icon("cut")
+        .noundo()
+        .params(
+            "setup; edges: [{body, at}] (picked edges of one body) → edges: [{body, at, index}], the edges joined to them end to end \
+             in their plane (square to the tool axis for one straight edge square to it), in order; closed: whether the chain comes round",
         ),
     CommandSpec::new("cam.list", "List CAM", crate::checked!("cam.list", list_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ListParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ListResult>).icon("list").noundo().params("→ tools, machines, setups (with operations) and saved posts"),
 ];
@@ -593,6 +606,28 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
             let v = vec3(v).ok_or_else(|| bad(cmd, "`start` must be [x, y, z]"))?;
             params.start = Some([v.x, v.y, v.z]);
         }
+        if let Some(v) = p.get("lead_in") {
+            params.lead_in = lead_param(cmd, v, "lead_in")?;
+        }
+        if let Some(v) = p.get("lead_out") {
+            params.lead_out = lead_param(cmd, v, "lead_out")?;
+        }
+        for (key, slot) in [("overlap", &mut params.overlap), ("extend_start", &mut params.extend_start), ("extend_end", &mut params.extend_end)] {
+            if let Some(v) = expr(p, key) {
+                *slot = v;
+            }
+        }
+        if let Some(side) = str_(p, "open_side") {
+            params.open_side = match side {
+                "left" => CamOpenSide::Left,
+                "right" => CamOpenSide::Right,
+                "on" => CamOpenSide::On,
+                _ => return Err(bad(cmd, "`open_side` must be left, right or on")),
+            };
+        }
+        if let Some(r) = bool_(p, "reverse") {
+            params.reverse = r;
+        }
         CamOperation::Contour { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     } else {
         let stepover = match expr(p, "stepover") {
@@ -644,25 +679,50 @@ pub(super) fn face_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         num(p, "tool").filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u32).ok_or_else(|| bad(cmd, "`tool` must be a tool number"))?;
     let tool = s.doc.cam.tool(tool_n).cloned().ok_or_else(|| bad(cmd, format!("no tool {tool_n} (cam.tool.define first)")))?;
     let setup = s.doc.cam.setup(&setup_name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
-    let geometry = if p.get("outer").is_some() || p.get("regions").is_some() {
+    let picked = ["faces", "edges", "sketch", "geometry"].iter().any(|k| p.get(*k).is_some());
+    let geometry = if picked {
+        geometry_param(s, cmd, p)?
+    } else if p.get("outer").is_some() || p.get("regions").is_some() {
         CamGeometry::Polygons { regions: regions_param(cmd, p)? }
     } else {
         CamGeometry::Stock
     };
-    let mut cut = cut_param(cmd, p, &tool)?;
-    // Unset, facing starts at the stock's top, with the retract and clearance heights above it.
-    if p.get("top").is_none() && p.get("cut").is_none() {
-        let frame = work_frame(&setup).map_err(|e| bad(cmd, e))?;
-        let (_, hi) = stock_extent(s, &setup, &frame).map_err(|e| bad(cmd, e))?;
-        let top = (hi.z * 1000.0).round() / 1000.0;
-        cut.top = Expr::new(format!("{top} mm"));
-        if p.get("retract").is_none() {
-            cut.retract = Expr::new(format!("{} mm", top + 2.0));
-        }
-        if p.get("clearance").is_none() {
-            cut.clearance = Expr::new(format!("{} mm", top + 10.0));
-        }
+    let frame = work_frame(&setup).map_err(|e| bad(cmd, e))?;
+    let round = |v: f64| (v * 1000.0).round() / 1000.0;
+    // The finished height: `bottom`, else part zero. A picked face only says where to face
+    // (the base gives the whole footprint), not how deep.
+    let mut p = p.clone();
+    if p.get("bottom").is_none() && p.get("cut").is_none() {
+        p["bottom"] = json!(0.0);
     }
+    let mut cut = cut_param(cmd, &p, &tool)?;
+    // Where cutting starts: `allowance` above the finished height, else `top`, else the stock's top.
+    let top = match (num(&p, "allowance"), p.get("top").is_some() || p.get("cut").is_some()) {
+        (Some(allowance), _) => {
+            if !allowance.is_finite() || allowance <= 0.0 || allowance > 1.0e4 {
+                return Err(bad(cmd, "`allowance` must be more than 0 mm"));
+            }
+            let bottom = num(&p, "bottom").ok_or_else(|| bad(cmd, "with `allowance`, `bottom` must be a number"))?;
+            Some(round(bottom + allowance))
+        }
+        (None, true) => None,
+        (None, false) => {
+            let (_, hi) = stock_extent(s, &setup, &frame).map_err(|e| bad(cmd, e))?;
+            Some(round(hi.z))
+        }
+    };
+    if let Some(top) = top {
+        if num(&p, "bottom").is_some_and(|b| b >= top) {
+            return Err(bad(cmd, "nothing to face: the finished height is at or above the start; give an allowance above it"));
+        }
+        cut.top = Expr::new(format!("{top} mm"));
+        // The safety heights stay above the start: given ones below it are raised.
+        let retract = num(&p, "retract").filter(|r| *r > top).unwrap_or(round(top + 2.0));
+        let clearance = num(&p, "clearance").filter(|c| *c >= retract).unwrap_or(round(retract.max(top + 10.0)));
+        cut.retract = Expr::new(format!("{retract} mm"));
+        cut.clearance = Expr::new(format!("{clearance} mm"));
+    }
+    let p = &p;
     let stepover = expr(p, "stepover").unwrap_or_else(|| Expr::new(format!("{} mm", tool.diameter * 0.7)));
     let mut params = default_face_params(stepover);
     if let Some(v) = expr(p, "overrun") {
@@ -689,6 +749,18 @@ pub(super) fn face_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         setup.operations.push(op);
     }
     Ok(json!({"setup": setup_name, "operation": name}))
+}
+
+/// A lead: `{kind: direct|arc|tangent|perpendicular, radius?, sweep?, length?}`.
+fn lead_param(cmd: &str, v: &Value, key: &str) -> Result<CamLead> {
+    let need = |k: &str| expr(v, k).ok_or_else(|| bad(cmd, format!("`{key}` needs `{k}`")));
+    match v.get("kind").and_then(Value::as_str) {
+        Some("direct") => Ok(CamLead::Direct),
+        Some("arc") => Ok(CamLead::Arc { radius: need("radius")?, sweep: expr(v, "sweep").unwrap_or_else(|| Expr::new("90 deg")) }),
+        Some("tangent") => Ok(CamLead::Tangent { length: need("length")? }),
+        Some("perpendicular") => Ok(CamLead::Perpendicular { length: need("length")? }),
+        _ => Err(bad(cmd, format!("`{key}` must be {{kind: direct|arc|tangent|perpendicular, ...}}"))),
+    }
 }
 
 fn parse_side(cmd: &str, side: &str) -> Result<CamSide> {
@@ -724,13 +796,37 @@ fn geometry_param(s: &Session, cmd: &str, p: &Value) -> Result<CamGeometry> {
         if arr.is_empty() && edges.is_empty() {
             return Err(bad(cmd, "`faces` and `edges` are empty"));
         }
-        let mut faces = Vec::new();
+        let mut chain = Vec::new();
         for v in edges {
             let body = v.get("body").and_then(Value::as_str).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "each edge needs `body`"))?;
             let at = v.get("at").and_then(vec3).ok_or_else(|| bad(cmd, "each edge needs `at`: [x, y, z]"))?;
-            let setup =
-                str_(p, "setup").and_then(|n| s.doc.cam.setup(n.trim())).ok_or_else(|| bad(cmd, "edges need an existing setup (cam.setup first)"))?;
-            faces.push(edge_face(s, setup, body, at).map_err(|e| bad(cmd, e))?);
+            chain.push(CamEdgeRef { body: body.to_string(), at: [at.x, at.y, at.z] });
+        }
+        let setup =
+            || str_(p, "setup").and_then(|n| s.doc.cam.setup(n.trim())).ok_or_else(|| bad(cmd, "edges need an existing setup (cam.setup first)"));
+        // On request, or when an edge bounds no flat face square to the tool axis, the picked
+        // edges themselves are the contour.
+        let mut faces = Vec::new();
+        let mut loose = bool_(p, "chain").unwrap_or(false);
+        if !loose {
+            for e in &chain {
+                let at = Vec3::new(e.at[0], e.at[1], e.at[2]);
+                match edge_face(s, setup()?, &e.body, at) {
+                    Ok(face) => faces.push(face),
+                    Err(_) if s.model.state().body(&e.body).is_some() => loose = true,
+                    Err(err) => return Err(bad(cmd, err)),
+                }
+            }
+        }
+        if loose && !chain.is_empty() {
+            if !arr.is_empty() {
+                return Err(bad(cmd, "a chain of edges takes no faces: pick edges only, or faces only"));
+            }
+            let geometry = CamGeometry::Edges { edges: chain };
+            geometry.validate().map_err(|e| bad(cmd, e.to_string()))?;
+            let frame = work_frame(setup()?).map_err(|e| bad(cmd, e))?;
+            edge_chain(s, &frame, &edge_refs(&geometry)).map_err(|e| bad(cmd, e))?;
+            return Ok(geometry);
         }
         for v in arr {
             let body = v.get("body").and_then(Value::as_str).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "each face needs `body`"))?;
@@ -1041,8 +1137,49 @@ fn outline(geom: &[LinkGeom]) -> std::result::Result<Region2, String> {
     if open.len() > 20_000 {
         return Err("the face has too many edges".into());
     }
+    loops.extend(join_loops(open).map_err(|_| "the face's edges do not form closed loops".to_string())?);
+    let outer = loops
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.signed_area().abs().total_cmp(&b.1.signed_area().abs()))
+        .map(|(i, _)| i)
+        .ok_or("the face has no outline")?;
+    let outer = loops.remove(outer);
+    Ok(Region2 { outer, holes: loops })
+}
+
+/// Segments joined end to end into closed loops (either way round); else the open end where a
+/// loop stops.
+fn join_loops(open: Vec<Seg2>) -> std::result::Result<Vec<Loop2>, Vec2> {
+    let (loops, chains) = join_chains(open);
+    match chains.first().and_then(|c| c.last()) {
+        Some(seg) => Err(seg.end()),
+        None => Ok(loops),
+    }
+}
+
+/// Segments joined end to end (either way round): the closed loops, and the open chains left
+/// over, each in order from one free end to the other.
+fn join_chains(open: Vec<Seg2>) -> (Vec<Loop2>, Vec<Vec<Seg2>>) {
     const JOIN: f64 = 1e-3;
+    let (mut loops, mut chains) = (Vec::new(), Vec::new());
     let mut used = vec![false; open.len()];
+    // The unused segment meeting `at`, turned to start there.
+    let take = |used: &mut Vec<bool>, at: Vec2| -> Option<Seg2> {
+        let (i, seg) = open.iter().zip(used.iter()).enumerate().filter(|(_, (_, taken))| !**taken).find_map(|(i, (seg, _))| {
+            if seg.start().dist(at) <= JOIN {
+                Some((i, *seg))
+            } else if seg.end().dist(at) <= JOIN {
+                Some((i, seg.reversed()))
+            } else {
+                None
+            }
+        })?;
+        if let Some(flag) = used.get_mut(i) {
+            *flag = true;
+        }
+        Some(seg)
+    };
     for first in 0..open.len() {
         if used.get(first).copied().unwrap_or(true) {
             continue;
@@ -1054,33 +1191,27 @@ fn outline(geom: &[LinkGeom]) -> std::result::Result<Region2, String> {
         let mut chain = vec![seed];
         let origin = seed.start();
         let mut end = seed.end();
-        while end.dist(origin) > JOIN {
-            let next = open.iter().zip(&used).enumerate().filter(|(_, (_, taken))| !**taken).find_map(|(i, (seg, _))| {
-                if seg.start().dist(end) <= JOIN {
-                    Some((i, *seg))
-                } else if seg.end().dist(end) <= JOIN {
-                    Some((i, seg.reversed()))
-                } else {
-                    None
-                }
-            });
-            let Some((i, seg)) = next else { return Err("the face's edges do not form closed loops".into()) };
-            if let Some(flag) = used.get_mut(i) {
-                *flag = true;
-            }
+        let mut closed = end.dist(origin) <= JOIN;
+        while !closed {
+            let Some(seg) = take(&mut used, end) else { break };
             end = seg.end();
             chain.push(seg);
+            closed = end.dist(origin) <= JOIN;
         }
-        loops.push(Loop2 { segs: chain });
+        if closed {
+            loops.push(Loop2 { segs: chain });
+            continue;
+        }
+        // Open: on back from the seed's start too.
+        let mut front = Vec::new();
+        let mut at = origin;
+        while let Some(seg) = take(&mut used, at) {
+            at = seg.end();
+            front.push(seg.reversed());
+        }
+        chains.push(front.into_iter().rev().chain(chain).collect());
     }
-    let outer = loops
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.signed_area().abs().total_cmp(&b.1.signed_area().abs()))
-        .map(|(i, _)| i)
-        .ok_or("the face has no outline")?;
-    let outer = loops.remove(outer);
-    Ok(Region2 { outer, holes: loops })
+    (loops, chains)
 }
 
 /// How far from a contour a point picked on its edge may lie (mm): edges are picked on their
@@ -1145,6 +1276,264 @@ fn face_index_at(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<
         }
     }
     Err(format!("its face on `{body_name}` is gone"))
+}
+
+/// The edge picks of a [`CamGeometry::Edges`] as body names and model points.
+fn edge_refs(geometry: &CamGeometry) -> Vec<(&str, Vec3)> {
+    match geometry {
+        CamGeometry::Edges { edges } => edges.iter().map(|e| (e.body.as_str(), Vec3::new(e.at[0], e.at[1], e.at[2]))).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The closed contours picked edges make, seen along the tool axis in the setup's XY: each
+/// pick takes the body edge nearest it, and the edges are joined end to end. Circles and arcs
+/// square to the tool axis stay arcs.
+fn edge_chain(s: &Session, frame: &WorkFrame, picks: &[(&str, Vec3)]) -> std::result::Result<(Vec<Region2>, Vec<Vec<Seg2>>), String> {
+    let state = s.model.state();
+    let flat = |p: Vec3| {
+        let w = frame.local(p);
+        Vec2::new(w.x, w.y)
+    };
+    let mut taken: Vec<(&str, usize)> = Vec::new();
+    let mut loops: Vec<Loop2> = Vec::new();
+    let mut open: Vec<Seg2> = Vec::new();
+    for &(body_name, at) in picks {
+        let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
+        let mesh = body.mesh();
+        let index = nearest_edge(&mesh.edges, at).ok_or_else(|| format!("no edge of `{body_name}` at the picked point"))?;
+        // A round rim split into pieces is taken whole, as the viewport shows it picked; an
+        // edge picked twice counts once.
+        for index in mesh.circular_rim(index) {
+            if taken.contains(&(body_name, index)) {
+                continue;
+            }
+            taken.push((body_name, index));
+            let pts = mesh.edges.get(index).ok_or("the picked edge is gone")?;
+            if pts.len() > 20_000 || open.len() > 20_000 {
+                return Err("the picked edges have too many points".into());
+            }
+            let tol = (body.body.size() * 1e-6).max(1e-6) * 10.0;
+            let circle = solidcraft_kernel::edge_circle(&body.body, index).filter(|c| {
+                let ends = [pts.first(), pts.last()].into_iter().flatten().all(|p| p.dist(c.start).min(p.dist(c.end)) <= tol);
+                ends && pts.iter().all(|p| (p.dist(c.center) - c.radius).abs() <= tol) && c.axis.dot(frame.z).abs() > 1.0 - 1e-9
+            });
+            match circle {
+                Some(c) if c.angle >= std::f64::consts::TAU - 1e-9 => loops.push(Loop2::circle(flat(c.center), c.radius)),
+                Some(c) => {
+                    let (center, a) = (flat(c.center), flat(c.start));
+                    let sweep = if c.axis.dot(frame.z) > 0.0 { c.angle } else { -c.angle };
+                    open.push(Seg2::Arc { center, radius: c.radius, start: (a - center).angle(), sweep });
+                }
+                None => {
+                    let mut prev: Option<Vec2> = None;
+                    for p in pts.iter().map(|p| flat(*p)) {
+                        match prev {
+                            Some(a) if a.dist(p) <= 1e-9 => continue,
+                            Some(a) => open.push(Seg2::Line { a, b: p }),
+                            None => {}
+                        }
+                        prev = Some(p);
+                    }
+                }
+            }
+        }
+    }
+    let (joined, mut chains) = join_chains(open);
+    // An open chain runs from the first picked edge towards the second.
+    if let [(_, first), (_, second), ..] = picks {
+        let (first, second) = (flat(*first), flat(*second));
+        for chain in &mut chains {
+            let place =
+                |p: Vec2| chain.iter().enumerate().map(|(i, seg)| (i, seg.point_at(seg.closest_param(p)).dist(p))).min_by(|a, b| a.1.total_cmp(&b.1));
+            if let (Some((i, a)), Some((j, b))) = (place(first), place(second))
+                && a <= ON_CONTOUR
+                && b <= ON_CONTOUR
+                && i > j
+            {
+                *chain = chain.iter().rev().map(Seg2::reversed).collect();
+            }
+        }
+    }
+    loops.extend(joined);
+    if loops.iter().any(|lp| lp.signed_area().abs() < 1e-6) {
+        return Err("the picked edges enclose nothing seen along the setup's tool axis".into());
+    }
+    if chains.iter().any(|c| c.iter().map(Seg2::length).sum::<f64>() < 1e-6) {
+        return Err("the picked edges have no length seen along the setup's tool axis".into());
+    }
+    Ok((loops.into_iter().map(|lp| Region2 { outer: lp.ccw(), holes: Vec::new() }).collect(), chains))
+}
+
+/// Where an open chain stops, for a message: its end, in work XY and in the model.
+fn open_end_note(frame: &WorkFrame, chains: &[Vec<Seg2>]) -> String {
+    match chains.first().and_then(|c| c.last()) {
+        Some(seg) => {
+            let gap = seg.end();
+            let at = frame.model(Vec3::new(gap.x, gap.y, 0.0));
+            format!(": it is open near X {:.2} Y {:.2} (model {:.2}, {:.2}, {:.2})", gap.x, gap.y, at.x, at.y, at.z)
+        }
+        None => String::new(),
+    }
+}
+
+/// The tessellated edge nearest `at`, if one passes within [`ON_CONTOUR`].
+fn nearest_edge(edges: &[Vec<Vec3>], at: Vec3) -> Option<usize> {
+    let near = |pts: &[Vec3]| {
+        pts.windows(2)
+            .filter_map(|w| match w {
+                [a, b] => Some(seg3_dist(*a, *b, at)),
+                _ => None,
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    edges.iter().enumerate().map(|(i, pts)| (i, near(pts))).filter(|(_, d)| *d <= ON_CONTOUR).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+}
+
+/// The normal of the plane through `pts`. Points on one straight line give the tool axis when
+/// the line is square to it; otherwise there is no plane.
+fn plane_normal(pts: &[Vec3], axis: Vec3, tol: f64) -> std::result::Result<Vec3, String> {
+    let first = *pts.first().ok_or("the picked edges have no points")?;
+    let far = pts.iter().copied().max_by(|a, b| a.dist(first).total_cmp(&b.dist(first))).unwrap_or(first);
+    let along = (far - first).normalized().filter(|d| d.is_finite()).ok_or("the picked edges have no length")?;
+    let off = |p: Vec3| {
+        let d = p - first;
+        (d - along * d.dot(along)).len()
+    };
+    let side = pts.iter().copied().max_by(|a, b| off(*a).total_cmp(&off(*b))).unwrap_or(first);
+    let normal = if off(side) > tol {
+        along.cross(side - first).normalized().filter(|n| n.is_finite()).ok_or("the picked edges give no plane")?
+    } else if along.dot(axis).abs() < 1e-6 {
+        axis
+    } else {
+        return Err("a single straight edge gives no plane: pick a second edge of the chain".into());
+    };
+    if pts.iter().any(|p| (*p - first).dot(normal).abs() > tol) {
+        return Err("the picked edges are not in one plane".into());
+    }
+    Ok(normal)
+}
+
+/// The chain of edges of `body_name` in the plane of the picked ones, joined end to end: from
+/// the first pick both ways, at each corner the edge that was picked, else the one that turns
+/// least, until the chain comes round to its start or ends. Each edge with its index and the
+/// point halfway along it; and whether the chain is closed.
+fn find_chain(s: &Session, frame: &WorkFrame, body_name: &str, ats: &[Vec3]) -> std::result::Result<(Vec<(usize, Vec3)>, bool), String> {
+    let state = s.model.state();
+    let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
+    let mesh = body.mesh();
+    let edges = &mesh.edges;
+    if edges.len() > 100_000 {
+        return Err("the body has too many edges".into());
+    }
+    let tol = (body.body.size() * 1e-5).max(1e-5);
+    let mut picked: Vec<usize> = Vec::new();
+    for at in ats {
+        let index = nearest_edge(edges, *at).ok_or_else(|| format!("no edge of `{body_name}` at the picked point"))?;
+        for i in mesh.circular_rim(index) {
+            if !picked.contains(&i) {
+                picked.push(i);
+            }
+        }
+    }
+    let pts: Vec<Vec3> = picked.iter().filter_map(|i| edges.get(*i)).flatten().copied().collect();
+    let normal = plane_normal(&pts, frame.z, tol)?;
+    let origin = *pts.first().ok_or("the picked edges have no points")?;
+    let ends = |i: usize| edges.get(i).and_then(|e| Some((*e.first()?, *e.last()?, e.get(1).copied()?, e.get(e.len().checked_sub(2)?).copied()?)));
+    let in_plane = |i: usize| edges.get(i).is_some_and(|e| e.len() >= 2 && e.iter().all(|p| (*p - origin).dot(normal).abs() <= tol));
+    let seed = *picked.first().ok_or("no edge picked")?;
+    let (start, end, after_start, before_end) = ends(seed).ok_or("the picked edge is gone")?;
+    let mut taken = vec![seed];
+    // Walks on from `at` (heading `dir`) until `goal`; the edges in walking order.
+    let grow = |taken: &mut Vec<usize>, mut at: Vec3, mut dir: Vec3, goal: Vec3| -> (Vec<usize>, bool) {
+        let mut out = Vec::new();
+        for _ in 0..edges.len() {
+            if at.dist(goal) <= tol {
+                return (out, true);
+            }
+            let next = (0..edges.len())
+                .filter(|i| !taken.contains(i) && in_plane(*i))
+                .filter_map(|i| {
+                    let (a, b, a1, b1) = ends(i)?;
+                    let (far, out, back) = if a.dist(at) <= tol {
+                        (b, a1 - a, b - b1)
+                    } else if b.dist(at) <= tol {
+                        (a, b1 - b, a - a1)
+                    } else {
+                        return None;
+                    };
+                    let straight = out.normalized().zip(dir.normalized()).map_or(-1.0, |(o, d)| o.dot(d));
+                    let score = if picked.contains(&i) { 10.0 } else { 0.0 } + straight;
+                    Some((i, far, back, score))
+                })
+                .max_by(|a, b| a.3.total_cmp(&b.3));
+            let Some((i, far, back, _)) = next else { return (out, false) };
+            taken.push(i);
+            out.push(i);
+            (at, dir) = (far, back);
+        }
+        (out, false)
+    };
+    // Forward from the seed's end, then (if that does not come round) back from its start.
+    let (forward, mut closed) = if start.dist(end) <= tol { (Vec::new(), true) } else { grow(&mut taken, end, end - before_end, start) };
+    let mut chain = vec![seed];
+    chain.extend(forward);
+    if !closed {
+        let (backward, _) = grow(&mut taken, start, start - after_start, end);
+        chain = backward.into_iter().rev().chain(chain).collect();
+        closed = false;
+    }
+    let mid = |i: usize| {
+        let e = edges.get(i)?;
+        let length: f64 = e.windows(2).map(|w| if let [a, b] = w { a.dist(*b) } else { 0.0 }).sum();
+        let mut left = length / 2.0;
+        for w in e.windows(2) {
+            if let [a, b] = w {
+                let l = a.dist(*b);
+                if l >= left && l > 0.0 {
+                    return Some(*a + (*b - *a) * (left / l));
+                }
+                left -= l;
+            }
+        }
+        e.first().copied()
+    };
+    Ok((chain.into_iter().filter_map(|i| Some((i, mid(i)?))).collect(), closed))
+}
+
+/// `cam.edges.chain`: a suggested chain through picked edges, for the form to show as picked.
+fn chain_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.edges.chain";
+    let setup = str_(p, "setup").and_then(|n| s.doc.cam.setup(n.trim())).ok_or_else(|| bad(cmd, "`setup` must name a setup (cam.setup first)"))?;
+    let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
+    let picks = p
+        .get("edges")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty() && a.len() <= MAX_REGIONS_PICKED)
+        .ok_or_else(|| bad(cmd, "`edges` needs 1 to 256 picked edges"))?;
+    let mut body = String::new();
+    let mut ats = Vec::new();
+    for v in picks {
+        let (b, at) = pick_param(cmd, v, "edges")?;
+        if !body.is_empty() && b != body {
+            return Err(bad(cmd, "the picked edges must be on one body"));
+        }
+        body = b;
+        ats.push(at);
+    }
+    let (chain, closed) = find_chain(s, &frame, &body, &ats).map_err(|e| bad(cmd, e))?;
+    let edges: Vec<Value> = chain.iter().map(|(i, at)| json!({"body": body, "at": [at.x, at.y, at.z], "index": i})).collect();
+    Ok(json!({"edges": edges, "closed": closed}))
+}
+
+/// Most edges a chain suggestion starts from.
+const MAX_REGIONS_PICKED: usize = 256;
+
+/// The distance from `p` to the segment `a`-`b`.
+fn seg3_dist(a: Vec3, b: Vec3, p: Vec3) -> f64 {
+    let d = b - a;
+    let t = if d.len2() > 0.0 { ((p - a).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
+    (a + d * t).dist(p)
 }
 
 /// A pick on the model: `{body, at}` with `at` a model point.
@@ -1418,6 +1807,16 @@ fn resolve_geometry(s: &Session, setup: &CamSetup, source: &CamGeometry, contour
             let regions = select_profiles(sketch, profiles).map_err(|e| e.to_string())?;
             Ok((to_setup(&sketch.plane, &frame, &regions)?, Vec::new()))
         }
+        CamGeometry::Edges { .. } => {
+            let (loops, chains) = edge_chain(s, &frame, &edge_refs(source))?;
+            if !chains.is_empty() && !contour {
+                return Err(format!(
+                    "the picked edges form no closed contour{}; only a contour can follow an open one",
+                    open_end_note(&frame, &chains)
+                ));
+            }
+            Ok((loops, Vec::new()))
+        }
         CamGeometry::Faces { faces } => {
             let (mut regions, mut openings) = (Vec::new(), Vec::new());
             // A contour picked twice (both halves of a round rim, two edges of one outline) is cut once.
@@ -1519,6 +1918,23 @@ fn engine_contour(s: &Session, p: &CamContourParams, opening: bool) -> std::resu
     })
 }
 
+fn engine_lead(s: &Session, lead: &CamLead, key: &str) -> std::result::Result<Lead, String> {
+    Ok(match lead {
+        CamLead::Direct => Lead::Direct,
+        CamLead::Arc { radius, sweep } => Lead::Arc { radius: eval_len(s, radius, key)?, sweep: eval_ang(s, sweep, key)? },
+        CamLead::Tangent { length } => Lead::Tangent { length: eval_len(s, length, key)? },
+        CamLead::Perpendicular { length } => Lead::Perpendicular { length: eval_len(s, length, key)? },
+    })
+}
+
+fn engine_leads(s: &Session, p: &CamContourParams) -> std::result::Result<Leads, String> {
+    Ok(Leads {
+        lead_in: engine_lead(s, &p.lead_in, "lead_in")?,
+        lead_out: engine_lead(s, &p.lead_out, "lead_out")?,
+        overlap: eval_len(s, &p.overlap, "overlap")?,
+    })
+}
+
 fn engine_pocket(s: &Session, p: &CamPocketParams) -> std::result::Result<PocketParams, String> {
     Ok(PocketParams {
         stepover: eval_len(s, &p.stepover, "stepover")?,
@@ -1569,7 +1985,22 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
                     Vec2::new(fold(f64::max, f64::NEG_INFINITY, 0), fold(f64::max, f64::NEG_INFINITY, 1)),
                 )
             }
-            _ => return Err("facing takes the stock outline or a rectangle".into()),
+            // A picked face (the top, or the base for the whole footprint) or sketch profile:
+            // the box round its outline.
+            CamGeometry::Faces { .. } | CamGeometry::Edges { .. } | CamGeometry::Sketch { .. } => {
+                let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+                let mut area = solidcraft_geom::Aabb2::EMPTY;
+                for seg in regions.iter().chain(&openings).flat_map(|r| r.outer.segs.iter()) {
+                    for i in 0..=16 {
+                        area.add(seg.point_at(f64::from(i) / 16.0));
+                    }
+                }
+                if area.is_empty() {
+                    return Err("the picked face has no outline to face".into());
+                }
+                (area.min, area.max)
+            }
+            CamGeometry::Points { .. } => return Err("facing takes the stock outline, a face or a rectangle".into()),
         };
         return face(lo, hi, tool, &params, &cut).map_err(|e| e.to_string());
     }
@@ -1584,11 +2015,35 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
                 }
                 None => None,
             };
+            let leads = engine_leads(s, p)?;
             let mut moves = Vec::new();
             for (group, params) in [(&regions, &params), (&openings, &other)] {
                 if !group.is_empty() {
-                    moves.extend(contour_from(group, tool, params, &cut, start).map_err(|e| e.to_string())?.moves);
+                    moves.extend(contour_with(group, tool, params, &leads, &cut, start).map_err(|e| e.to_string())?.moves);
                 }
+            }
+            // An edge chain that does not close is followed as an open contour.
+            if let CamGeometry::Edges { .. } = op.geometry() {
+                let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(op.geometry()))?;
+                if !chains.is_empty() {
+                    let paths: Vec<OpenPath> = chains.into_iter().map(|segs| OpenPath { segs }).collect();
+                    let open = OpenContourParams {
+                        side: match p.open_side {
+                            CamOpenSide::Left => OpenSide::Left,
+                            CamOpenSide::Right => OpenSide::Right,
+                            CamOpenSide::On => OpenSide::On,
+                        },
+                        reverse: p.reverse,
+                        stock_to_leave: params.stock_to_leave,
+                        tolerance: params.tolerance,
+                        extend_start: eval_len(s, &p.extend_start, "extend_start")?,
+                        extend_end: eval_len(s, &p.extend_end, "extend_end")?,
+                    };
+                    moves.extend(contour_open(&paths, tool, &open, &leads, &cut).map_err(|e| e.to_string())?.moves);
+                }
+            }
+            if moves.is_empty() {
+                return Err("there is nothing to contour".into());
             }
             let path = solidcraft_cam::Toolpath { moves };
             solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
@@ -1998,6 +2453,121 @@ mod tests {
     }
 
     #[test]
+    fn picked_edges_chain_into_contours_on_request_and_where_no_face_is_flat() {
+        let edge = |at: [f64; 3]| json!({"body": "Plate", "at": at});
+        // On request: the four top edges are the outline, the hole's two halves its circle.
+        let around = [edge([20.0, 0.0, 8.0]), edge([40.0, 15.0, 8.0]), edge([20.0, 30.0, 8.0]), edge([0.0, 15.0, 8.0])];
+        let outline = plate_contour_x(json!({"edges": around, "chain": true}));
+        assert!(outline.contains(&-300) && outline.contains(&4300) && !outline.contains(&1800), "{outline:?}");
+        let r = 5.0 * std::f64::consts::FRAC_1_SQRT_2;
+        let quarters =
+            [edge([20.0 + r, 15.0 + r, 8.0]), edge([20.0 - r, 15.0 + r, 8.0]), edge([20.0 - r, 15.0 - r, 8.0]), edge([20.0 + r, 15.0 - r, 8.0])];
+        let rim = plate_contour_x(json!({"edges": quarters, "chain": true}));
+        assert!(rim.contains(&1200) && rim.contains(&2800) && !rim.contains(&-300), "{rim:?}");
+        // One piece of the rim picked is the whole rim, as the viewport shows it.
+        let piece = plate_contour_x(json!({"edges": [edge([20.0 + r, 15.0 + r, 8.0])], "chain": true}));
+        assert_eq!(piece, rim);
+        // An open chain is refused.
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200, "stepdown": 3}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        let op =
+            |edges: Value, chain: bool| json!({"setup": "Top", "name": "C", "tool": 1, "bottom": -3, "stepdown": 3, "edges": edges, "chain": chain});
+        // An open chain is an open contour: front edge, then right edge (counter-clockwise round
+        // the part), so the part is on the left and the tool rides on the right, outside.
+        let l_path = json!([edge([20.0, 0.0, 8.0]), edge([40.0, 15.0, 8.0])]);
+        let open_x = |s: &mut Session, extra: Value| {
+            let mut p = op(l_path.clone(), true);
+            for (k, v) in extra.as_object().unwrap() {
+                p[k.as_str()] = v.clone();
+            }
+            run(s, "cam.op.contour", p);
+            let posted = run(s, "cam.post", json!({"setup": "Top"}));
+            assert!(posted["readback"]["within"].as_bool().unwrap(), "{posted}");
+            gcode_x_words(posted["gcode"].as_str().unwrap())
+        };
+        let right = open_x(&mut s, json!({"open_side": "right"}));
+        assert!(right.contains(&0) && right.contains(&4300) && !right.contains(&3700), "{right:?}");
+        let left = open_x(&mut s, json!({"open_side": "left"}));
+        assert!(left.contains(&3700) && !left.contains(&4300), "{left:?}");
+        // Run on 5 mm before the start, with a 4 mm straight lead-in in line with it.
+        let led = open_x(&mut s, json!({"open_side": "right", "extend_start": 5, "lead_in": {"kind": "tangent", "length": 4}}));
+        assert!(led.contains(&-900) && led.iter().all(|x| *x >= -900), "{led:?}");
+        // Reversed: from the right edge's far end back along the front.
+        let back = open_x(&mut s, json!({"open_side": "left", "reverse": true}));
+        assert_eq!(back.iter().copied().filter(|x| *x != 0).take(1).collect::<Vec<_>>(), vec![4300], "{back:?}");
+        // A pocket needs a closed outline.
+        let mut pocket = op(l_path.clone(), true);
+        pocket["name"] = json!("P");
+        let refused = s.execute("cam.op.pocket", &pocket);
+        assert!(refused.is_err_and(|e| e.to_string().contains("no closed contour") && e.to_string().contains("open near")));
+        // A closed contour with tangent arcs in and out: the same wall, more arc moves.
+        let plain = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        let _ = plain;
+        let around = json!([edge([20.0, 0.0, 8.0]), edge([40.0, 15.0, 8.0]), edge([20.0, 30.0, 8.0]), edge([0.0, 15.0, 8.0])]);
+        let arcs = |g: &str| g.split_whitespace().filter(|w| *w == "G2" || *w == "G3").count();
+        run(&mut s, "cam.op.contour", op(around.clone(), true));
+        let bare = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        let mut with = op(around, true);
+        with["lead_in"] = json!({"kind": "arc", "radius": 4});
+        with["lead_out"] = json!({"kind": "arc", "radius": 4});
+        run(&mut s, "cam.op.contour", with);
+        let led = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        assert!(led["readback"]["within"].as_bool().unwrap());
+        let (g0, g1) = (bare["gcode"].as_str().unwrap(), led["gcode"].as_str().unwrap());
+        assert!(arcs(g1) > arcs(g0), "{} vs {}", arcs(g1), arcs(g0));
+        // A lead that would run into the part is refused.
+        let mut deep = op(json!([edge([20.0, 0.0, 8.0]), edge([40.0, 15.0, 8.0]), edge([20.0, 30.0, 8.0]), edge([0.0, 15.0, 8.0])]), true);
+        deep["side"] = json!("inside");
+        deep["lead_in"] = json!({"kind": "perpendicular", "length": 40});
+        assert!(s.execute("cam.op.contour", &deep).is_err());
+        // A corner rounded about the tool axis: its arc closes the chain of the top edges.
+        let mut round = Session::default();
+        run(&mut round, "sketch.create", json!({"plane": "XY"}));
+        run(&mut round, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut round, "sketch.finish", json!({}));
+        run(&mut round, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        run(&mut round, "solid.fillet", json!({"body": "Plate", "radius": 5, "edges": [[40, 30, 4]]}));
+        run(&mut round, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200, "stepdown": 3}));
+        run(&mut round, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        let r = 5.0 * std::f64::consts::FRAC_1_SQRT_2;
+        let top = [edge([20.0, 0.0, 8.0]), edge([40.0, 12.0, 8.0]), edge([35.0 + r, 25.0 + r, 8.0]), edge([17.0, 30.0, 8.0]), edge([0.0, 15.0, 8.0])];
+        run(&mut round, "cam.op.contour", op(json!(top), true));
+        let posted = run(&mut round, "cam.post", json!({"setup": "Top"}));
+        assert!(posted["readback"]["within"].as_bool().unwrap());
+        let x = gcode_x_words(posted["gcode"].as_str().unwrap());
+        assert!(x.contains(&-300) && x.contains(&4300), "{x:?}");
+        // One edge picked, the chain round the top is suggested: four sides and the rounded
+        // corner, closed, and it mills as the same contour.
+        let found = run(&mut round, "cam.edges.chain", json!({"setup": "Top", "edges": [edge([20.0, 0.0, 8.0])]}));
+        assert_eq!((found["edges"].as_array().unwrap().len(), found["closed"].as_bool()), (5, Some(true)), "{found}");
+        assert!(found["edges"].as_array().unwrap().iter().all(|e| (e["at"][2].as_f64().unwrap() - 8.0).abs() < 1e-6), "{found}");
+        let suggested: Vec<Value> = found["edges"].as_array().unwrap().iter().map(|e| json!({"body": e["body"], "at": e["at"]})).collect();
+        run(&mut round, "cam.op.contour", op(json!(suggested), true));
+        let again = run(&mut round, "cam.post", json!({"setup": "Top"}));
+        assert_eq!(gcode_x_words(again["gcode"].as_str().unwrap()), x);
+        // A straight edge along the tool axis gives no plane on its own.
+        let upright = round.execute("cam.edges.chain", &json!({"setup": "Top", "edges": [edge([0.0, 0.0, 4.0])]}));
+        assert!(upright.is_err_and(|e| e.to_string().contains("pick a second edge")));
+        // The front top edge rounded: the fillet's foot bounds no flat face, so the picked edges
+        // are taken as they are, all the way round, and stored as a chain.
+        run(&mut s, "solid.fillet", json!({"body": "Plate", "radius": 2, "edges": [[20, 0, 8]]}));
+        let (d, h) = (2.0 - std::f64::consts::SQRT_2, 6.0 + std::f64::consts::SQRT_2);
+        let foot =
+            [edge([20.0, 0.0, 6.0]), edge([40.0, d, h]), edge([40.0, 16.0, 8.0]), edge([20.0, 30.0, 8.0]), edge([0.0, 16.0, 8.0]), edge([0.0, d, h])];
+        run(&mut s, "cam.op.contour", op(json!(foot), false));
+        let setup = s.doc.cam.setup("Top").unwrap();
+        assert!(matches!(setup.operations[0].geometry(), CamGeometry::Edges { edges } if edges.len() == 6));
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        let x = gcode_x_words(posted["gcode"].as_str().unwrap());
+        assert!(x.contains(&-300) && x.contains(&4300), "{x:?}");
+    }
+
+    #[test]
     fn a_boss_foot_picked_as_contour_is_gone_round_not_cut_into() {
         let mut s = Session::default();
         run(&mut s, "sketch.create", json!({"plane": "XY"}));
@@ -2212,6 +2782,26 @@ mod tests {
             panic!("no facing J");
         };
         assert_eq!((params.overrun.as_str(), geometry), ("3", &CamGeometry::Stock));
+        // A picked face says where to face: the base gives the whole footprint (X 0…40). The
+        // allowance says how much lies above the finished height; safety heights given below the
+        // start are raised above it.
+        let base = json!({"setup": "Top", "name": "Grund", "tool": 1, "faces": [{"body": "Plate", "at": [5, 5, 0]}],
+            "bottom": 1, "allowance": 2, "retract": 2, "clearance": 2, "overrun": 1});
+        run(&mut s, "cam.op.face", base);
+        let Some(CamOperation::Face { cut, geometry, .. }) = s.doc.cam.setup("Top").and_then(|x| x.operations.iter().find(|o| o.name() == "Grund"))
+        else {
+            panic!("no facing Grund");
+        };
+        assert!(matches!(geometry, CamGeometry::Faces { .. }), "{geometry:?}");
+        assert_eq!((cut.top.as_str(), cut.bottom.as_str(), cut.retract.as_str(), cut.clearance.as_str()), ("3 mm", "1", "5 mm", "13 mm"));
+        let paths = s.cam_toolpaths();
+        let grund = paths.iter().find(|p| p.operation == "Grund").and_then(|p| p.points.as_ref().ok()).unwrap();
+        let (lo, hi) = grund.iter().filter(|(_, c)| *c).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (p, _)| (a.min(p.x), b.max(p.x)));
+        assert!((lo - -6.0).abs() < 1e-6 && (hi - 46.0).abs() < 1e-6, "{lo} {hi}");
+        // A finished height at or above the start leaves nothing to face, and says so.
+        let err = s.execute("cam.op.face", &json!({"setup": "Top", "name": "Hoch", "tool": 1, "bottom": 3})).unwrap_err().to_string();
+        assert!(err.contains("nothing to face"), "{err}");
+        assert!(s.execute("cam.op.face", &json!({"setup": "Top", "name": "Null", "tool": 1, "bottom": 0, "allowance": 0})).is_err());
     }
 
     #[test]

@@ -81,6 +81,28 @@ contour it lies on (**Edge contour**); a picked face adds its outline and holes
 used once. Under **Start point**, pick a corner or an edge (its middle): each contour then
 starts at its point nearest to it, otherwise at a corner.
 
+To mill along edges you pick one after another, tick **Edges as one chain**: the picked
+edges themselves, seen from above, are joined end to end into closed contours. Pick them all
+the way round. Edges that bound no flat face square to the tool axis (the foot of a fillet or
+chamfer, a sloped face) are always taken this way. **Find edge chain** picks one edge's whole
+chain for you: from the picked edges it follows the edges joined to them in their plane (square
+to the tool axis for a single straight edge), taking the one that turns least at each corner,
+until the chain comes round or ends. The suggestion shows as picked; take out what you do not want.
+
+A chain that does not close is an **open contour**. It runs from the first picked edge towards
+the second (**Reverse direction** turns it round). **Side (open)** is the side the tool rides,
+seen along the cut: left, right or on the edge. **Run-on start** and **Run-on end** extend it
+along its tangent before the start and after the end. Over several depths an open contour always
+cuts the same way: lead-in, cut, lead-out, up to the retract height, back to the start.
+
+**Lead-in** and **Lead-out** say how the tool gets onto a contour and off it again: **Direct /
+ramp** (down on the contour, ramping along a closed one at the ramp angle, as before), a
+**Tangent arc** (radius), a **Tangent line** in line with the contour, or a **Square line** at a
+right angle to it (length). Leads come from and go to the side the tool rides on; the plunge is at
+the lead-in's start, clear of the wall. A lead on a closed contour that would come nearer the part
+than the tool radius is refused. **Overlap** runs a closed contour's cut on past its start before
+the lead-out, so no mark is left where it began.
+
 **Side** and **Direction** sit right below the picked contours. **Side** says where the tool rides:
 
 - **Automatic**: the part stays whole: around an outline and around the foot of a boss, inside
@@ -110,13 +132,21 @@ setup not made yet).
 
 ## Facing
 
-**Facing** (Machining tab, Milling) faces the setup's whole stock flat: from the start depth
-(the stock's top) down to the final depth (part zero by default) in passes no deeper than the
-stepdown. Each pass runs lanes along X, back and forth, no further apart than the stepover;
-every lane starts and ends with the tool clear of the stock by **Overrun**
-(default 2 mm), and the first and last lanes put the tool's edge that far past the stock's
-sides, so no rim is left. The tool goes down beside the stock, never into it. Give the stock
-an allowance on top in the setup, or there is nothing to face.
+**Facing** (Machining tab, Milling) faces an area flat in three choices:
+
+- **Where:** pick a flat face, and the box round its outline is faced; the base (bottom face)
+  faces the whole footprint. Without a pick, the setup's whole stock.
+- **Finished height Z:** where the faced surface ends up (part zero by default). Type it, or
+  pick a face, edge or corner under **Final depth**.
+- **Allowance Z:** the material above the finished height. It starts as what the stock has
+  above it (1 mm when that is nothing); a pick under **Start depth** sets it to that height.
+
+Facing starts at finished height + allowance; the retract and clearance heights follow, 2 and
+10 mm above that. It steps down in passes no deeper than the stepdown, each pass running lanes
+along X, back and forth, no further apart than the stepover; every lane starts and ends with
+the tool clear of the area by **Overrun** (default 2 mm), and the first and last lanes put the
+tool's edge that far past its sides, so no rim is left. The tool goes down beside the area,
+never into it.
 
 ## Drilling at picked bores
 
@@ -218,7 +248,12 @@ regions with islands, and expression-based depths and feeds. Use `cam.post` with
 `post: "linuxcnc"` for LinuxCNC output; its existing default remains `rs274`.
 
 Picked geometry: `faces` entries may name one contour with `contour_at` (a model point on
-it), `edges` (`[{body, at}]`) add the contours through those edges, and a contour's
+it), `edges` (`[{body, at}]`) add the contours through those edges (with `chain: true`, or
+when an edge bounds no flat face square to the tool axis, the edges themselves joined into
+closed contours, stored as `{"type": "edges"}`; a chain that does not close is an open contour
+with `open_side` `left`/`right`/`on`, `reverse` and `extend_start`/`extend_end` in mm), a
+contour's `lead_in`/`lead_out` (`{"kind": "direct"}`, `{"kind": "arc", "radius", "sweep"?}`,
+`{"kind": "tangent"|"perpendicular", "length"}`) and `overlap`, and a contour's
 `start` is a model point. `cam.tool.define` takes `cutting`
 (`{"aluminium": {"vc": 300, "fz": 0.05, "ap": 0.5, "ae": 0.4}}`); `cam.setup` takes
 `material` and `max_rpm` (null clears either). `cam.setup` also takes picks on the model:
@@ -228,9 +263,14 @@ it), `edges` (`[{body, at}]`) add the contours through those edges, and a contou
 `center` or `positive` in the work frame) and `stock_spec`
 (`{"kind": "relative_box", "mode": "sides_and_top_bottom", "side_offset": 2, …}`,
 `{"kind": "box", "width", "depth", "height"}` or `{"kind": "cylinder", "diameter", "height"}`).
-`cam.op.face` faces the stock (or an `outer` rectangle) with `stepover` (default 70 % of the
-diameter), `overrun` (default 2 mm), `top` (default the stock's top) and `bottom`; the guided
-job takes `kind: "face"` with `overrun`. Without `stepdown`, milling steps down one tool
+`cam.edges.chain` (`setup`, `edges: [{body, at}]`) suggests the chain through picked edges:
+`edges: [{body, at, index}]` in order and `closed`; it changes nothing.
+`cam.op.face` faces a picked face's outline (`faces` or `edges`), an `outer` rectangle or the
+stock with `stepover` (default 70 % of the diameter), `overrun` (default 2 mm), `bottom` (the
+finished height, default part zero) and `allowance` (the material above it; without it, `top`
+or the stock's top); retract and clearance heights below the start are raised above it. The
+guided job takes `kind: "face"` with `overrun` and the picks; its `top - bottom` is the
+allowance. Without `stepdown`, milling steps down one tool
 diameter. Contours take `side` (`auto`, `outside`, `inside`, `on`); contours and pockets take `climb`
 (false: conventional), `stock_to_leave` (walls) and `floor_stock` (floor), in the guided job
 too. Machines:

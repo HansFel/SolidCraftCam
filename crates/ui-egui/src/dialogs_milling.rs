@@ -47,7 +47,20 @@ pub struct Milling {
     side: usize,
     /// Climb milling; false: conventional.
     climb: bool,
+    /// The picked edges themselves are the contour, joined end to end.
+    chain: bool,
+    /// How a contour is entered and left, as [`LEADS`] lists them.
+    lead_in: usize,
+    lead_out: usize,
+    /// An open contour's side, as [`OPEN_SIDES`] lists them, and whether it is cut backwards.
+    open_side: usize,
+    reverse: bool,
 }
+
+/// Lead strategies: the kinds `cam.op.contour` takes.
+const LEADS: [&str; 4] = ["direct", "arc", "tangent", "perpendicular"];
+/// An open contour's sides, along the cut.
+const OPEN_SIDES: [&str; 3] = ["left", "right", "on"];
 
 /// A contour's sides: where the part stays whole, outside or inside each picked contour, on it.
 const SIDES: [&str; 4] = ["auto", "outside", "inside", "on"];
@@ -114,12 +127,18 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("height", "ui.cam.height", "30"),
     ("top", "ui.cam.top", "0"),
     ("bottom", "ui.cam.bottom", "-3"),
+    ("allowance", "ui.cam.allowance", "1"),
     ("clearance", "ui.cam.clearance", "10"),
     ("retract", "ui.cam.retract", "2"),
     ("stepdown", "ui.cam.stepdown", "100 %"),
     ("stepover", "ui.cam.stepover", "50 %"),
     ("stock_to_leave", "ui.cam.wall_stock", "0"),
     ("floor_stock", "ui.cam.floor_stock", "0"),
+    ("lead_in_size", "ui.cam.lead_in_size", "3"),
+    ("lead_out_size", "ui.cam.lead_out_size", "3"),
+    ("overlap", "ui.cam.overlap", "0"),
+    ("extend_start", "ui.cam.extend_start", "0"),
+    ("extend_end", "ui.cam.extend_end", "0"),
     ("overrun", "ui.cam.overrun", "2"),
     ("feed", "ui.cam.feed", "600"),
     ("plunge_feed", "ui.cam.plunge", "150"),
@@ -166,6 +185,11 @@ impl Milling {
             taken: false,
             side: 0,
             climb: true,
+            chain: false,
+            lead_in: 0,
+            lead_out: 0,
+            open_side: 0,
+            reverse: false,
         }
         .starting_at_stock(app)
     }
@@ -179,6 +203,18 @@ impl Milling {
 
     fn field(&mut self, key: &str) -> Option<&mut String> {
         FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| self.values.get_mut(i))
+    }
+
+    /// Facing down to `finish`: the allowance is what the stock (top `stock`) has above it, 1 mm
+    /// when that is nothing.
+    fn facing_from(&mut self, stock: Option<f64>, finish: f64) {
+        if let Some(bottom) = self.field("bottom") {
+            *bottom = plain_number(finish);
+        }
+        let allowance = stock.map(|top| top - finish).filter(|a| *a > 1e-6).unwrap_or(1.0);
+        if let Some(field) = self.field("allowance") {
+            *field = plain_number(allowance);
+        }
     }
 
     /// Sets the start depth; retract and clearance heights below it move up above it.
@@ -252,9 +288,13 @@ impl Milling {
                 set("stock_to_leave", plain(&params.stock_to_leave));
                 set("floor_stock", plain(&params.floor_stock));
             }
-            CamOperation::Face { params, .. } => {
+            CamOperation::Face { params, cut, .. } => {
                 set("stepover", plain(&params.stepover));
                 set("overrun", plain(&params.overrun));
+                let height = |e: &solidcraft_engine::doc::Expr| plain(e).trim().parse::<f64>().ok();
+                if let (Some(top), Some(bottom)) = (height(&cut.top), height(&cut.bottom)) {
+                    set("allowance", number(top - bottom));
+                }
             }
         }
         match op {
@@ -267,6 +307,35 @@ impl Milling {
                     CamSide::On => 3,
                 };
                 form.climb = params.climb;
+                use solidcraft_engine::doc::cam::{CamLead, CamOpenSide};
+                let plain = |e: &solidcraft_engine::doc::Expr| e.as_str().trim().strip_suffix("mm").map_or(e.as_str(), str::trim_end).to_string();
+                for (lead, slot, key) in
+                    [(&params.lead_in, &mut form.lead_in, "lead_in_size"), (&params.lead_out, &mut form.lead_out, "lead_out_size")]
+                {
+                    let (kind, size) = match lead {
+                        CamLead::Direct => (0, None),
+                        CamLead::Arc { radius, .. } => (1, Some(radius)),
+                        CamLead::Tangent { length } => (2, Some(length)),
+                        CamLead::Perpendicular { length } => (3, Some(length)),
+                    };
+                    *slot = kind;
+                    if let (Some(size), Some(i)) = (size, FIELDS.iter().position(|(k, _, _)| *k == key))
+                        && let Some(field) = form.values.get_mut(i)
+                    {
+                        *field = plain(size);
+                    }
+                }
+                for (key, expr) in [("overlap", &params.overlap), ("extend_start", &params.extend_start), ("extend_end", &params.extend_end)] {
+                    if let Some(field) = FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| form.values.get_mut(i)) {
+                        *field = plain(expr);
+                    }
+                }
+                form.open_side = match params.open_side {
+                    CamOpenSide::Left => 0,
+                    CamOpenSide::Right => 1,
+                    CamOpenSide::On => 2,
+                };
+                form.reverse = params.reverse;
             }
             CamOperation::Pocket { params, .. } => form.climb = params.climb,
             CamOperation::Drill { .. } | CamOperation::Face { .. } => {}
@@ -281,11 +350,16 @@ impl Milling {
             CamOperation::Contour { geometry, .. } | CamOperation::Pocket { geometry, .. } => {
                 form.kept = serde_json::to_value(geometry).map(|g| json!({"geometry": g})).unwrap_or(Value::Null);
             }
+            // Facing keeps a picked face; the stock outline needs nothing kept.
+            CamOperation::Face { geometry, .. } if !matches!(geometry, CamGeometry::Stock | CamGeometry::Polygons { .. }) => {
+                form.kept = serde_json::to_value(geometry).map(|g| json!({"geometry": g})).unwrap_or(Value::Null);
+            }
             CamOperation::Drill { .. } | CamOperation::Face { .. } => {}
         }
         if let CamOperation::Contour { params, .. } = op {
             form.kept_start = params.start;
         }
+        form.chain = matches!(op.geometry(), solidcraft_engine::doc::cam::CamGeometry::Edges { .. });
         (form.geometry, form.start) = (form.kept.clone(), form.kept_start);
         form.kind = kind;
         form.setup = setup.name.clone();
@@ -305,11 +379,9 @@ impl Milling {
         };
         let form = Self::new(app);
         let mut form = Self { kind, name: free_name(app, &form.setup, app.tr(name)), ..form };
-        // Facing ends where the part's top is: at part zero.
-        if kind == 3
-            && let Some(bottom) = form.field("bottom")
-        {
-            *bottom = "0".into();
+        // Facing ends where the part's top is, at part zero, and takes off what the stock has above it.
+        if kind == 3 {
+            form.facing_from(stock_top(&app.session, &form.setup), 0.0);
         }
         form
     }
@@ -384,14 +456,56 @@ impl Milling {
         if self.kind == 0 {
             p["side"] = json!(SIDES.get(self.side).copied().unwrap_or("auto"));
         }
-        // Only facing runs past the stock.
-        if self.kind != 3
-            && let Some(map) = p.as_object_mut()
-        {
-            map.remove("overrun");
+        // Only facing runs past the stock. It starts the allowance above the finished height, with
+        // the safety heights above that; other steps take their heights as typed.
+        if let Some(map) = p.as_object_mut() {
+            let allowance = map.remove("allowance").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if self.kind == 3 {
+                if allowance <= 0.0 {
+                    return Err(crate::i18n::tr("ui.cam.allowance_needed").into());
+                }
+                let bottom = map.get("bottom").and_then(Value::as_f64).unwrap_or(0.0);
+                let top = ((bottom + allowance) * 1000.0).round() / 1000.0;
+                map.insert("top".into(), json!(top));
+                map.insert("retract".into(), json!(top + 2.0));
+                map.insert("clearance".into(), json!(top + 10.0));
+            } else {
+                map.remove("overrun");
+            }
+        }
+        if let Some(map) = p.as_object_mut() {
+            let size = |map: &mut serde_json::Map<String, Value>, key: &str| map.remove(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let (lead_in, lead_out) = (size(map, "lead_in_size"), size(map, "lead_out_size"));
+            if self.kind == 0 {
+                for (key, kind, size) in [("lead_in", self.lead_in, lead_in), ("lead_out", self.lead_out, lead_out)] {
+                    let lead = match LEADS.get(kind).copied().unwrap_or("direct") {
+                        "direct" => json!({"kind": "direct"}),
+                        _ if !(size > 0.0) => return Err(crate::i18n::tr("ui.cam.lead_size_needed").into()),
+                        "arc" => json!({"kind": "arc", "radius": size}),
+                        other => json!({"kind": other, "length": size}),
+                    };
+                    map.insert(key.into(), lead);
+                }
+                for key in ["overlap", "extend_start", "extend_end"] {
+                    if map.get(key).and_then(Value::as_f64).is_some_and(|v| v < 0.0) {
+                        return Err(crate::i18n::tr("ui.cam.stock_negative").into());
+                    }
+                }
+                if map.contains_key("edges") {
+                    map.insert("open_side".into(), json!(OPEN_SIDES.get(self.open_side).copied().unwrap_or("left")));
+                    map.insert("reverse".into(), json!(self.reverse));
+                }
+            } else {
+                for key in ["overlap", "extend_start", "extend_end"] {
+                    map.remove(key);
+                }
+            }
         }
         if self.kind < 2 {
             p["climb"] = json!(self.climb);
+            if self.chain && p.get("edges").is_some() {
+                p["chain"] = json!(true);
+            }
             for key in ["stock_to_leave", "floor_stock"] {
                 if p[key].as_f64().is_some_and(|v| v < 0.0) {
                     return Err(crate::i18n::tr("ui.cam.stock_negative").into());
@@ -493,6 +607,39 @@ fn geometry(app: &SolveApp, inputs: &[SelInput]) -> Value {
     if out.is_empty() { Value::Null } else { Value::Object(out) }
 }
 
+/// Whether `geometry` (the form's) is a stored edge chain.
+fn is_edge_chain(geometry: &Value) -> bool {
+    geometry.get("geometry").and_then(|g| g.get("type")).and_then(Value::as_str) == Some("edges")
+}
+
+/// Replaces the picked edges with the chain `cam.edges.chain` finds through them, in its plane.
+fn find_chain(app: &mut SolveApp, setup: &str, inputs: &mut [SelInput]) -> Result<(), String> {
+    let edges: Vec<Value> = crate::selection::items(inputs, 0)
+        .iter()
+        .filter_map(|pick| match pick {
+            Sel::Edge { body, point, .. } => Some(json!({"body": body, "at": [point.x, point.y, point.z]})),
+            _ => None,
+        })
+        .collect();
+    let found = app.session.execute("cam.edges.chain", &json!({"setup": setup, "edges": edges})).map_err(|e| e.to_string())?;
+    let chain: Vec<Sel> = found["edges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let body = e["body"].as_str()?.to_string();
+            let index = usize::try_from(e["index"].as_u64()?).ok()?;
+            let at = e["at"].as_array()?;
+            let point = Vec3::new(at.first()?.as_f64()?, at.get(1)?.as_f64()?, at.get(2)?.as_f64()?);
+            Some(Sel::Edge { body, index, point })
+        })
+        .collect();
+    let input = inputs.get_mut(0).ok_or("no contour input")?;
+    input.items.retain(|pick| !matches!(pick, Sel::Edge { .. }));
+    input.items.extend(chain);
+    Ok(())
+}
+
 /// The picked start point: a corner, or the middle of an edge.
 fn start(inputs: &[SelInput]) -> Option<[f64; 3]> {
     match crate::selection::items(inputs, 1).first()? {
@@ -563,9 +710,17 @@ fn contour_list(ui: &mut egui::Ui, session: &solidcraft_engine::Session, inputs:
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &mut [SelInput]) {
     let tr = crate::i18n::tr;
     let kinds = [tr("ui.cam.contour"), tr("ui.cam.pocket"), tr("ui.cam.drill"), tr("ui.cam.face")];
+    let was = form.kind;
     ui_kit::choice_row(ui, tr("ui.cam.operation"), "cam-kind", &mut form.kind, &kinds);
+    if form.kind == 3 && was != 3 {
+        // Switched to facing: down to part zero, taking off what the stock has above it.
+        form.facing_from(stock_top(&app.session, &form.setup), 0.0);
+    }
     if form.kind == 3 {
         ui.add(egui::Label::new(tr("ui.cam.face_hint")).wrap_mode(egui::TextWrapMode::Wrap));
+        if !crate::selection::items(inputs, 0).is_empty() {
+            contour_list(ui, &app.session, inputs, false);
+        }
     } else {
         contour_list(ui, &app.session, inputs, form.kind == 2);
     }
@@ -595,6 +750,29 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         let sides = [tr("ui.cam.side_auto"), tr("ui.cam.side_outside"), tr("ui.cam.side_inside"), tr("ui.cam.side_on")];
         ui_kit::choice_row(ui, tr("ui.cam.side"), "cam-side", &mut form.side, &sides);
     }
+    if form.kind == 0 {
+        let leads = [tr("ui.cam.lead_direct"), tr("ui.cam.lead_arc"), tr("ui.cam.lead_tangent"), tr("ui.cam.lead_perpendicular")];
+        ui_kit::choice_row(ui, tr("ui.cam.lead_in"), "cam-lead-in", &mut form.lead_in, &leads);
+        ui_kit::choice_row(ui, tr("ui.cam.lead_out"), "cam-lead-out", &mut form.lead_out, &leads);
+    }
+    // Picked edges can be the contour themselves instead of the faces they bound, and the chain
+    // they start can be found and offered as picked. A chain that does not close is an open
+    // contour, with its own side and direction.
+    let edges_picked = crate::selection::items(inputs, 0).iter().any(|pick| matches!(pick, Sel::Edge { .. }));
+    if form.kind == 0 && edges_picked {
+        let sides = [tr("ui.cam.side_left"), tr("ui.cam.side_right"), tr("ui.cam.side_on")];
+        ui_kit::choice_row(ui, tr("ui.cam.open_side"), "cam-open-side", &mut form.open_side, &sides);
+        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.reverse"), &mut form.reverse));
+    }
+    if form.kind < 2 && edges_picked {
+        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.chain"), &mut form.chain));
+        if ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_chain"), ui_kit::Button::Small)).clicked() {
+            match find_chain(app, &form.setup, inputs) {
+                Ok(()) => form.chain = true,
+                Err(e) => form.error = Some(e),
+            }
+        }
+    }
     if form.kind < 2 {
         let directions = [tr("ui.cam.climb"), tr("ui.cam.conventional")];
         let mut direction = usize::from(!form.climb);
@@ -618,8 +796,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     if top_key != form.top_pick {
         form.top_pick = top_key;
         if let Some(p) = start_depth {
-            let z = work_z(&app.session, &form.setup, p);
-            form.set_top((z * 1000.0).round() / 1000.0);
+            let z = (work_z(&app.session, &form.setup, p) * 1000.0).round() / 1000.0;
+            if form.kind == 3 {
+                // Facing: the picked height is the stock's top, the allowance what lies above the finish.
+                let finish = form.field("bottom").and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok()).unwrap_or(0.0);
+                form.facing_from(Some(z), finish);
+            } else {
+                form.set_top(z);
+            }
         }
     }
     let depth_key = depth.map(|p| [p.x, p.y, p.z]);
@@ -650,7 +834,15 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         if (picked || form.kind == 3) && matches!(*key, "x" | "y" | "width" | "height") {
             continue;
         }
-        if (form.kind == 3) != (*key == "overrun") && matches!(*key, "overrun" | "stock_to_leave" | "floor_stock") {
+        if (form.kind == 3) != matches!(*key, "overrun" | "allowance") && matches!(*key, "overrun" | "allowance" | "stock_to_leave" | "floor_stock") {
+            continue;
+        }
+        // Facing works its start and safety heights out from the finished height and the allowance.
+        if form.kind == 3 && matches!(*key, "top" | "retract" | "clearance") {
+            continue;
+        }
+        if form.kind == 3 && *key == "bottom" {
+            ui_kit::text_row(ui, tr("ui.cam.finish_z"), value, "");
             continue;
         }
         if form.kind == 2 && matches!(*key, "x" | "y" | "width" | "height" | "stepover" | "feed" | "stock_to_leave" | "floor_stock") {
@@ -660,6 +852,21 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             continue;
         }
         if form.kind == 0 && *key == "stepover" {
+            continue;
+        }
+        // Leads, overlap and run-on belong to contours: a lead's size only when it has one, the
+        // run-on only for edges (an open chain).
+        let lead_size = match *key {
+            "lead_in_size" => Some(form.lead_in),
+            "lead_out_size" => Some(form.lead_out),
+            _ => None,
+        };
+        if matches!(*key, "lead_in_size" | "lead_out_size" | "overlap" | "extend_start" | "extend_end") && form.kind != 0 {
+            continue;
+        }
+        if lead_size == Some(0)
+            || (matches!(*key, "extend_start" | "extend_end") && !form.geometry.get("edges").is_some() && !is_edge_chain(&form.geometry))
+        {
             continue;
         }
         // An existing setup keeps its own work offset.

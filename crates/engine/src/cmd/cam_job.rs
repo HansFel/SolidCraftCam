@@ -71,6 +71,25 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                 map.insert(key.into(), value.clone());
             }
         }
+        if let Some(chain) = a.chain {
+            map.insert("chain".into(), json!(chain));
+        }
+    }
+    if let (JobKind::Contour, Some(map)) = (&a.kind, op.as_object_mut()) {
+        let extra = [
+            ("lead_in", a.lead_in.clone()),
+            ("lead_out", a.lead_out.clone()),
+            ("overlap", a.overlap.map(|v| json!(v))),
+            ("open_side", a.open_side.clone().map(|v| json!(v))),
+            ("reverse", a.reverse.map(|v| json!(v))),
+            ("extend_start", a.extend_start.map(|v| json!(v))),
+            ("extend_end", a.extend_end.map(|v| json!(v))),
+        ];
+        for (key, value) in extra {
+            if let Some(value) = value {
+                map.insert(key.into(), value);
+            }
+        }
     }
     if let (Some(start), JobKind::Contour) = (a.start, &a.kind) {
         op["start"] = json!(start);
@@ -99,9 +118,19 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             cam::pocket_cmd(&mut work, &op)?;
         }
         JobKind::Face => {
-            // The setup's stock outline, overrun on every side.
+            // A picked face's outline, else the setup's stock outline, overrun on every side;
+            // facing starts `top - bottom` above the finished height.
             let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
             map.remove("outer");
+            map.remove("top");
+            map.insert("allowance".into(), json!(a.top - a.bottom));
+            for (key, value) in
+                [("sketch", &a.sketch), ("profiles", &a.profiles), ("faces", &a.faces), ("edges", &a.edges), ("geometry", &a.geometry)]
+            {
+                if let Some(value) = value {
+                    map.insert(key.into(), value.clone());
+                }
+            }
             if let Some(v) = a.overrun {
                 if !v.is_finite() || !(0.0..=1.0e6).contains(&v) {
                     return Err(bad(cmd, "`overrun` must be 0 or more"));

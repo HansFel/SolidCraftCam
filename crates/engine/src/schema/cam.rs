@@ -137,9 +137,24 @@ pub struct MillingParams {
     pub profiles: Option<super::ProfilesParam>,
     pub faces: Option<serde_json::Value>,
     pub edges: Option<serde_json::Value>,
+    /// The picked `edges` themselves, joined end to end into closed contours.
+    pub chain: Option<bool>,
     /// A step's stored geometry, unchanged (as `cam.list` shows it).
     pub geometry: Option<serde_json::Value>,
     pub start: Option<[f64; 3]>,
+    /// How the tool gets onto (off) each contour: `{kind: direct|arc|tangent|perpendicular,
+    /// radius?, sweep?, length?}`.
+    pub lead_in: Option<serde_json::Value>,
+    pub lead_out: Option<serde_json::Value>,
+    /// Closed contours: how far the cut runs on past its start before the lead-out.
+    pub overlap: Option<NumberExpr>,
+    /// Open contours (an edge chain that does not close): left, right or on, along the cut.
+    pub open_side: Option<String>,
+    /// Open contours: cut from the chain's end to its start.
+    pub reverse: Option<bool>,
+    /// Open contours: run on along the tangent before the start and after the end.
+    pub extend_start: Option<NumberExpr>,
+    pub extend_end: Option<NumberExpr>,
     pub outer: Option<Vec<[f64; 2]>>,
     pub holes: Option<Vec<Vec<[f64; 2]>>>,
     pub regions: Option<serde_json::Value>,
@@ -151,6 +166,8 @@ pub struct MillingParams {
     pub floor_stock: Option<NumberExpr>,
     /// Facing: how far the tool's edge runs past the stock.
     pub overrun: Option<NumberExpr>,
+    /// Facing: the material above the finished height (`bottom`); facing starts that high.
+    pub allowance: Option<NumberExpr>,
     pub tolerance: Option<NumberExpr>,
     pub ramp_angle: Option<NumberExpr>,
     pub clearance: Option<NumberExpr>,
@@ -184,6 +201,21 @@ pub struct PostParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ListParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ChainParams {
+    pub setup: String,
+    /// Picked edges of one body, `{body, at}`.
+    pub edges: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ChainResult {
+    /// The chain in order, `{body, at, index}`.
+    pub edges: Vec<serde_json::Value>,
+    pub closed: bool,
+}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ToolResult {
@@ -338,6 +370,24 @@ pub struct JobParams {
     pub faces: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges: Option<serde_json::Value>,
+    /// The picked `edges` themselves, joined end to end into closed contours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<bool>,
+    /// Contours: leads, overlap and the open-contour settings, as `cam.op.contour` takes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_in: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_out: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_side: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_start: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_end: Option<f64>,
     /// A step's stored geometry, unchanged: what an edit keeps when nothing new is picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<serde_json::Value>,

@@ -19,7 +19,7 @@ fn linuxcnc_cam_form_renders_real_controls_in_both_themes() {
     for dark in [false, true] {
         let mut h = Harness::new();
         h.app.home.open = false;
-        h.call("ui.resize", json!({"width":1200,"height":1400}));
+        h.call("ui.resize", json!({"width":1200,"height":1700}));
         h.call("ui.set", json!({"dark":dark}));
         h.app.ui.layout = LayoutMode::Floating;
         h.step(&json!({"start":"cam.job.create"})).unwrap();

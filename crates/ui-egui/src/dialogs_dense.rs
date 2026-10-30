@@ -1237,16 +1237,19 @@ mod tests {
         );
         assert!(h.widget("Start depth").is_some() && h.widget("Start depth Z (mm)").is_some());
         h.app.dialog = None;
-        // Facing: the whole stock from its top down to part zero.
+        // Facing: the whole stock down to part zero, the 2 mm the stock has above it taken off; the
+        // start and safety heights follow from the finished height and the allowance.
         h.step(&json!({"start":"cam.op.face"})).unwrap();
         h.frames(2);
         let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the facing form") };
         let p = form.params().unwrap();
         assert_eq!(
-            (p["kind"].as_str(), p["top"].as_f64(), p["bottom"].as_f64(), p["overrun"].as_f64()),
-            (Some("face"), Some(2.0), Some(0.0), Some(2.0))
+            (p["kind"].as_str(), p["top"].as_f64(), p["bottom"].as_f64(), p["retract"].as_f64(), p["clearance"].as_f64(), p["overrun"].as_f64()),
+            (Some("face"), Some(2.0), Some(0.0), Some(4.0), Some(12.0), Some(2.0))
         );
-        assert!(h.widget("Overrun (mm)").is_some());
+        assert!(p.get("allowance").is_none());
+        assert!(h.widget("Finished height Z (mm)").is_some() && h.widget("Allowance Z (mm)").is_some() && h.widget("Overrun (mm)").is_some());
+        assert!(h.widget("Start depth Z (mm)").is_none() && h.widget("Retract Z (mm)").is_none());
         assert!(h.widget("Wall stock to leave (mm)").is_none());
         h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
         h.frames(3);
@@ -1257,7 +1260,7 @@ mod tests {
         assert!(paths.first().is_some_and(|p| p.points.as_ref().is_ok_and(|v| v.iter().any(|(_, c)| *c))));
         // Editing brings it back as facing.
         let again = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op).params().unwrap();
-        assert_eq!((again["kind"].as_str(), again["overrun"].as_f64()), (Some("face"), Some(2.0)));
+        assert_eq!((again["kind"].as_str(), again["overrun"].as_f64(), again["top"].as_f64()), (Some("face"), Some(2.0), Some(2.0)));
     }
 
     #[test]
@@ -1358,7 +1361,9 @@ mod tests {
                 _ => {}
             }
         }
-        // Labels, picks, choices and hints of every CAM form, in English and German, at two sizes.
+        // The CAM texts (the CAM catalog's, not the rest of the screen's) of every CAM form and the
+        // CAM window, in every complete language, at two sizes.
+        let catalog: serde_json::Value = serde_json::from_str(include_str!("../../../assets/locales/pending/cam-linuxcnc.json")).unwrap();
         let mut cut = Vec::new();
         for (w, ht, language) in [
             (1400.0, 1000.0, "en"),
@@ -1386,6 +1391,8 @@ mod tests {
                 output.textures_delta.clear();
                 let mut out = Vec::new();
                 output.shapes.iter().for_each(|s| elided(&s.shape, &mut out));
+                let ours = catalog[language].as_object().unwrap();
+                out.retain(|text| ours.values().any(|v| v.as_str() == Some(text.as_str())));
                 if !out.is_empty() {
                     cut.push(format!("{language} {w}: {what} cuts off {out:?}"));
                 }

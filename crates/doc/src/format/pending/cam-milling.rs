@@ -4,7 +4,13 @@
 //! plus an RS-274 work offset (`G54`…`G59`) and an optional stock box. Sketch and face geometry
 //! is mapped into that frame when posting; a face can name one of its contours (`contour_at`, a
 //! point on it) instead of its whole outline; a face the model gives no name has an empty `name`
-//! and is found by its points. A contour operation can name a `start` point (model
+//! and is found by its points. Picked edges can be one chain instead (`geometry: {"type": "edges",
+//! "edges": [{body, at}]}`): the edges nearest the points, joined end to end into closed contours
+//! seen along the tool axis; a chain that does not close is an open contour, cut on its
+//! `open_side` (`left`, `right`, `on`, along the cutting direction), from its end when `reverse`,
+//! run on by `extend_start` and `extend_end`. A contour's `lead_in` and `lead_out` are
+//! `{"kind": "direct"}` (the default), `arc` (`radius`, `sweep`), `tangent` or `perpendicular`
+//! (`length`); a closed contour's cut runs `overlap` past its start. A contour operation can name a `start` point (model
 //! coordinates); explicit polylines are already work XY. Depths, feeds and stepdowns are
 //! expressions evaluated when posting. A tool can hold cutting data by material group
 //! (`cutting`); a setup can name its material, the machine's highest spindle speed (`max_rpm`),
