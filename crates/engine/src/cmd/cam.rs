@@ -6,11 +6,11 @@
 use serde_json::{Value, json};
 use solidcraft_cam::{
     ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
-    Program, Side, Tool, ToolKind, contour_open, contour_with, drill, emit, face, pocket, readback,
+    Program, Side, Tabs, Tool, ToolKind, contour_open, contour_with_tabs, drill, emit, face, pocket, readback,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
-    CamSetup, CamSide, CamStock, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
+    CamSetup, CamSide, CamStock, CamTabs, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
     WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params,
 };
 use solidcraft_doc::expr::Kind;
@@ -36,7 +36,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("settings")
         .params(
             "name; x, y, z: [lowest, highest] travel (mm, X− X+ …); a?: {kind: limited, min, max} (degrees) | {kind: endless}; \
-             spindle_min, spindle_max (rev/min); max_feed (mm/min). Adds or replaces the design's machine of that name.",
+             spindle_min, spindle_max (rev/min); max_feed (mm/min); post?: the post its programs are written with              (built-in or saved on the design). Adds or replaces the design's machine of that name.",
         ),
     CommandSpec::new("cam.machine.remove", "Remove Machine", crate::checked!("cam.machine.remove", machine_remove))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::MachineRemoveParams>::new())
@@ -65,7 +65,10 @@ pub static COMMANDS: &[CommandSpec] = &[
          start?: [x,y,z] model point each contour starts nearest; or outer: [[x,y],…] (or regions: [{outer, holes?}]); holes?: [[[x,y],…]]; \
          side?: auto|outside|inside|on (default auto: around an outline, inside a picked hole; outside and inside are of each \
          picked contour); climb?: bool (default true, false: conventional); stock_to_leave? (walls); floor_stock? (floor); tolerance?; \
-         ramp_angle?: deg (default 0); clearance?; retract?; top?; bottom (required unless cut given); stepdown?; \
+         ramp_angle?: deg (default 0); lead_in?, lead_out?: {kind: direct|arc|tangent|perpendicular, radius?, sweep?, length?}; \
+         overlap?; open contours: open_side?: left|right|on, reverse?, extend_start?, extend_end?; \
+         tabs?: {count? | spacing?, width, height} holding tabs on closed contours, or null; \
+         clearance?; retract?; top?; bottom (required unless cut given); stepdown?; \
          feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.pocket", "2D Pocket", crate::checked!("cam.op.pocket", pocket_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("hole").params(
@@ -87,7 +90,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
     CommandSpec::new("cam.post", "Post Process", crate::checked!("cam.post", post_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::PostParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::PostResult>).icon("export").noundo().params(
-        "setup; post?: rs274 | name of a saved post (default rs274); program?: name (default the setup's) → \
+        "setup; post?: a built-in post or the name of a saved post (default: the setup's post, else its machine's, else rs274); program?: name (default the setup's) → \
          {gcode, extension, post, operations, readback}. G-code is always read back and checked against the toolpaths, \
          and against the setup's machine (spindle range, fastest feed, travel) when it names one.",
     ),
@@ -307,6 +310,9 @@ fn tool_remove(s: &mut Session, p: &Value) -> Result<Value> {
 /// Adds `machine` to the design, or replaces its machine of that name.
 fn put_machine(s: &mut Session, cmd: &str, machine: Machine) -> Result<()> {
     machine.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    if let Some(post) = &machine.post {
+        resolve_post(&s.doc.cam, post).map_err(|e| bad(cmd, format!("machine `{}`: {e}", machine.name)))?;
+    }
     let doc = s.doc_mut();
     let full = doc.cam.machines.len() >= MAX_MACHINES;
     match doc.cam.machines.iter_mut().find(|m| m.name == machine.name) {
@@ -628,6 +634,11 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
         if let Some(r) = bool_(p, "reverse") {
             params.reverse = r;
         }
+        match p.get("tabs") {
+            None => {}
+            Some(Value::Null) => params.tabs = None,
+            Some(v) => params.tabs = Some(Box::new(tabs_param(cmd, v)?)),
+        }
         CamOperation::Contour { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     } else {
         let stepover = match expr(p, "stepover") {
@@ -749,6 +760,24 @@ pub(super) fn face_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         setup.operations.push(op);
     }
     Ok(json!({"setup": setup_name, "operation": name}))
+}
+
+/// Holding tabs: `{count?, spacing?, width, height}`, a count or a spacing.
+fn tabs_param(cmd: &str, v: &Value) -> Result<CamTabs> {
+    let need = |k: &str| expr(v, k).ok_or_else(|| bad(cmd, format!("`tabs` needs `{k}`")));
+    let count = match v.get("count") {
+        None => 0,
+        Some(c) => c
+            .as_u64()
+            .and_then(|c| u32::try_from(c).ok())
+            .filter(|c| *c <= 1000)
+            .ok_or_else(|| bad(cmd, "`tabs.count` must be a whole number 0 to 1000"))?,
+    };
+    let spacing = expr(v, "spacing").unwrap_or_else(|| Expr::new("0 mm"));
+    if count == 0 && v.get("spacing").is_none() {
+        return Err(bad(cmd, "`tabs` needs a `count` or a `spacing`"));
+    }
+    Ok(CamTabs { count, spacing, width: need("width")?, height: need("height")? })
 }
 
 /// A lead: `{kind: direct|arc|tangent|perpendicular, radius?, sweep?, length?}`.
@@ -965,8 +994,8 @@ pub(super) fn post_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     if setup.operations.iter().all(|op| setup.skipped.iter().any(|n| n == op.name())) {
         return Err(bad(cmd, format!("setup `{setup_name}` has no operations to post")));
     }
-    let post_name = str_(p, "post").unwrap_or("rs274");
-    let post = resolve_post(&s.doc.cam, post_name).map_err(|e| bad(cmd, e))?;
+    let post_name = str_(p, "post").map(str::to_string).or_else(|| chosen_post(&s.doc.cam, &setup)).unwrap_or_else(|| "rs274".into());
+    let post = resolve_post(&s.doc.cam, &post_name).map_err(|e| bad(cmd, e))?;
     post.validate().map_err(|e| bad(cmd, e.to_string()))?;
     let program_name = str_(p, "program").unwrap_or(setup.name.as_str()).to_string();
     let mut program = Program { name: program_name, operations: Vec::new(), work_offset: Some(setup.work_offset) };
@@ -1026,6 +1055,12 @@ pub(super) fn post_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         "within": rb.within(),
     });
     Ok(out)
+}
+
+/// The post a setup's programs are written with when the caller names none: the setup's own,
+/// else its machine's.
+pub(super) fn chosen_post(cam: &CamSettings, setup: &CamSetup) -> Option<String> {
+    setup.post.clone().or_else(|| setup.machine.as_deref().and_then(|m| cam.machine(m)).and_then(|m| m.post.clone()))
 }
 
 fn resolve_post(cam: &CamSettings, name: &str) -> std::result::Result<Post, String> {
@@ -1927,6 +1962,16 @@ fn engine_lead(s: &Session, lead: &CamLead, key: &str) -> std::result::Result<Le
     })
 }
 
+fn engine_tabs(s: &Session, tabs: Option<&CamTabs>) -> std::result::Result<Tabs, String> {
+    let Some(t) = tabs else { return Ok(Tabs::default()) };
+    Ok(Tabs {
+        count: t.count,
+        spacing: eval_len(s, &t.spacing, "tabs.spacing")?,
+        width: eval_len(s, &t.width, "tabs.width")?,
+        height: eval_len(s, &t.height, "tabs.height")?,
+    })
+}
+
 fn engine_leads(s: &Session, p: &CamContourParams) -> std::result::Result<Leads, String> {
     Ok(Leads {
         lead_in: engine_lead(s, &p.lead_in, "lead_in")?,
@@ -2016,16 +2061,20 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
                 None => None,
             };
             let leads = engine_leads(s, p)?;
+            let tabs = engine_tabs(s, p.tabs.as_deref())?;
             let mut moves = Vec::new();
             for (group, params) in [(&regions, &params), (&openings, &other)] {
                 if !group.is_empty() {
-                    moves.extend(contour_with(group, tool, params, &leads, &cut, start).map_err(|e| e.to_string())?.moves);
+                    moves.extend(contour_with_tabs(group, tool, params, &leads, &tabs, &cut, start).map_err(|e| e.to_string())?.moves);
                 }
             }
             // An edge chain that does not close is followed as an open contour.
             if let CamGeometry::Edges { .. } = op.geometry() {
                 let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(op.geometry()))?;
                 if !chains.is_empty() {
+                    if !tabs.is_empty() {
+                        return Err("holding tabs are for closed contours: the picked edges leave this one open".into());
+                    }
                     let paths: Vec<OpenPath> = chains.into_iter().map(|segs| OpenPath { segs }).collect();
                     let open = OpenContourParams {
                         side: match p.open_side {
@@ -2805,6 +2854,47 @@ mod tests {
     }
 
     #[test]
+    fn holding_tabs_lift_over_the_bottom_of_a_closed_contour_only() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "spindle_rpm": 8000, "feed": 600, "plunge_feed": 200}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "stock": {"min": [-10, -10, -6], "max": [50, 40, 0]}}));
+        let op = |tabs: Value| {
+            json!({"setup": "Top", "name": "Outside", "tool": 1, "outer": [[0, 0], [40, 0], [40, 30], [0, 30]],
+                "side": "outside", "bottom": -6, "stepdown": 3, "tabs": tabs})
+        };
+        let lowest_heights = |s: &mut Session| {
+            let paths = s.cam_toolpaths();
+            let points = paths[0].points.clone().unwrap();
+            let mut zs: Vec<f64> = points.iter().filter(|(_, cutting)| *cutting).map(|(p, _)| (p.z * 1000.0).round() / 1000.0).collect();
+            zs.sort_by(f64::total_cmp);
+            zs.dedup();
+            zs
+        };
+        run(&mut s, "cam.op.contour", op(Value::Null));
+        assert!(!lowest_heights(&mut s).contains(&-4.0));
+        // Four tabs 2 mm high: the last pass crosses each at -4.
+        run(&mut s, "cam.op.contour", op(json!({"count": 4, "width": 5, "height": 2})));
+        let zs = lowest_heights(&mut s);
+        assert!(zs.contains(&-6.0) && zs.contains(&-4.0), "{zs:?}");
+        let listed = run(&mut s, "cam.list", json!({}));
+        assert_eq!(listed["setups"][0]["operations"][0]["params"]["tabs"]["count"], 4, "{listed}");
+        assert!(run(&mut s, "cam.post", json!({"setup": "Top"}))["readback"]["within"].as_bool().unwrap());
+        // Tabs need a size and a count or spacing, and must be lower than the cut.
+        for bad in [
+            json!({"width": 5, "height": 2}),
+            json!({"count": 4, "height": 2}),
+            json!({"count": -1, "width": 5, "height": 2}),
+            json!({"count": 4, "width": 5, "height": 9}),
+        ] {
+            let e = s.execute("cam.op.contour", &op(bad)).unwrap_err().to_string();
+            assert!(e.contains("tab"), "{e}");
+        }
+        // Null takes them off again.
+        run(&mut s, "cam.op.contour", op(Value::Null));
+        assert!(s.doc.cam.setups[0].operations.iter().all(|o| !matches!(o, CamOperation::Contour { params, .. } if params.tabs.is_some())));
+    }
+
+    #[test]
     fn machines_hold_speeds_and_refuse_programs_beyond_them() {
         let mut s = Session::default();
         let cutting = json!({"aluminium": {"vc": 188.4955592153876, "fz": 0.05, "ap": 0.5, "ae": 0.4}});
@@ -2825,6 +2915,25 @@ mod tests {
                 "bottom": -1, "stepdown": 1, "spindle_rpm": rpm, "feed": feed})
         };
         run(&mut s, "cam.op.contour", op("A", 40.0, 6000.0, 800.0));
+        assert_eq!(run(&mut s, "cam.post", json!({"setup": "Top"}))["post"], "rs274");
+        // The machine's post writes its programs; the setup's own and an explicit one come first.
+        let with_post = |post: &str| {
+            let mut m = mill.clone();
+            m["post"] = json!(post);
+            m
+        };
+        run(&mut s, "cam.machine.define", with_post("linuxcnc"));
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        assert_eq!(posted["post"], "linuxcnc");
+        assert!(posted["gcode"].as_str().unwrap().contains("G91.1"));
+        assert_eq!(run(&mut s, "cam.post", json!({"setup": "Top", "post": "rs274"}))["post"], "rs274");
+        run(&mut s, "cam.setup", json!({"name": "Top", "post": "rs274"}));
+        assert_eq!(run(&mut s, "cam.post", json!({"setup": "Top"}))["post"], "rs274");
+        run(&mut s, "cam.setup", json!({"name": "Top", "post": null}));
+        // An unknown post is refused and changes nothing.
+        let before = s.doc.to_json();
+        assert!(s.execute("cam.machine.define", &with_post("Heidenhain 9000")).is_err());
+        assert_eq!(s.doc.to_json(), before);
         run(&mut s, "cam.post", json!({"setup": "Top"}));
         for (bad, why) in
             [(op("A", 40.0, 9000.0, 800.0), "spindle"), (op("A", 40.0, 6000.0, 2500.0), "feed"), (op("A", 400.0, 6000.0, 800.0), "along X")]

@@ -153,7 +153,7 @@ Project
 | Bore and helical bore | Planned |
 | Thread milling and tapping (rigid or floating) | Planned |
 | Engraving along sketch text and curves | Planned |
-| Tabs (bridges) on through contours | Planned |
+| Tabs (bridges) on through contours | Done |
 | Lead-in and lead-out: tangent arc, tangent line, square line or direct/ramp, with overlap | Done |
 | Open contours along an edge chain: side, direction, run-on at both ends | Done |
 | Edge chains: picked edges joined into contours, and a chain found in its plane from one edge | Done |
@@ -170,9 +170,9 @@ Project
 |---|---|
 | LinuxCNC | Done |
 | Generic RS-274 | Done |
-| GRBL (no tool changer, `M6` optional, limited canned cycles) | Planned |
-| Mach3 / Mach4 | Planned |
-| Centroid | Planned |
+| GRBL (no tool changer, `M6` optional, limited canned cycles) | Done |
+| Mach3 / Mach4 | Partial: Mach3 |
+| Centroid | Done |
 | Fanuc | Planned |
 | Siemens Sinumerik | Planned |
 | Heidenhain (conversational Klartext, not G-code) | Planned |
@@ -218,7 +218,7 @@ Before each export:
 | Travels (X, Y, Z, A limited or endless) with a check of every program | Partial: X, Y, Z reach checked on export; A recorded only |
 | Tool changer: none (manual), carousel, number of pockets | Planned |
 | Spindle speed range and fastest feed, held in cutting data and checked on export | Done |
-| Default post per machine | Planned |
+| Default post per machine | Done |
 
 ### 10. Cutting-data calculator
 

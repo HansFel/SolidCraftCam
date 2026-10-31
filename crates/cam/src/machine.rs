@@ -30,6 +30,10 @@ pub struct Machine {
     pub spindle_max: f64,
     /// Fastest feed the axes move at (mm/min).
     pub max_feed: f64,
+    /// The post its programs are written with: a built-in post or one saved on the design. None:
+    /// whatever the caller writes by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<String>,
 }
 
 /// A rotary axis: turning between two angles (degrees), or round without end.
@@ -52,6 +56,7 @@ impl Machine {
             spindle_min: 1000.0,
             spindle_max: 24000.0,
             max_feed: 5000.0,
+            post: None,
         }
     }
 
@@ -75,6 +80,11 @@ impl Machine {
         }
         if !(self.max_feed > 0.0) || self.max_feed > MAX_TRAVEL {
             return invalid("the fastest feed must be above 0 and at most 1000000 mm/min");
+        }
+        if let Some(post) = &self.post
+            && (post.trim().is_empty() || post.len() > MAX_MACHINE_NAME || post.trim() != post || post.chars().any(char::is_control))
+        {
+            return invalid("a machine's post is named by 1 to 128 characters without surrounding spaces");
         }
         Ok(())
     }

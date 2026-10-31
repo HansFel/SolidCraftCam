@@ -10,12 +10,14 @@
 //! `open_side` (`left`, `right`, `on`, along the cutting direction), from its end when `reverse`,
 //! run on by `extend_start` and `extend_end`. A contour's `lead_in` and `lead_out` are
 //! `{"kind": "direct"}` (the default), `arc` (`radius`, `sweep`), `tangent` or `perpendicular`
-//! (`length`); a closed contour's cut runs `overlap` past its start. A contour operation can name a `start` point (model
+//! (`length`); a closed contour's cut runs `overlap` past its start. Closed contours can keep
+//! holding `tabs` (`{count | spacing, width, height}`, mm; absent: none). A contour operation can name a `start` point (model
 //! coordinates); explicit polylines are already work XY. Depths, feeds and stepdowns are
 //! expressions evaluated when posting. A tool can hold cutting data by material group
 //! (`cutting`); a setup can name its material, the machine's highest spindle speed (`max_rpm`),
 //! its machine (`machine`, one of the design's `machines`: travel per axis, optional A axis,
-//! spindle speed range and fastest feed) and the operations left out when posting (`skipped`);
+//! spindle speed range, fastest feed and an optional `post`, the post-processor its programs are
+//! written with) and the operations left out when posting (`skipped`);
 //! the operations' order is the machining order. A contour's `side` is `auto` (around an outline,
 //! inside a hole picked as its own contour), `outside`, `inside` or `on`; contours and pockets
 //! can leave stock on the walls (`stock_to_leave`) and on the floor (`floor_stock`). A facing

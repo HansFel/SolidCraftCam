@@ -84,6 +84,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             ("reverse", a.reverse.map(|v| json!(v))),
             ("extend_start", a.extend_start.map(|v| json!(v))),
             ("extend_end", a.extend_end.map(|v| json!(v))),
+            ("tabs", a.tabs.clone()),
         ];
         for (key, value) in extra {
             if let Some(value) = value {
@@ -172,12 +173,13 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         })
         .collect::<Result<Vec<_>>>()?;
     let cut_minutes = path.stats().cut_minutes;
-    let posted = cam::post_cmd(&mut work, &json!({"setup": a.setup, "post": "linuxcnc"}))?;
+    let post = cam::chosen_post(&work.doc.cam, setup).unwrap_or_else(|| "linuxcnc".into());
+    let posted = cam::post_cmd(&mut work, &json!({"setup": a.setup, "post": post}))?;
     let result = JobResult {
         setup: a.setup,
         operation: a.name,
         gcode: posted.get("gcode").and_then(Value::as_str).ok_or_else(|| bad(cmd, "post returned no G-code"))?.into(),
-        extension: "ngc".into(),
+        extension: posted.get("extension").and_then(Value::as_str).unwrap_or("ngc").into(),
         points,
         cut_minutes,
     };
@@ -203,7 +205,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "path is required"));
     }
     solidcraft_io::vfs::check(&a.path).map_err(|e| EngineError::Other(e.to_string()))?;
-    let result = cam::post_cmd(s, &json!({"setup": a.setup, "post": "linuxcnc"}))?;
+    let post = s.doc.cam.setup(&a.setup).and_then(|setup| cam::chosen_post(&s.doc.cam, setup)).unwrap_or_else(|| "linuxcnc".into());
+    let result = cam::post_cmd(s, &json!({"setup": a.setup, "post": post}))?;
     let text = result.get("gcode").and_then(Value::as_str).ok_or_else(|| bad(cmd, "post returned no G-code"))?;
     if a.overwrite {
         solidcraft_io::write_atomic(std::path::Path::new(&a.path), text.as_bytes(), true)

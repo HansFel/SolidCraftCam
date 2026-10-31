@@ -1140,7 +1140,7 @@ mod tests {
         sample(&mut h);
         // The machine list drops broken and duplicate rows and keeps the rest by name.
         h.app.preferences.cam_machines = serde_json::from_value(json!([
-            {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "a": {"kind": "endless"}, "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000},
+            {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "a": {"kind": "endless"}, "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000, "post": "rs274"},
             {"name": "Portal", "x": [0, 1], "y": [0, 1], "z": [0, 1], "spindle_min": 1, "spindle_max": 2, "max_feed": 1},
             {"name": "Broken", "x": [5, 0], "y": [0, 1], "z": [0, 1], "spindle_min": 1, "spindle_max": 2, "max_feed": 1},
             {"name": "Mini", "x": [0, 200], "y": [0, 150], "z": [-60, 0], "spindle_min": 1000, "spindle_max": 24000, "max_feed": 3000},
@@ -1152,7 +1152,12 @@ mod tests {
         h.frames(3);
         assert_eq!(h.app.cam_window.as_ref().map(|w| w.tab), Some(2));
         let portal = h.app.preferences.cam_machines.find("Portal").cloned();
-        assert!(h.widget(&crate::cam_panel::machine_label(portal.as_ref().unwrap())).is_some());
+        let label = crate::cam_panel::machine_label(portal.as_ref().unwrap());
+        assert!(label.ends_with(", RS-274"), "{label}");
+        // Its form offers the post-processor, the default first.
+        h.step(&json!({"widget": label})).unwrap();
+        h.frames(2);
+        assert!(h.widget("Post-processor").is_some() && h.widget("RS-274").is_some());
         // Each machine is made once: a new one, or a renamed one, may not take an existing name.
         let list = &h.app.preferences.cam_machines;
         let taken = Err(crate::i18n::tr("ui.cam.machine_exists").to_string());
@@ -1189,7 +1194,7 @@ mod tests {
         h.app.dialog = Some(d);
         h.frames(2);
         // The form shows the choices.
-        for label in ["Inside the contour", "Conventional", "Wall stock to leave (mm)", "Floor stock to leave (mm)"] {
+        for label in ["Inside the contour", "Conventional", "Wall stock to leave (mm)", "Floor stock to leave (mm)", "Holding tabs"] {
             assert!(h.widget(label).is_some(), "{label} is shown");
         }
         h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();

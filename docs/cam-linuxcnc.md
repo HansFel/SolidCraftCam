@@ -103,6 +103,12 @@ the lead-in's start, clear of the wall. A lead on a closed contour that would co
 than the tool radius is refused. **Overlap** runs a closed contour's cut on past its start before
 the lead-out, so no mark is left where it began.
 
+**Holding tabs** keep a part cut right round in the stock: **Tabs per contour** are spread evenly
+round each closed contour (none on its start), each **Tab width** long and **Tab height** high
+from the cut's bottom. On the passes below a tab's top the tool lifts over it at the cutting feed
+and comes back down; cut the tabs off by hand afterwards. A tab as high as the cut, or tabs wider
+than the gap between them, are refused; open contours take no tabs.
+
 **Side** and **Direction** sit right below the picked contours. **Side** says where the tool rides:
 
 - **Automatic**: the part stays whole: around an outline and around the foot of a boss, inside
@@ -186,14 +192,18 @@ once and every design can use it; a name already on the list is refused for a ne
 A machine has a name,
 the travel of each axis as its lowest and highest position (X−, X+, Y−, Y+, Z−, Z+), an
 optional A axis (limited to A− … A+ degrees, or endless), the slowest and fastest spindle
-speed and the fastest feed (mm/min). With a machine on the setup:
+speed, the fastest feed (mm/min) and its **Post-processor**: the controller its programs
+are written for. **Default (LinuxCNC)** keeps today's output; every built-in post is listed,
+and more controllers will follow. With a machine on the setup:
 
 - **Use cutting data** and `cam.tool.speeds` hold the spindle speed to the machine's range
   (the feeds follow the speed actually reached) and every feed to the fastest;
 - exporting refuses a program whose spindle speed or feeds leave the machine's range, or
   that reaches further along X, Y or Z than the machine travels. Where part zero sits on the
   table is set at the machine, so the check is by reach, not by position. The A axis is
-  recorded for later 4-axis work; 2.5D programs do not use it.
+  recorded for later 4-axis work; 2.5D programs do not use it;
+- exporting and the preview write the program with the machine's post, unless the setup
+  names its own (`post`) or `cam.post` is given one.
 
 ## Programmatic commands
 
@@ -253,7 +263,8 @@ when an edge bounds no flat face square to the tool axis, the edges themselves j
 closed contours, stored as `{"type": "edges"}`; a chain that does not close is an open contour
 with `open_side` `left`/`right`/`on`, `reverse` and `extend_start`/`extend_end` in mm), a
 contour's `lead_in`/`lead_out` (`{"kind": "direct"}`, `{"kind": "arc", "radius", "sweep"?}`,
-`{"kind": "tangent"|"perpendicular", "length"}`) and `overlap`, and a contour's
+`{"kind": "tangent"|"perpendicular", "length"}`) and `overlap`, holding `tabs`
+(`{"count": 4, "width": 5, "height": 1}`, or `spacing` instead of `count`; null removes them), and a contour's
 `start` is a model point. `cam.tool.define` takes `cutting`
 (`{"aluminium": {"vc": 300, "fz": 0.05, "ap": 0.5, "ae": 0.4}}`); `cam.setup` takes
 `material` and `max_rpm` (null clears either). `cam.setup` also takes picks on the model:
@@ -277,9 +288,12 @@ too. Machines:
 
 ```json
 {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "a": {"kind": "endless"},
- "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000}
+ "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000, "post": "linuxcnc"}
 ```
 
+`post` is optional: a built-in post (`cam.list` returns them as `builtin_posts`) or one saved on
+the design. `cam.post` without `post` uses the setup's post, else its machine's, else `rs274`;
+the guided job and export fall back to `linuxcnc`.
 `cam.machine.define` adds or replaces the design's machine of that name, `cam.machine.remove`
 removes one no setup names, and `cam.setup` takes `machine` as a name, a whole machine
 (copied into the design) or null. Machining order and skipped steps:

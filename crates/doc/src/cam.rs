@@ -694,6 +694,37 @@ pub struct CamContourParams {
     pub extend_start: Expr,
     #[serde(default = "zero_mm", skip_serializing_if = "is_zero_mm")]
     pub extend_end: Expr,
+    /// Closed contours: holding tabs left on each loop so the part stays in the stock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Box<CamTabs>>,
+}
+
+/// Holding tabs (bridges) on a closed contour: `count` round each loop, else one every
+/// `spacing`; each `width` long and `height` high from the cut's bottom.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamTabs {
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub count: u32,
+    #[serde(default = "zero_mm", skip_serializing_if = "is_zero_mm")]
+    pub spacing: Expr,
+    pub width: Expr,
+    pub height: Expr,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+impl CamTabs {
+    fn validate(&self) -> Result<()> {
+        if self.count > 1000 {
+            return Err(DocError::Invalid("a contour has at most 1000 tabs per loop".into()));
+        }
+        for (expr, label) in [(&self.spacing, "tabs.spacing"), (&self.width, "tabs.width"), (&self.height, "tabs.height")] {
+            check_expr(expr, label)?;
+        }
+        Ok(())
+    }
 }
 
 /// How the tool gets onto, or off, a contour.
@@ -991,6 +1022,9 @@ impl CamOperation {
                 check_expr(&params.overlap, "overlap")?;
                 check_expr(&params.extend_start, "extend_start")?;
                 check_expr(&params.extend_end, "extend_end")?;
+                if let Some(tabs) = &params.tabs {
+                    tabs.validate()?;
+                }
                 if params.start.iter().flatten().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                     return Err(DocError::Invalid("the start point must be finite and within 1e6 mm".into()));
                 }
@@ -1040,6 +1074,7 @@ pub fn default_contour_params() -> CamContourParams {
         reverse: false,
         extend_start: zero_mm(),
         extend_end: zero_mm(),
+        tabs: None,
     }
 }
 

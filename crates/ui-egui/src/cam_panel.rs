@@ -9,7 +9,7 @@
 use egui::RichText;
 use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
-use solidcraft_engine::cam::{CuttingData, MATERIALS, Machine, RotaryAxis, Tool, ToolKind};
+use solidcraft_engine::cam::{CuttingData, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind};
 use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
 
 use crate::SolveApp;
@@ -114,6 +114,18 @@ impl Machines {
     }
 }
 
+/// A post's name as the user reads it: the controller's own spelling for the built-in ones.
+fn post_label(name: &str) -> String {
+    match name {
+        "centroid" => "Centroid".into(),
+        "grbl" => "GRBL".into(),
+        "linuxcnc" => "LinuxCNC".into(),
+        "mach3" => "Mach3".into(),
+        "rs274" => "RS-274".into(),
+        other => other.to_string(),
+    }
+}
+
 /// One line naming a machine and its limits.
 pub fn machine_label(m: &Machine) -> String {
     let span = |[lo, hi]: [f64; 2]| number(hi - lo);
@@ -131,6 +143,9 @@ pub fn machine_label(m: &Machine) -> String {
         Some(RotaryAxis::Endless) => line.push_str(&format!(", A {}", tr("ui.cam.a_endless"))),
         Some(RotaryAxis::Limited { min, max }) => line.push_str(&format!(", A {}…{}°", number(min), number(max))),
         None => {}
+    }
+    if let Some(post) = &m.post {
+        line.push_str(&format!(", {}", post_label(post)));
     }
     line
 }
@@ -247,6 +262,8 @@ struct MachineEdit {
     a: [String; 2],
     spindle: [String; 2],
     max_feed: String,
+    /// The post its programs are written with; none: the default.
+    post: Option<String>,
 }
 
 impl MachineEdit {
@@ -263,6 +280,7 @@ impl MachineEdit {
             a,
             spindle: [number(m.spindle_min), number(m.spindle_max)],
             max_feed: number(m.max_feed),
+            post: m.post.clone(),
         }
     }
 
@@ -283,6 +301,7 @@ impl MachineEdit {
             spindle_min: parse(&self.spindle[0])?,
             spindle_max: parse(&self.spindle[1])?,
             max_feed: parse(&self.max_feed)?,
+            post: self.post.clone(),
         };
         machine.validate().map_err(|e| e.to_string())?;
         Ok(machine)
@@ -618,6 +637,18 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     ui_kit::text_row(ui, tr("ui.cam.spindle_min"), slow, "");
     ui_kit::text_row(ui, tr("ui.cam.spindle_max"), fast, "");
     ui_kit::text_row(ui, tr("ui.cam.max_feed"), &mut edit.max_feed, "");
+    // The default, every built-in post, and the machine's own if it names another.
+    let mut posts: Vec<String> = Post::BUILTIN.iter().map(|p| (*p).to_string()).collect();
+    if let Some(own) = &edit.post
+        && !posts.contains(own)
+    {
+        posts.push(own.clone());
+    }
+    let labels: Vec<String> = std::iter::once(tr("ui.cam.post_default").to_string()).chain(posts.iter().map(|p| post_label(p))).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let mut chosen = edit.post.as_ref().and_then(|p| posts.iter().position(|n| n == p)).map_or(0, |i| i + 1);
+    ui_kit::choice_row(ui, tr("ui.cam.post"), "cam-machine-post", &mut chosen, &refs);
+    edit.post = chosen.checked_sub(1).and_then(|i| posts.get(i)).cloned();
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.machine_hint")).color(t.text_dim)).wrap());
     if ui_kit::button(ui, tr("ui.cam.save_machine"), ui_kit::Button::Primary).clicked() {
         match edit.machine() {
@@ -642,7 +673,7 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.cam_window.take() else { return };
     let mut actions = Vec::new();
-    let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(4.0).show_body(ctx, |ui| {
+    let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).show_body(ctx, |ui| {
         let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines")];
         ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
         ui.separator();

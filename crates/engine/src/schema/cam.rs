@@ -52,6 +52,8 @@ pub struct MachineParams {
     pub spindle_max: f64,
     /// Fastest feed (mm/min).
     pub max_feed: f64,
+    /// The post its programs are written with: a built-in post or one saved on the design.
+    pub post: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -155,6 +157,8 @@ pub struct MillingParams {
     /// Open contours: run on along the tangent before the start and after the end.
     pub extend_start: Option<NumberExpr>,
     pub extend_end: Option<NumberExpr>,
+    /// Closed contours: holding tabs `{count?, spacing?, width, height}`, or null for none.
+    pub tabs: Option<serde_json::Value>,
     pub outer: Option<Vec<[f64; 2]>>,
     pub holes: Option<Vec<Vec<[f64; 2]>>>,
     pub regions: Option<serde_json::Value>,
@@ -388,6 +392,8 @@ pub struct JobParams {
     pub extend_start: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extend_end: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<serde_json::Value>,
     /// A step's stored geometry, unchanged: what an edit keeps when nothing new is picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<serde_json::Value>,

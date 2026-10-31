@@ -55,6 +55,8 @@ pub struct Milling {
     /// An open contour's side, as [`OPEN_SIDES`] lists them, and whether it is cut backwards.
     open_side: usize,
     reverse: bool,
+    /// Holding tabs on a closed contour.
+    tabs: bool,
 }
 
 /// Lead strategies: the kinds `cam.op.contour` takes.
@@ -139,6 +141,9 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("overlap", "ui.cam.overlap", "0"),
     ("extend_start", "ui.cam.extend_start", "0"),
     ("extend_end", "ui.cam.extend_end", "0"),
+    ("tab_count", "ui.cam.tab_count", "4"),
+    ("tab_width", "ui.cam.tab_width", "5"),
+    ("tab_height", "ui.cam.tab_height", "1"),
     ("overrun", "ui.cam.overrun", "2"),
     ("feed", "ui.cam.feed", "600"),
     ("plunge_feed", "ui.cam.plunge", "150"),
@@ -190,6 +195,7 @@ impl Milling {
             lead_out: 0,
             open_side: 0,
             reverse: false,
+            tabs: false,
         }
         .starting_at_stock(app)
     }
@@ -336,6 +342,15 @@ impl Milling {
                     CamOpenSide::On => 2,
                 };
                 form.reverse = params.reverse;
+                if let Some(tabs) = &params.tabs {
+                    form.tabs = true;
+                    let count = tabs.count.to_string();
+                    for (key, text) in [("tab_count", count), ("tab_width", plain(&tabs.width)), ("tab_height", plain(&tabs.height))] {
+                        if let Some(field) = FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| form.values.get_mut(i)) {
+                            *field = text;
+                        }
+                    }
+                }
             }
             CamOperation::Pocket { params, .. } => form.climb = params.climb,
             CamOperation::Drill { .. } | CamOperation::Face { .. } => {}
@@ -476,6 +491,13 @@ impl Milling {
         if let Some(map) = p.as_object_mut() {
             let size = |map: &mut serde_json::Map<String, Value>, key: &str| map.remove(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
             let (lead_in, lead_out) = (size(map, "lead_in_size"), size(map, "lead_out_size"));
+            let (count, width, height) = (size(map, "tab_count"), size(map, "tab_width"), size(map, "tab_height"));
+            if self.kind == 0 && self.tabs {
+                if !((1.0..=1000.0).contains(&count) && count.fract() == 0.0 && width > 0.0 && height > 0.0) {
+                    return Err(crate::i18n::tr("ui.cam.tabs_needed").into());
+                }
+                map.insert("tabs".into(), json!({"count": count as u32, "width": width, "height": height}));
+            }
             if self.kind == 0 {
                 for (key, kind, size) in [("lead_in", self.lead_in, lead_in), ("lead_out", self.lead_out, lead_out)] {
                     let lead = match LEADS.get(kind).copied().unwrap_or("direct") {
@@ -754,6 +776,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         let leads = [tr("ui.cam.lead_direct"), tr("ui.cam.lead_arc"), tr("ui.cam.lead_tangent"), tr("ui.cam.lead_perpendicular")];
         ui_kit::choice_row(ui, tr("ui.cam.lead_in"), "cam-lead-in", &mut form.lead_in, &leads);
         ui_kit::choice_row(ui, tr("ui.cam.lead_out"), "cam-lead-out", &mut form.lead_out, &leads);
+        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.tabs"), &mut form.tabs));
     }
     // Picked edges can be the contour themselves instead of the faces they bound, and the chain
     // they start can be found and offered as picked. A chain that does not close is an open
@@ -862,6 +885,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             _ => None,
         };
         if matches!(*key, "lead_in_size" | "lead_out_size" | "overlap" | "extend_start" | "extend_end") && form.kind != 0 {
+            continue;
+        }
+        if matches!(*key, "tab_count" | "tab_width" | "tab_height") && !(form.kind == 0 && form.tabs) {
             continue;
         }
         if lead_size == Some(0)
