@@ -4249,7 +4249,7 @@ version = "0.28.0"
 
 [[package]]
 name = "solidcraft-cam"
-version = "0.26.1"
+version = "0.28.0"
 dependencies = [
  "serde",
  "serde_json",
