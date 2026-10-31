@@ -361,6 +361,56 @@ fn place_from_the_origin_fully_constrains_new_shapes() {
     assert_eq!(draw(false, true), (0, 4), "placing needs Dimension new shapes");
 }
 
+/// A line ended on a spline, between its fit points (#9321): the cursor snaps On the spline as it
+/// does on a line or a circle, and the click ties the end to the spline.
+#[test]
+fn a_line_end_on_a_spline_snaps_on_it_and_stays_on_it() {
+    use solidcraft_engine::sketch::{ConstraintKind, CurveKind};
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.app.run("sketch.spline.fit_point", json!({"points": [[-30, 0], [-10, 18], [10, 6], [30, 20]]})).unwrap();
+    h.settle();
+    let sid = h.app.session.active_sketch.unwrap();
+    let (spline, on) = {
+        let st = h.app.session.world_state();
+        let sk = &st.sketch(sid).unwrap().sketch;
+        let ci = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Spline { .. })).unwrap();
+        let poly = sk.polyline(ci);
+        // Partway along the spline, away from its fit points.
+        let w = poly.len() * 3 / 8;
+        (ci, (poly[w] + poly[w + 1]) * 0.5)
+    };
+    h.step(&json!({"start": "sketch.line"})).unwrap();
+    h.step(&json!({"click": {"world": [0, -25, 0]}})).unwrap();
+    h.step(&json!({"move": {"world": [on.x, on.y, 0]}})).unwrap();
+    let hover = h.app.tool.as_ref().unwrap().hover.clone().unwrap();
+    assert!(hover.1.as_deref().is_some_and(|s| s.starts_with("on:")), "{hover:?}");
+    h.step(&json!({"click": {"world": [on.x, on.y, 0]}})).unwrap();
+    let st = h.app.session.world_state();
+    let sk = &st.sketch(sid).unwrap().sketch;
+    let b = sk
+        .curves
+        .iter()
+        .find_map(|c| if let CurveKind::Line { b, .. } = c.kind { Some(b) } else { None })
+        .unwrap_or_else(|| panic!("no line, {:?}", h.app.status));
+    assert!(
+        sk.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::PointOnCurve { p, c } if p == b && c == spline)),
+        "the end is not tied to the spline: {:?}",
+        sk.constraints
+    );
+    let end = sk.point(b).unwrap();
+    let to_segment = |a: solidcraft_engine::geom::Vec2, b: solidcraft_engine::geom::Vec2| {
+        let ab = b - a;
+        let t = ((end - a).dot(ab) / ab.len2().max(1e-300)).clamp(0.0, 1.0);
+        (a + ab * t).dist(end)
+    };
+    // The constraint puts the end on the spline itself; the polyline it is drawn with lies within
+    // a few µm of it between its samples.
+    let off = sk.polyline(spline).windows(2).map(|w| to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
+    assert!(off < 0.02, "the end is {off} mm off the spline at {end:?}");
+    assert!(end.dist(on) < 0.5, "the end moved from the cursor {on:?} to {end:?}");
+}
+
 /// A line from a circle's centre to the circle, ending a little off the quadrant: the preview
 /// snaps to horizontal or vertical, so the click must place exactly that line, on the circle.
 #[test]
@@ -516,6 +566,61 @@ fn value_boxes_stay_in_view_and_off_the_cursor() {
     // No room on either side: inside the view all the same.
     let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(80.0, 30.0));
     assert!(tiny.contains_rect(egui::Rect::from_min_size(in_view(egui::pos2(-200.0, -200.0), Some(tiny), Some(egui::pos2(40.0, 15.0))), BOX)));
+}
+
+#[test]
+fn polygon_inputs_clear_each_other_and_the_preview() {
+    for command in ["sketch.polygon.inscribed", "sketch.polygon.circumscribed"] {
+        for (view, corner) in [("top", false), ("iso", false), ("top", true)] {
+            let mut h = Harness::new();
+            h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+            h.call("ui.view", json!({"view":view}));
+            h.step(&json!({"start":command})).unwrap();
+            if corner {
+                let view = h.app.viewport.layout.as_ref().unwrap().drawable.shrink(20.0);
+                let center = view.left_top();
+                let end = center + egui::vec2(16.0, 0.0);
+                h.step(&json!({"click":[center.x,center.y]})).unwrap();
+                h.step(&json!({"move":[end.x,end.y],"alt":true})).unwrap();
+            } else {
+                h.step(&json!({"click":{"sketch":[0,0]}})).unwrap();
+                h.step(&json!({"move":{"sketch":[2,0]},"alt":true})).unwrap();
+            }
+            h.frames(3);
+            let boxes: Vec<_> = (0..2usize)
+                .map(|i| {
+                    h.ctx
+                        .memory(|m| m.area_rect(egui::Id::new(("sc_dim_area", i))))
+                        .unwrap_or_else(|| panic!("{command}, {view}, {corner:?}: input {i} missing"))
+                })
+                .collect();
+            assert!(!boxes[0].intersects(boxes[1]), "{command}: inputs overlap: {boxes:?}");
+            let tool = h.app.tool.as_ref().unwrap();
+            let end = crate::sketch_dims::shown(&h.app, tool, tool.hover.as_ref().unwrap());
+            let outline = crate::tools::polygon_outline(tool, end, 6.0).unwrap();
+            let state = h.app.session.world_state();
+            let plane = state.sketch(h.app.session.active_sketch.unwrap()).unwrap().plane;
+            let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+            let points: Vec<_> = outline.iter().map(|p| proj.to_screen(plane.to_world(*p)).unwrap()).collect();
+            let bounds = egui::Rect::from_points(&points);
+            for rect in boxes {
+                assert!(!rect.intersects(bounds), "{command}: input {rect:?} covers polygon {bounds:?}");
+                assert!(h.app.viewport.layout.as_ref().unwrap().drawable.contains_rect(rect));
+            }
+            assert_focus(&h, 0);
+            type_value(&mut h, "2");
+            tab(&mut h, false);
+            assert_focus(&h, 1);
+            type_value(&mut h, "6");
+            h.step(&json!({"key":"Enter"})).unwrap();
+            let state = h.app.session.world_state();
+            let sketch = state.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+            assert_eq!(sketch.sketch.curves.iter().filter(|c| !c.construction).count(), 6);
+            assert_eq!(sketch.profiles.len(), 1);
+            let expected = if command == "sketch.polygon.inscribed" { 6.0 * 3f64.sqrt() } else { 8.0 * 3f64.sqrt() };
+            assert!((sketch.profiles[0].area - expected).abs() < 1e-6, "{command}: {}", sketch.profiles[0].area);
+        }
+    }
 }
 
 /// `name = expression` in a value box, as in the Dimension tool's: the shape takes the

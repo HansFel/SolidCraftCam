@@ -31,6 +31,13 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             ui_kit::text(ui, app.tr("prefs.graphics_card_restart"), ui_kit::Text::Hint("graphics_card_restart"));
             if missing {
                 ui_kit::text(ui, app.tr("prefs.graphics_card_missing"), ui_kit::Text::Hint("graphics_card_missing"));
+            } else if !app.preferences.graphics_adapter.is_empty() {
+                // Status / Help show the adapter actually in use; the dropdown shows the saved
+                // preference. When they differ the saved card was not applied (#8341).
+                let active = app.viewport.adapter.rsplit(" · ").next().unwrap_or("");
+                if !active.is_empty() && !active.eq_ignore_ascii_case(&app.preferences.graphics_adapter) {
+                    ui_kit::text(ui, app.tr("prefs.graphics_card_unused"), ui_kit::Text::Hint("graphics_card_unused"));
+                }
             }
         });
     }
@@ -149,6 +156,8 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         });
         ui_kit::text(ui, app.tr("prefs.contact_shading_note"), ui_kit::Text::Hint("ao"));
+        let response = setting::dark_parts_shading(app, ui).on_hover_text(app.tr("prefs.dark_parts_shading_help"));
+        crate::scenario::publish_handle("prefs:dark_parts_shading", response.rect.center());
     });
     ui_kit::settings_section(ui, "viewport", app.tr("prefs.viewport"), |ui| {
         let analysis_policy = setting::single_surface_analysis(app, ui).on_hover_text(app.tr("prefs.single_surface_analysis_help"));
@@ -164,6 +173,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             if let Some(left) = columns.get_mut(0) {
                 ui_kit::checkbox(left, crate::i18n::tr_label("Grid"), &mut app.ui.show_grid);
                 ui_kit::checkbox(left, crate::i18n::tr_label("Perspective view"), &mut app.ui.perspective);
+                left.add_enabled_ui(app.ui.perspective || app.ui.auto_ortho_faces, |ui| field_of_view_row(app, ui));
                 setting::show_frame_rate(app, left).on_hover_text(app.tr("settings.frame_rate_note"));
                 left.add_enabled_ui(app.preferences.show_frame_rate, |ui| {
                     ui_kit::checkbox(ui, app.tr("ui.frame_rate_details"), &mut app.preferences.frame_rate_details)
@@ -206,5 +216,19 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             _ => crate::i18n::tr("prefs.cpu").into(),
         };
         ui_kit::text(ui, &renderer, ui_kit::Text::Inline);
+    });
+}
+
+/// Perspective view's Field of view (#5364): the kit slider in degrees, typed or dragged, kept to
+/// whole degrees and written back in radians. No step on the slider itself: it would round the
+/// default 0.6 (34.4°) just by being drawn, so an untouched angle stays exactly as saved.
+fn field_of_view_row(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let mut degrees = perspective_fov(&app.preferences).to_degrees();
+    ui_kit::row(ui, app.tr("prefs.perspective_fov"), |ui| {
+        let response = ui_kit::slider(ui, &mut degrees, 15.0..=90.0, ui_kit::Slider { format: |v| format!("{v:.0}°"), ..Default::default() });
+        if response.changed() {
+            app.preferences.perspective_fov = degrees.round().to_radians();
+        }
+        response
     });
 }

@@ -9,17 +9,37 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::settings_form(ui, labels, |ui| {
             ui_kit::row(ui, app.tr("prefs.interface_language"), |ui| {
                 ui_kit::settings_control_width(ui, t.form_card_width - t.space_4, |ui| {
-                    ui_kit::dropdown_menu(ui, "pref_language", &crate::i18n::Locale::for_language(&app.preferences.language).display_name(), |ui| {
-                        for locale in crate::i18n::LOCALES {
-                            if ui_kit::list_picker(ui, locale.id, &locale.display_name(), app.preferences.language == locale.id).clicked() {
-                                app.preferences.language = locale.id.into();
+                    ui_kit::dropdown_menu(
+                        ui,
+                        "pref_language",
+                        &if app.preferences.language == crate::i18n::SYSTEM {
+                            app.tr("prefs.language_system").to_owned()
+                        } else {
+                            crate::i18n::Locale::for_language(&app.preferences.language).display_name().into_owned()
+                        },
+                        |ui| {
+                            if ui_kit::list_picker(
+                                ui,
+                                crate::i18n::SYSTEM,
+                                app.tr("prefs.language_system"),
+                                app.preferences.language == crate::i18n::SYSTEM,
+                            )
+                            .clicked()
+                            {
+                                app.preferences.language = crate::i18n::SYSTEM.into();
                             }
-                        }
-                    });
+                            for locale in crate::i18n::LOCALES {
+                                if ui_kit::list_picker(ui, locale.id, &locale.display_name(), app.preferences.language == locale.id).clicked() {
+                                    app.preferences.language = locale.id.into();
+                                }
+                            }
+                        },
+                    );
                 });
             });
         });
     });
+    crate::settings_profiles::section(app, ui, labels);
     ui_kit::settings_section(ui, "saving", app.tr("prefs.saving"), |ui| {
         ui_kit::settings_block_hint(ui, app.tr("ui.autosave_every"), crate::i18n::tr_label("0 turns it off"), labels, |ui| {
             ui.horizontal(|ui| {
@@ -54,6 +74,17 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::settings_block(ui, app.tr("ui.slicer"), labels, |ui| {
             let (single, tip) = (app.tr("ui.slicer_single_instance").to_string(), app.tr("ui.slicer_single_instance_tip").to_string());
             ui_kit::checkbox(ui, &single, &mut app.preferences.slicer_single_instance).on_hover_text(tip);
+        });
+        ui_kit::settings_block(ui, app.tr("prefs.print_face_highlight"), labels, |ui| {
+            let tip = app.tr("prefs.print_face_highlight_tip").to_string();
+            let response = ui_kit::slider(
+                ui,
+                &mut app.preferences.print_face_highlight,
+                0.0..=1.0,
+                ui_kit::Slider { step: Some(0.05), format: |v| format!("{:.0} %", v * 100.0), ..Default::default() },
+            );
+            crate::scenario::publish_target("prefs:print_face_highlight", response.rect);
+            response.on_hover_text(tip);
         });
     });
     ui_kit::settings_section(ui, "updates", app.tr("prefs.updates"), |ui| {

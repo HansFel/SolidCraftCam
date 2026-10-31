@@ -15,7 +15,7 @@ use crate::ui_kit::{Container, Surface};
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use serde::Serialize;
 use serde_json::{Value, json};
-use solidcraft_engine::Sel;
+use solidcraft_engine::{Sel, doc::FeatureKind};
 
 use crate::SolveApp;
 
@@ -65,6 +65,12 @@ pub enum Target {
     Units,
     /// Insert › Insert Design: the designs open in other tabs, and Browse… (#8570).
     InsertDesign,
+    /// Model › Edit Sketch: choose an existing sketch when none is uniquely selected.
+    EditSketch,
+    /// View › Visual style: the four styles, the current one marked (#8868).
+    VisualStyle,
+    /// View › Navigation tool: Orbit, Pan, Zoom; the latched one marked (#8868).
+    ViewTool,
     /// The mouse mappings (Preferences › Navigation), from the status bar (#7023).
     Navigation,
     /// An assembly joint.
@@ -431,6 +437,49 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
             .collect(),
         Target::NamedView { name } => crate::browser::view_items(app, name),
         Target::InsertDesign => insert_design_items(app),
+        Target::EditSketch => {
+            let items: Vec<Item> = app
+                .session
+                .doc
+                .features
+                .iter()
+                .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
+                .map(|f| act("ui.editSketch", &f.name, "sketch").with(json!({"sketch": f.id})))
+                .collect();
+            if items.is_empty() { vec![act("ui.editSketch", app.tr("ui.edit_sketch_empty"), "sketch").on(false)] } else { items }
+        }
+        Target::VisualStyle => crate::navigation_bar::VISUAL_STYLES
+            .iter()
+            .enumerate()
+            .map(|(index, (style, label))| {
+                let current = usize::from(app.ui.visual_style) == index;
+                let mut item = cmd(app, "view.visual_style", label).with(json!({"style": style})).key(if current { "current" } else { "" });
+                item.icon = crate::navigation_bar::visual_style_icon(u8::try_from(index).unwrap_or_default()).into();
+                item
+            })
+            .collect(),
+        Target::ViewTool => {
+            let latched = match app.viewport.nav {
+                Some(crate::viewport::NavMode::Orbit) => "orbit",
+                Some(crate::viewport::NavMode::Pan) => "pan",
+                Some(crate::viewport::NavMode::Zoom) => "zoom",
+                None => "",
+            };
+            [("orbit", "Orbit"), ("pan", "Pan"), ("zoom", "Zoom")]
+                .into_iter()
+                .map(|(tool, label)| {
+                    let current = latched == tool;
+                    // Picking the latched tool again releases it, as its navigation-bar button does.
+                    let mut item = cmd(app, "view.tool", label).with(json!({"tool": if current { "none" } else { tool }})).key(if current {
+                        "current"
+                    } else {
+                        ""
+                    });
+                    item.icon = tool.into();
+                    item
+                })
+                .collect()
+        }
     };
     if !crate::render_workspace::active(app) {
         v.extend(crate::browser::folded_folder_items(app, target));
@@ -565,6 +614,8 @@ fn feature_items(app: &SolveApp, id: u64) -> Vec<Item> {
             .with(json!({"feature":id, "suppressed": !suppressed}))
             .on(exists),
         act("timeline.roll_to", "Roll Back Here", "rollback").with(json!({"feature":id})).on(exists),
+        act("ui.cut", "Cut", "cut").key("Ctrl+X").on(exists && crate::edit_clipboard::can_cut(app)),
+        act("ui.copy", "Copy", "copy").key("Ctrl+C").on(exists && crate::edit_clipboard::something_to_copy(app)),
         act("ui.delete", "Delete", "delete").key("Del").with(json!({"items": [{"type": "feature", "id": id}]})).on(exists),
         Item::sep(),
         act("ui.findTimeline", "Find in Timeline", "rollback").with(json!({"feature":id})).on(exists),
@@ -629,6 +680,9 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         let planar =
             sel.iter().any(|s| matches!(s, Sel::Face { body, index, .. } if crate::dialogs::planar_face(&app.session, body, *index).is_some()));
         v.push(act("ui.lookAt", "Look At", "lookat").on(planar));
+        let marked = matches!(sel.as_slice(), [Sel::Face { body, index, .. }] if crate::print_face_ui::is_print_face(app, body, *index));
+        let one_flat = planar && matches!(sel.as_slice(), [Sel::Face { .. }]);
+        v.push(cmd(app, "body.print_face", if marked { "Clear Print Face" } else { "Print Face" }).on(one_flat));
         v.push(Item::sep());
         v.push(act("ui.appearance", "Appearance", "appearance").key("A"));
         v.push(act("ui.properties", "Properties", "measure").with(json!({ "bodies": [face] })));
@@ -767,6 +821,7 @@ fn sketch_items(app: &SolveApp, id: u64) -> Vec<Item> {
         act("ui.redefineSketch", "Redefine Sketch Plane", "plane").with(json!({ "sketch": id })),
         act("ui.exportDxf", "Export DXF…", "export").with(json!({ "sketch": id })),
         Item::sep(),
+        act("ui.cut", "Cut", "cut").key("Ctrl+X").on(crate::edit_clipboard::can_cut(app)),
         act("ui.copy", "Copy", "copy").key("Ctrl+C").on(crate::edit_clipboard::something_to_copy(app)),
         act("ui.paste", "Paste", "paste").key("Ctrl+V").on(crate::edit_clipboard::can_paste(app)),
         act("ui.delete", "Delete", "delete").key("Del").with(json!({ "items": [{"type": "feature", "id": id}] })),
@@ -1113,7 +1168,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         v.push(cmd(app, "sketch.circle.center", "Circle"));
         v.push(cmd(app, "sketch.dimension", "Sketch Dimension"));
         v.push(Item::sep());
-        v.push(act("ui.paste", "Paste", "paste").key("Ctrl+V").on(app.session.sketch_clipboard.is_some()));
+        v.push(act("ui.paste", "Paste", "paste").key("Ctrl+V").on(crate::edit_clipboard::can_paste_sketch(app)));
         return v;
     }
     let ents: Vec<String> = curves.iter().chain(points.iter()).cloned().collect();
@@ -1178,7 +1233,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     // The clipboard beside Delete, as in every menu.
     v.push(act("ui.cut", "Cut", "cut").key("Ctrl+X"));
     v.push(act("ui.copy", "Copy", "copy").key("Ctrl+C"));
-    v.push(act("ui.paste", "Paste", "paste").key("Ctrl+V").on(app.session.sketch_clipboard.is_some()));
+    v.push(act("ui.paste", "Paste", "paste").key("Ctrl+V").on(crate::edit_clipboard::can_paste_sketch(app)));
     v.push(act("ui.delete", "Delete", "delete").key("Del"));
     v.push(cmd(app, "sketch.dimension", "Sketch Dimension").with(json!({ "entities": ents })).on(ents.len() <= 2));
     // One arc alone: Sketch Dimension gives its radius, this its length along the curve (#6039).
@@ -1718,7 +1773,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.editCanvas" | "ui.calibrateCanvas" => {
             if let Some(c) = id_of(&p, "canvas") {
-                app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, c, item.id == "ui.calibrateCanvas"));
+                let calibrate = item.id == "ui.calibrateCanvas";
+                app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, c, calibrate));
+                if calibrate {
+                    app.set_status(crate::i18n::tr("browser.calibrate_click_a"), false);
+                }
             }
         }
         "ui.newGroup" | "ui.ungroup" | "ui.groupSelected" => crate::browser::group_action(app, &item.id, &p),
@@ -1762,8 +1821,12 @@ pub fn press_shortcut(app: &mut SolveApp, key: &str) -> bool {
 /// Show/Hide (the V key): what is selected in the viewport or picked in the browser flips its
 /// visibility (bodies, faces' and edges' bodies, sketches, construction and origin planes and
 /// axes, components' bodies, canvases, joints' glyphs). When some are shown and some hidden, all are hidden.
+/// A clicked folder takes precedence, and toggles its own visibility without changing its items.
 pub fn toggle_visibility(app: &mut SolveApp) {
     use solidcraft_engine::doc::FeatureKind;
+    if crate::browser::toggle_picked_folder(app) {
+        return;
+    }
     let paths: Vec<Vec<u64>> =
         app.session.selection.iter().filter_map(|s| if let Sel::Occurrence { path } = s { Some(path.clone()) } else { None }).collect();
     if !paths.is_empty() {
@@ -1815,8 +1878,13 @@ pub fn toggle_visibility(app: &mut SolveApp) {
 }
 
 /// Rename what is selected (F2): one body, sketch or feature, construction plane, component
-/// picked in the browser, or canvas.
+/// picked in the browser, canvas, or a group whose Browser row was clicked.
 pub fn rename_selection(app: &mut SolveApp, at: Pos2) -> bool {
+    // A clicked group row takes precedence, as it does for V: groups have no selection of their own.
+    if let Some(g) = crate::browser::picked_group(app) {
+        start_rename(app, RenameWhat::Group(g), at);
+        return true;
+    }
     let what = match (app.session.selection.as_slice(), app.tree.picked_components.as_slice(), app.tree.picked_canvases.as_slice()) {
         ([Sel::Body { name }], [], []) => RenameWhat::Body(name.clone()),
         ([Sel::Feature { id }], [], []) => RenameWhat::Feature(*id),
@@ -2574,6 +2642,67 @@ mod tests {
         assert_eq!(items(&h.app, &Target::Units).iter().find(|item| item.label == "cm").unwrap().shortcut, "current");
         h.step(&json!({"click":{"handle":"button:document.units"}})).unwrap();
         assert!(h.app.viewport.context_menu.is_none());
+    }
+
+    #[test]
+    fn visual_style_toolbar_start_offers_the_four_styles_not_an_error() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        let error = |h: &crate::scenario::Harness| h.app.status.as_ref().is_some_and(|(_, _, error)| *error);
+        h.app.status = None;
+        h.call("ui.start", json!({"command":"view.visual_style"}));
+        assert!(!error(&h), "{:?}", h.app.status);
+        assert_eq!(h.app.menu.target, Target::VisualStyle);
+        assert!(h.app.viewport.context_menu.is_some());
+        let menu = describe(&h.app);
+        let labels: Vec<_> = menu["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(labels, ["Shaded with edges", "Shaded", "Wireframe", "Shaded with hidden edges"]);
+        let rows = items(&h.app, &Target::VisualStyle);
+        assert_eq!(rows.iter().filter(|i| i.shortcut == "current").map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Shaded with edges"]);
+        h.call("ui.menuPick", json!({"item":"Wireframe"}));
+        assert_eq!(h.app.ui.visual_style, 2);
+        assert!(h.app.viewport.context_menu.is_none());
+        assert!(!error(&h));
+        assert!(h.app.session.undo.is_empty(), "a display style is not a design edit");
+        // The real ribbon path: the VIEW tab's panel drop-down, then the Visual style row.
+        h.step(&json!({"click":{"handle":"tab:VIEW"}})).unwrap();
+        h.step(&json!({"click":{"handle":"panel:VIEW:VIEWS"}})).unwrap();
+        h.step(&json!({"click":{"handle":"toolbar:view.visual_style"}})).unwrap();
+        assert!(!error(&h), "{:?}", h.app.status);
+        assert_eq!(h.app.menu.target, Target::VisualStyle);
+        assert!(h.app.viewport.context_menu.is_some());
+        assert_eq!(items(&h.app, &Target::VisualStyle).iter().find(|i| i.label == "Wireframe").unwrap().shortcut, "current");
+        // The drop-down closes on a pick, so the toggle is checked with the opener's rect directly.
+        let button = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(28.0, 28.0));
+        h.app.start_at("view.visual_style", Some(button));
+        assert_eq!(h.app.viewport.context_menu, Some(button.left_bottom()));
+        h.app.start_at("view.visual_style", Some(button));
+        assert!(h.app.viewport.context_menu.is_none(), "a second click closes the menu");
+        let missing = h.call("engine.execute", json!({"command":"view.visual_style","params":{}}));
+        assert_eq!(missing["ok"], false);
+        assert!(h.app.viewport.context_menu.is_none());
+    }
+
+    #[test]
+    fn view_tool_toolbar_start_offers_orbit_pan_zoom_and_releases_the_latched_one() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.status = None;
+        let error = |h: &crate::scenario::Harness| h.app.status.as_ref().is_some_and(|(_, _, error)| *error);
+        h.call("ui.start", json!({"command":"view.tool"}));
+        assert!(!error(&h), "{:?}", h.app.status);
+        assert_eq!(h.app.menu.target, Target::ViewTool);
+        let menu = describe(&h.app);
+        let labels: Vec<_> = menu["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(labels, ["Orbit", "Pan", "Zoom"]);
+        assert!(items(&h.app, &Target::ViewTool).iter().all(|i| i.shortcut != "current"));
+        h.call("ui.menuPick", json!({"item":"Pan"}));
+        assert_eq!(h.app.viewport.nav, Some(crate::viewport::NavMode::Pan));
+        h.call("ui.start", json!({"command":"view.tool"}));
+        assert_eq!(items(&h.app, &Target::ViewTool).iter().find(|i| i.label == "Pan").unwrap().shortcut, "current");
+        h.call("ui.menuPick", json!({"item":"Pan"}));
+        assert_eq!(h.app.viewport.nav, None, "picking the latched tool releases it, as its navigation-bar button does");
+        assert!(!error(&h));
     }
 
     #[test]
