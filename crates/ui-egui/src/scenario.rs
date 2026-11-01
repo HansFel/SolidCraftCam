@@ -178,6 +178,7 @@ impl Drop for Harness {
 
 impl Harness {
     pub fn new() -> Harness {
+        crate::i18n::system_language_english();
         let mut h = Harness {
             app: SolveApp::new(Session::default(), Services::default()),
             ctx: {

@@ -151,11 +151,18 @@ pub fn match_system_tags(tags: &[String]) -> &'static str {
     ENGLISH.id
 }
 
+static SYSTEM_LANGUAGE: OnceLock<&'static str> = OnceLock::new();
+
 /// The catalog id the system asks for, read once per process: the OS locale on desktop
-/// (Windows, macOS, Linux/BSD) and `navigator.languages` in the browser.
+/// (Windows, macOS, Linux/BSD) and `navigator.languages` in the browser. Tests read English,
+/// so their labels match on a computer set to another language.
 pub fn system_language() -> &'static str {
-    static CACHED: OnceLock<&'static str> = OnceLock::new();
-    CACHED.get_or_init(|| match_system_tags(&sys_locale::get_locales().collect::<Vec<_>>()))
+    SYSTEM_LANGUAGE.get_or_init(|| if cfg!(test) { ENGLISH.id } else { match_system_tags(&sys_locale::get_locales().collect::<Vec<_>>()) })
+}
+
+/// Scenarios read the same on every computer: for them the system language is English.
+pub(crate) fn system_language_english() {
+    let _ = SYSTEM_LANGUAGE.set(ENGLISH.id);
 }
 
 /// The catalog id a `language` preference resolves to: the saved choice, or the system's for
