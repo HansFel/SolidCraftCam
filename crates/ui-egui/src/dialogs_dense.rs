@@ -1156,6 +1156,75 @@ mod tests {
     }
 
     #[test]
+    fn cam_slot_form_takes_a_width_and_mills_around_the_rectangle() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.app.run("cam.setup", json!({"name": "Top"})).unwrap();
+        h.step(&json!({"start":"cam.op.slot"})).unwrap();
+        h.frames(2);
+        // A slot has a width and wall stock, no floor stock and no climb or conventional choice.
+        assert!(h.widget("Slot width (mm)").is_some() && h.widget("Wall stock to leave (mm)").is_some());
+        assert!(h.widget("Floor stock to leave (mm)").is_none() && h.widget("Climb").is_none());
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the slot form") };
+        let p = form.params().unwrap();
+        assert_eq!((p["kind"].as_str(), p.get("slot_width")), (Some("slot"), None), "empty: the tool's diameter");
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let setup = h.app.session.doc.cam.setup("Top").cloned().unwrap();
+        let op = setup.operations.first().cloned().unwrap();
+        assert!(matches!(&op, solidcraft_engine::doc::cam::CamOperation::Slot { .. }), "{op:?}");
+        assert!(h.app.session.cam_program("Top").is_ok());
+        // Editing brings it back as a slot, a typed width kept.
+        let mut form = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op);
+        assert_eq!(form.params().unwrap()["kind"].as_str(), Some("slot"));
+        form.set_field("slot_width", "10");
+        assert_eq!(form.params().unwrap()["slot_width"].as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn cam_tool_library_goes_to_a_file_and_comes_back_asking_before_it_replaces() {
+        use solidcraft_engine::cam::{Tool, ToolKind};
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        for (n, d) in [(1, 6.0), (2, 10.0)] {
+            h.app.preferences.cam_tools.put(Tool::new(n, ToolKind::FlatEndmill, d, 20.0)).unwrap();
+        }
+        crate::cam_panel::open(&mut h.app, 1);
+        h.frames(2);
+        // Exported into the folder the save dialog answers with.
+        crate::cam_panel::export_library(&mut h.app);
+        h.frames(3);
+        let file = h.dir.join("tool-library.json");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("solidcraft-tools"), "{text}");
+        // At home tool 2 is another one and tool 3 is missing.
+        h.app.preferences.cam_tools.0.clear();
+        h.app.preferences.cam_tools.put(Tool::new(2, ToolKind::BallEndmill, 8.0, 16.0)).unwrap();
+        *h.next_file.borrow_mut() = Some(file.to_string_lossy().into_owned());
+        crate::cam_panel::import_library(&mut h.app);
+        h.frames(3);
+        assert!(h.widget("The file holds 2 tools, 1 of them new. Different from the library: T2.").is_some());
+        h.step(&json!({"widget": "Take only new ones"})).unwrap();
+        h.frames(2);
+        let kept = h.app.preferences.cam_tools.find(2).map(|t| t.kind);
+        assert_eq!((h.app.preferences.cam_tools.0.len(), kept), (2, Some(ToolKind::BallEndmill)));
+        // Taking all replaces tool 2 as well.
+        let tools = vec![Tool::new(2, ToolKind::FlatEndmill, 10.0, 20.0)];
+        let mut library = h.app.preferences.cam_tools.clone();
+        assert_eq!(crate::cam_panel::take_tools(&mut library, &tools, true), Ok((0, 1)));
+        // A file that is not a tool library is refused and nothing changes.
+        let other = h.dir.join("other.json");
+        std::fs::write(&other, r#"{"format":"something-else","tools":[]}"#).unwrap();
+        *h.next_file.borrow_mut() = Some(other.to_string_lossy().into_owned());
+        crate::cam_panel::import_library(&mut h.app);
+        h.frames(3);
+        let error = h.app.cam_window.as_ref().and_then(|w| w.error.clone()).unwrap_or_default();
+        assert!(error.contains("solidcraft-tools"), "{error}");
+        assert_eq!(h.app.preferences.cam_tools.0.len(), 2);
+    }
+
+    #[test]
     fn cam_window_shows_a_setups_gcode_and_draws_the_selected_lines_move() {
         let mut h = Harness::new();
         h.app.home.open = false;
@@ -1489,7 +1558,7 @@ mod tests {
                     cut.push(format!("{language} {w}: {what} cuts off {out:?}"));
                 }
             };
-            for cmd in ["cam.setup", "cam.op.contour", "cam.op.pocket", "cam.op.drill", "cam.op.face"] {
+            for cmd in ["cam.setup", "cam.op.contour", "cam.op.pocket", "cam.op.drill", "cam.op.face", "cam.op.slot"] {
                 h.app.dialog = None;
                 h.step(&json!({"start":cmd})).unwrap();
                 show(&mut h, cmd);

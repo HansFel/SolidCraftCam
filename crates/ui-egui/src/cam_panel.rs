@@ -384,11 +384,87 @@ pub struct CamPanel {
     editing: Option<(Option<u32>, ToolEdit)>,
     /// The listed machine being edited (its name before the edit), or a new one.
     machine: Option<(Option<String>, MachineEdit)>,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     /// Every step's toolpath for the view, and the design they were made for.
     paths: Option<(usize, Vec<solidcraft_engine::cmd::CamToolpath>)>,
     /// The setup whose G-code is shown.
     pub(crate) gcode: Option<GcodeView>,
+    /// A tool library file read and waiting for the user to say which of its tools to take.
+    pub(crate) import: Option<Vec<Tool>>,
+}
+
+/// The tool library file's name offered when it is exported.
+const LIBRARY_FILE: &str = "tool-library.json";
+
+/// Ask where to write the personal tool library as a file, and write it there.
+pub(crate) fn export_library(app: &mut SolveApp) {
+    let file = solidcraft_engine::cam::ToolLibraryFile { tools: app.preferences.cam_tools.0.clone() };
+    let text = match file.to_json() {
+        Ok(text) => text,
+        Err(e) => return set_error(app, e.to_string()),
+    };
+    app.pick_save(LIBRARY_FILE, &["json"], move |app, path| {
+        let Some(path) = path else { return };
+        match solidcraft_engine::io::write_atomic(std::path::Path::new(&path), text.as_bytes(), true) {
+            Ok(()) => app.set_status(crate::i18n::format("ui.cam.library_exported", &[("path", &path)]), false),
+            Err(e) => set_error(app, format!("{path}: {e}")),
+        }
+    });
+}
+
+/// Ask for a tool library file and read it; the window then asks which of its tools to take.
+pub(crate) fn import_library(app: &mut SolveApp) {
+    app.pick_open_for(&["json"], |app, path| {
+        let Some(path) = path else { return };
+        match read_library(&path) {
+            Ok(tools) => {
+                if let Some(window) = app.cam_window.as_mut() {
+                    window.import = Some(tools);
+                    window.error = None;
+                }
+            }
+            Err(e) => set_error(app, e),
+        }
+    });
+}
+
+fn read_library(path: &str) -> Result<Vec<Tool>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut text = String::new();
+    file.take(solidcraft_engine::cam::MAX_LIBRARY_TEXT as u64 + 1).read_to_string(&mut text).map_err(|e| format!("{path}: {e}"))?;
+    solidcraft_engine::cam::ToolLibraryFile::from_json(&text).map(|file| file.tools).map_err(|e| e.to_string())
+}
+
+/// Puts `tools` in the library: all of them, or with `replace` off only the numbers it lacks.
+/// Returns how many were added and how many replaced.
+pub(crate) fn take_tools(library: &mut Library, tools: &[Tool], replace: bool) -> Result<(usize, usize), String> {
+    let (mut added, mut replaced) = (0, 0);
+    let mut next = library.clone();
+    for tool in tools {
+        match next.find(tool.number) {
+            Some(old) if old == tool => {}
+            Some(_) if !replace => {}
+            Some(_) => {
+                next.put(tool.clone())?;
+                replaced += 1;
+            }
+            None => {
+                next.put(tool.clone())?;
+                added += 1;
+            }
+        }
+    }
+    *library = next;
+    Ok((added, replaced))
+}
+
+/// Shows `e` in the window, or in the status line when it is closed.
+fn set_error(app: &mut SolveApp, e: String) {
+    match app.cam_window.as_mut() {
+        Some(window) => window.error = Some(e),
+        None => app.set_status(e, true),
+    }
 }
 
 /// A setup's program in the window: its lines, each motion line's move, the selected line.
@@ -469,6 +545,10 @@ enum Action {
     EditStep(String, String),
     Library(Box<Tool>),
     Unlibrary(u32),
+    ExportLibrary,
+    ImportLibrary,
+    /// Takes the read file's tools into the library (`true`: also those replacing a tool).
+    TakeImport(bool),
     /// Puts a machine on the personal list.
     Machine(Box<Machine>),
     /// Takes a machine off the personal list.
@@ -506,6 +586,7 @@ fn op_kind(op: &CamOperation) -> &'static str {
         CamOperation::Pocket { .. } => "cmd.cam.op.pocket",
         CamOperation::Drill { .. } => "cmd.cam.op.drill",
         CamOperation::Face { .. } => "cmd.cam.op.face",
+        CamOperation::Slot { .. } => "cmd.cam.op.slot",
     }
 }
 
@@ -679,7 +760,7 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
 fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut Vec<Action>) {
     let t = Tokens::get();
     ui.horizontal_wrapped(|ui| {
-        for id in ["cam.setup", "cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.drill"] {
+        for id in ["cam.setup", "cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.slot", "cam.op.drill"] {
             if ui_kit::button(ui, tr(&format!("cmd.{id}")), ui_kit::Button::Normal).clicked() {
                 actions.push(Action::Start(id));
             }
@@ -769,6 +850,40 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
                 }
             });
         }
+    }
+    // Files on this computer: the browser build has none to write or read.
+    if !cfg!(target_arch = "wasm32") {
+        ui.horizontal_wrapped(|ui| {
+            if ui_kit::button(ui, tr("ui.cam.export_library"), ui_kit::Button::Enabled(!library.0.is_empty())).clicked() {
+                actions.push(Action::ExportLibrary);
+            }
+            if ui_kit::button(ui, tr("ui.cam.import_library"), ui_kit::Button::Normal).clicked() {
+                actions.push(Action::ImportLibrary);
+            }
+        });
+    }
+    if let Some(tools) = &d.import {
+        let fresh = tools.iter().filter(|tool| library.find(tool.number).is_none()).count();
+        let differ: Vec<String> =
+            tools.iter().filter(|tool| library.find(tool.number).is_some_and(|old| old != *tool)).map(|tool| format!("T{}", tool.number)).collect();
+        let (count, new, changed) = (tools.len().to_string(), fresh.to_string(), differ.join(", "));
+        let line = if differ.is_empty() {
+            crate::i18n::format("ui.cam.import_summary", &[("count", &count), ("new", &new)])
+        } else {
+            crate::i18n::format("ui.cam.import_summary_replace", &[("count", &count), ("new", &new), ("tools", &changed)])
+        };
+        ui.add(egui::Label::new(line).wrap());
+        ui.horizontal_wrapped(|ui| {
+            if !differ.is_empty() && ui_kit::button(ui, tr("ui.cam.import_all"), ui_kit::Button::Normal).clicked() {
+                actions.push(Action::TakeImport(true));
+            }
+            if ui_kit::button(ui, tr("ui.cam.import_new"), ui_kit::Button::Enabled(fresh > 0)).clicked() {
+                actions.push(Action::TakeImport(false));
+            }
+            if ui_kit::button(ui, tr("ui.cam.import_cancel"), ui_kit::Button::Small).clicked() {
+                d.import = None;
+            }
+        });
     }
     let Some((original, edit)) = &mut d.editing else { return };
     ui.separator();
@@ -976,6 +1091,25 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     d.editing = None;
                 }
                 Ok(())
+            }
+            Action::ExportLibrary => {
+                app.cam_window = Some(std::mem::take(&mut d));
+                export_library(app);
+                d = app.cam_window.take().unwrap_or_default();
+                Ok(())
+            }
+            Action::ImportLibrary => {
+                app.cam_window = Some(std::mem::take(&mut d));
+                import_library(app);
+                d = app.cam_window.take().unwrap_or_default();
+                Ok(())
+            }
+            Action::TakeImport(replace) => {
+                let tools = d.import.take().unwrap_or_default();
+                take_tools(&mut app.preferences.cam_tools, &tools, replace).map(|(added, replaced)| {
+                    let (added, replaced) = (added.to_string(), replaced.to_string());
+                    app.set_status(crate::i18n::format("ui.cam.imported", &[("added", &added), ("replaced", &replaced)]), false);
+                })
             }
             Action::Machine(machine) => {
                 let result = app.preferences.cam_machines.put(*machine);

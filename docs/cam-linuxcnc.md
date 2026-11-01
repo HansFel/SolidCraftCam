@@ -155,6 +155,17 @@ the tool clear of the area by **Overrun** (default 2 mm), and the first and last
 tool's edge that far past its sides, so no rim is left. The tool goes down beside the area,
 never into it.
 
+## Slots
+
+**Slot** mills along a path with the tool centre on it. Picked edges are the path
+themselves, joined end to end into chains seen along the tool axis: an open chain (one
+edge, an L) is milled from end to end, a closed one all round. A picked face or sketch gives
+its contours instead, each milled all round. Without picks, the rectangle in the fields is
+the path. **Slot width** left empty is the tool's diameter, one pass on the path; a wider
+slot adds side passes, at most **Stepover** apart, until the walls are reached, with
+**Wall stock to leave** on both walls. Depth passes follow **Stepdown**; a ramp angle above
+0 (programmatic) ramps back and forth along an open path instead of plunging.
+
 ## Drilling at picked bores
 
 For **Drill**, pick round edges (each gives its centre) or a flat face (every round hole in
@@ -185,7 +196,12 @@ too; closing it brings the CAM window back. It is read-only: edit the steps, not
 every program stays checked against its toolpaths. It shows the moves, it does not remove
 material, so it is not yet a simulation.
 
-The tool library is kept in the preferences, for every design. **Use in design**
+The tool library is kept in the preferences, for every design. **Export library…** writes it
+to a file (desktop app; `{"format": "solidcraft-tools", "version": 1, "tools": [...]}`), for
+another computer or a colleague. **Import library…** reads such a file and says how many of
+its tools are new and which differ from the library's tools of the same number; **Take only
+new ones** keeps the library's own, **Take all (replace)** takes the file's. A file that is
+not a tool library, or holds a broken tool, is refused and changes nothing. **Use in design**
 copies a library tool into the open design; **Add to library** goes the other way and
 lists the design's tools that are missing from the library or differ from it. A tool
 holds cutting data per material group (aluminium, steel, stainless steel,
@@ -306,7 +322,11 @@ stock with `stepover` (default 70 % of the diameter), `overrun` (default 2 mm), 
 finished height, default part zero) and `allowance` (the material above it; without it, `top`
 or the stock's top); retract and clearance heights below the start are raised above it. The
 guided job takes `kind: "face"` with `overrun` and the picks; its `top - bottom` is the
-allowance. Without `stepdown`, milling steps down one tool
+allowance. `cam.op.slot` runs the tool centre along picked `edges` (always the edges
+themselves, open or closed chains) or around the contours of `faces`, a `sketch` or an
+`outer` polygon, with `width` (default the tool's diameter), `stepover` (side passes,
+default half the diameter), `stock_to_leave`, `tolerance` and `ramp_angle`; the guided job
+takes `kind: "slot"` with `slot_width`. Without `stepdown`, milling steps down one tool
 diameter. Contours take `side` (`auto`, `outside`, `inside`, `on`); contours and pockets take `climb`
 (false: conventional), `stock_to_leave` (walls) and `floor_stock` (floor), in the guided job
 too. Machines:

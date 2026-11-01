@@ -6,12 +6,12 @@
 use serde_json::{Value, json};
 use solidcraft_cam::{
     ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, Move, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
-    Program, Side, Tabs, Tool, ToolKind, contour_open, contour_with_tabs, drill, emit, face, pocket, readback,
+    Program, Side, SlotParams, Tabs, Tool, ToolKind, contour_open, contour_with_tabs, drill, emit, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
     CamSetup, CamSide, CamStock, CamTabs, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
-    WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params,
+    WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params, default_slot_params,
 };
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
@@ -75,6 +75,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         "setup; name; tool (number); sketch?: id or name, with profiles?; faces?; edges?; or outer/regions; holes?; \
          stepover? (default half the tool diameter); climb?; stock_to_leave? (walls); floor_stock? (floor); tolerance?; ramp_angle?: deg; \
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
+    ),
+    CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+        "setup; name; tool (number); edges?: [{body, at}] the picked edges, joined end to end into chains seen along the tool          axis (open or closed); or sketch?/profiles?, faces? or outer/regions: their contours, each a closed path;          the tool centre runs on each path. width? (default the tool diameter: one pass; wider adds side passes);          stepover? (side passes, default half the tool diameter); stock_to_leave? (both walls); tolerance?; ramp_angle?: deg          (default 0: plunge; an open path ramps back and forth); clearance?; retract?; top?; bottom; stepdown?; feed?;          plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
         "setup; name; tool (number); faces?/edges?: a picked face, whose outline's box is faced (the base faces the \
@@ -587,6 +590,42 @@ pub(super) fn pocket_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     op_cmd(s, p, "cam.op.pocket", false)
 }
 
+pub(super) fn slot_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.op.slot";
+    let setup_name = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?.to_string();
+    let name = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).ok_or_else(|| bad(cmd, "`name` is required"))?.to_string();
+    let tool_n =
+        num(p, "tool").filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u32).ok_or_else(|| bad(cmd, "`tool` must be a tool number"))?;
+    let tool = s.doc.cam.tool(tool_n).cloned().ok_or_else(|| bad(cmd, format!("no tool {tool_n} (cam.tool.define first)")))?;
+    // Picked edges are the slot's path themselves, never the faces they bound.
+    let mut p = p.clone();
+    if p.get("edges").is_some() {
+        p["chain"] = json!(true);
+    }
+    let p = &p;
+    let geometry = geometry_param(s, cmd, p)?;
+    let cut = cut_param(cmd, p, &tool)?;
+    let stepover = expr(p, "stepover").unwrap_or_else(|| Expr::new(format!("{} mm", tool.diameter * 0.5)));
+    let mut params = default_slot_params(stepover);
+    params.width = expr(p, "width");
+    for (key, slot) in [("stock_to_leave", &mut params.stock_to_leave), ("tolerance", &mut params.tolerance), ("ramp_angle", &mut params.ramp_angle)]
+    {
+        if let Some(v) = expr(p, key) {
+            *slot = v;
+        }
+    }
+    let op = CamOperation::Slot {
+        name,
+        tool: tool_n,
+        geometry,
+        params,
+        cut,
+        spindle_rpm: num(p, "spindle_rpm").or(tool.spindle_rpm),
+        coolant: bool_(p, "coolant").unwrap_or(false),
+    };
+    store_op(s, cmd, &setup_name, op)
+}
+
 fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Value> {
     let setup_name = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?.to_string();
     let name = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).ok_or_else(|| bad(cmd, "`name` is required"))?.to_string();
@@ -675,11 +714,18 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
         }
         CamOperation::Pocket { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     };
+    store_op(s, cmd, &setup_name, op)
+}
+
+/// Checks `op`, makes its toolpath once, and puts it in setup `setup_name` in place of the
+/// step of its name, else at the end.
+fn store_op(s: &mut Session, cmd: &str, setup_name: &str, op: CamOperation) -> Result<Value> {
+    let name = op.name().to_string();
     op.validate().map_err(|e| bad(cmd, e.to_string()))?;
-    let setup = s.doc.cam.setup(&setup_name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
+    let setup = s.doc.cam.setup(setup_name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
     build_path(s, &setup, &op).map_err(|e| bad(cmd, e))?;
     let doc = s.doc_mut();
-    let setup = doc.cam.setup_mut(&setup_name).ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
+    let setup = doc.cam.setup_mut(setup_name).ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
     if let Some(slot) = setup.operations.iter_mut().find(|o| o.name() == name) {
         *slot = op;
     } else {
@@ -2071,7 +2117,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
     let floor = match op {
         CamOperation::Contour { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
         CamOperation::Pocket { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
-        CamOperation::Drill { .. } | CamOperation::Face { .. } => 0.0,
+        CamOperation::Drill { .. } | CamOperation::Face { .. } | CamOperation::Slot { .. } => 0.0,
     };
     if !floor.is_finite() || floor < 0.0 {
         return Err("the floor stock must be 0 or more".into());
@@ -2123,6 +2169,18 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             CamGeometry::Points { .. } => return Err("facing takes the stock outline, a face or a rectangle".into()),
         };
         return face(lo, hi, tool, &params, &cut).map_err(|e| e.to_string());
+    }
+    if let CamOperation::Slot { geometry, params, .. } = op {
+        let params = SlotParams {
+            width: params.width.as_ref().map(|w| eval_len(s, w, "width")).transpose()?,
+            stepover: eval_len(s, &params.stepover, "stepover")?,
+            stock_to_leave: eval_len(s, &params.stock_to_leave, "stock_to_leave")?,
+            tolerance: eval_len(s, &params.tolerance, "tolerance")?,
+            ramp_angle: eval_ang(s, &params.ramp_angle, "ramp_angle")?,
+        };
+        let path = slot(&slot_paths(s, setup, geometry)?, tool, &params, &cut).map_err(|e| e.to_string())?;
+        solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
+        return Ok(path);
     }
     let (regions, openings) = resolve_geometry(s, setup, op.geometry(), matches!(op, CamOperation::Contour { .. }))?;
     match op {
@@ -2180,7 +2238,27 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         }
         CamOperation::Drill { .. } => Err("drilling needs hole centres".into()),
         CamOperation::Face { .. } => Err("facing takes the stock outline or a rectangle".into()),
+        CamOperation::Slot { .. } => Err("a slot takes edges or contours".into()),
     }
+}
+
+/// A slot's paths in work XY: picked edges joined into chains (closed or open), else every
+/// contour of the picked faces, sketch profiles or polygons, each a closed path.
+fn slot_paths(s: &Session, setup: &CamSetup, geometry: &CamGeometry) -> std::result::Result<Vec<OpenPath>, String> {
+    let (regions, open) = match geometry {
+        CamGeometry::Edges { .. } => edge_chain(s, &work_frame(setup)?, &edge_refs(geometry))?,
+        _ => {
+            let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+            (regions.into_iter().chain(openings).collect(), Vec::new())
+        }
+    };
+    let mut paths: Vec<OpenPath> =
+        regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).map(|lp| OpenPath { segs: lp.segs.clone() }).collect();
+    paths.extend(open.into_iter().map(|segs| OpenPath { segs }));
+    if paths.is_empty() {
+        return Err("there is no path for the slot: pick edges or contours".into());
+    }
+    Ok(paths)
 }
 
 fn list_cmd(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -2223,6 +2301,10 @@ fn setup_json(setup: &CamSetup) -> Value {
             }),
             CamOperation::Face { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
                 "type": "face", "name": name, "tool": tool, "geometry": geometry,
+                "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::Slot { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
+                "type": "slot", "name": name, "tool": tool, "geometry": geometry,
                 "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
             }),
         }).collect::<Vec<_>>(),
@@ -2458,6 +2540,48 @@ mod tests {
         assert_eq!(run(&mut s, "cam.setup", json!({}))["setup"]["name"], "Setup 2");
         assert_eq!(s.doc.cam.setups.len(), 2);
         assert!(s.execute("cam.setup", &json!({"delete": true})).is_err());
+    }
+
+    #[test]
+    fn a_slot_runs_the_tool_centre_along_picked_edges_or_around_a_contour() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        let edge = |at: [f64; 3]| json!({"body": "Plate", "at": at});
+        // The front and right top edges, an open L: the tool centre on them, no offset.
+        let l_path = json!([edge([20.0, 0.0, 8.0]), edge([40.0, 15.0, 8.0])]);
+        run(&mut s, "cam.op.slot", json!({"setup": "Top", "name": "S", "tool": 1, "edges": l_path, "bottom": -2, "stepdown": 1}));
+        let op = s.doc.cam.setup("Top").and_then(|x| x.operations.first()).cloned();
+        assert!(matches!(op, Some(CamOperation::Slot { geometry: CamGeometry::Edges { .. }, .. })), "{op:?}");
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        assert!(posted["readback"]["within"].as_bool().unwrap(), "{posted}");
+        let xs = gcode_x_words(posted["gcode"].as_str().unwrap());
+        assert!(xs.contains(&0) && xs.contains(&4000) && xs.iter().all(|x| (0..=4000).contains(x)), "{xs:?}");
+        // 10 mm wide round a rectangle: side passes reach 2 mm either side of the path.
+        run(
+            &mut s,
+            "cam.op.slot",
+            json!({"setup": "Top", "name": "S", "tool": 1, "outer": [[0,0],[40,0],[40,30],[0,30]], "width": 10, "bottom": -1}),
+        );
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        let xs = gcode_x_words(posted["gcode"].as_str().unwrap());
+        assert!(xs.contains(&-200) && xs.contains(&4200) && xs.iter().all(|x| (-200..=4200).contains(x)), "{xs:?}");
+        // The guided form's job takes the slot's width and lists the step as a slot.
+        let listed = run(&mut s, "cam.list", json!({}));
+        assert_eq!(listed["setups"][0]["operations"][0]["type"], "slot");
+        // Narrower than the tool, or no path at all, is refused and keeps the step as it was.
+        let before = s.doc.cam.clone();
+        for bad in [
+            json!({"setup": "Top", "name": "S", "tool": 1, "outer": [[0,0],[40,0],[40,30],[0,30]], "width": 4, "bottom": -1}),
+            json!({"setup": "Top", "name": "S", "tool": 1, "edges": [], "bottom": -1}),
+        ] {
+            assert!(s.execute("cam.op.slot", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc.cam, before, "{bad}");
+        }
     }
 
     #[test]

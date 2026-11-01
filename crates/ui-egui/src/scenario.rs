@@ -152,7 +152,7 @@ pub struct Harness {
     /// Files the scenario saves and opens live here; file pickers answer from it.
     pub dir: PathBuf,
     /// The file the next Open picker returns (a `choose_file` step).
-    next_file: Rc<RefCell<Option<String>>>,
+    pub(crate) next_file: Rc<RefCell<Option<String>>>,
     /// The app's request queue, opened by the first queued request.
     queue: Option<std::sync::mpsc::Sender<ControlRequest>>,
     time: f64,

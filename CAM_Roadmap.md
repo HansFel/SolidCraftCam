@@ -127,7 +127,7 @@ Project
 | Holder (geometry for collision checks, gauge length) | Planned |
 | Tool material (HSS, carbide, coated) changing the starting values | Planned |
 | Recommended cutting data per material group | Done |
-| Import and export of the library as a file (own JSON format) | Planned |
+| Import and export of the library as a file (own JSON format) | Done |
 
 ### 4. Stock management
 
@@ -148,7 +148,7 @@ Project
 | Drill (peck, dwell), at picked round edges or every round hole of a picked face | Done |
 | Facing of the stock in passes, with overrun past its edges | Done |
 | Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
-| Slot (along a line or arc) | Planned |
+| Slot along picked edges (open or closed chains) or around contours, wider than the tool with side passes | Done |
 | Chamfer and deburr along edges (chamfer cutter) | Planned |
 | Bore and helical bore | Planned |
 | Thread milling and tapping (rigid or floating) | Planned |

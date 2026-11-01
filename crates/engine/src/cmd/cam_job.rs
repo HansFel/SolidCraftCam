@@ -118,6 +118,18 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         JobKind::Pocket => {
             cam::pocket_cmd(&mut work, &op)?;
         }
+        JobKind::Slot => {
+            let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
+            map.remove("floor_stock");
+            map.remove("climb");
+            if let Some(v) = a.slot_width {
+                if !v.is_finite() || !(v > 0.0 && v <= 1.0e4) {
+                    return Err(bad(cmd, "`slot_width` must be more than 0 mm"));
+                }
+                map.insert("width".into(), json!(v));
+            }
+            cam::slot_cmd(&mut work, &op)?;
+        }
         JobKind::Face => {
             // A picked face's outline, else the setup's stock outline, overrun on every side;
             // facing starts `top - bottom` above the finished height.

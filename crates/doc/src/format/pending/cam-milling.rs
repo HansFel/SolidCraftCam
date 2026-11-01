@@ -22,5 +22,7 @@
 //! inside a hole picked as its own contour), `outside`, `inside` or `on`; contours and pockets
 //! can leave stock on the walls (`stock_to_leave`) and on the floor (`floor_stock`). A facing
 //! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) or a rectangle
-//! with a `stepover` and an `overrun` past the stock's edges. Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
+//! with a `stepover` and an `overrun` past the stock's edges. A slot operation (`slot`) runs the tool centre along each picked edge chain
+//! (open or closed) or contour, `width` wide (absent: the tool's diameter) with side passes `stepover`
+//! apart, `stock_to_leave` on both walls, `tolerance` and `ramp_angle` as for pockets. Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
 //! means no setups. The last release refuses a design saved with this (the newer format number).

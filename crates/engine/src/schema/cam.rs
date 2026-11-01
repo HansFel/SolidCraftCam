@@ -172,6 +172,8 @@ pub struct MillingParams {
     pub floor_stock: Option<NumberExpr>,
     /// Facing: how far the tool's edge runs past the stock.
     pub overrun: Option<NumberExpr>,
+    /// Slot: its width (default the tool's diameter).
+    pub width: Option<NumberExpr>,
     /// Facing: the material above the finished height (`bottom`); facing starts that high.
     pub allowance: Option<NumberExpr>,
     pub tolerance: Option<NumberExpr>,
@@ -346,6 +348,8 @@ pub enum JobKind {
     Drill,
     /// Facing the setup's stock.
     Face,
+    /// A slot along picked edges or contours.
+    Slot,
 }
 
 /// Millimetres, mm/min and rpm. The rectangle is in setup work XY unless `sketch` or `faces`
@@ -423,6 +427,9 @@ pub struct JobParams {
     /// Facing: how far the tool's edge runs past the stock (mm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overrun: Option<f64>,
+    /// Slot: its width (mm; default the tool's diameter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_width: Option<f64>,
     pub top: f64,
     pub bottom: f64,
     pub clearance: f64,

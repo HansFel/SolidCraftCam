@@ -41,6 +41,7 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "cam.op.drill", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.face", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.pocket", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.slot", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.setup", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.tool.define", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "sketch.create", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
@@ -831,7 +832,7 @@ impl Dialog {
             "cam.job.create" => Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::new(app)), crate::dialogs_milling::inputs()),
             "cam.setup" => Dialog::new(Kind::CamSetup(crate::dialogs_cam_setup::CamSetupForm::new(app)), crate::dialogs_cam_setup::inputs()),
             // The Machining tab's operation buttons open the same guided form with their operation chosen.
-            "cam.op.contour" | "cam.op.pocket" | "cam.op.drill" | "cam.op.face" => {
+            "cam.op.contour" | "cam.op.pocket" | "cam.op.drill" | "cam.op.face" | "cam.op.slot" => {
                 Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::for_operation(app, id)), crate::dialogs_milling::inputs())
             }
             "sketch.create" => Dialog::new(Kind::Sketch, vec![SelInput::new("Plane", PLANES | PLANAR_FACES, false)]),

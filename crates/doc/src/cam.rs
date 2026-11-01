@@ -808,6 +808,24 @@ pub struct CamFaceParams {
     pub overrun: Expr,
 }
 
+/// Slot settings held as expressions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamSlotParams {
+    /// The slot's width; absent: the tool's diameter, one pass on the path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<Expr>,
+    /// Distance between the side passes of a slot wider than the tool.
+    pub stepover: Expr,
+    /// Material left on both walls of a wide slot.
+    #[serde(default = "zero_mm")]
+    pub stock_to_leave: Expr,
+    #[serde(default = "tol_mm")]
+    pub tolerance: Expr,
+    /// Steepest descent into each depth pass, along the path; 0 plunges.
+    #[serde(default = "zero_deg")]
+    pub ramp_angle: Expr,
+}
+
 /// Heights and feeds as expressions (`depth + 1 mm`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CamCut {
@@ -915,6 +933,18 @@ pub enum CamOperation {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         coolant: bool,
     },
+    /// A slot milled along each picked edge chain or contour, the tool centre on it.
+    Slot {
+        name: String,
+        tool: u32,
+        geometry: CamGeometry,
+        params: CamSlotParams,
+        cut: CamCut,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spindle_rpm: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        coolant: bool,
+    },
     /// Facing the stock (or a rectangle) flat, from its top down in passes.
     Face {
         name: String,
@@ -935,6 +965,7 @@ impl CamOperation {
             CamOperation::Contour { name, .. }
             | CamOperation::Pocket { name, .. }
             | CamOperation::Face { name, .. }
+            | CamOperation::Slot { name, .. }
             | CamOperation::Drill { name, .. } => name,
         }
     }
@@ -944,6 +975,7 @@ impl CamOperation {
             CamOperation::Contour { tool, .. }
             | CamOperation::Pocket { tool, .. }
             | CamOperation::Face { tool, .. }
+            | CamOperation::Slot { tool, .. }
             | CamOperation::Drill { tool, .. } => *tool,
         }
     }
@@ -953,6 +985,7 @@ impl CamOperation {
             CamOperation::Contour { geometry, .. }
             | CamOperation::Pocket { geometry, .. }
             | CamOperation::Face { geometry, .. }
+            | CamOperation::Slot { geometry, .. }
             | CamOperation::Drill { geometry, .. } => geometry,
         }
     }
@@ -963,6 +996,7 @@ impl CamOperation {
             CamOperation::Contour { spindle_rpm, .. }
             | CamOperation::Pocket { spindle_rpm, .. }
             | CamOperation::Face { spindle_rpm, .. }
+            | CamOperation::Slot { spindle_rpm, .. }
             | CamOperation::Drill { spindle_rpm, .. } => *spindle_rpm,
         }
     }
@@ -972,6 +1006,7 @@ impl CamOperation {
             CamOperation::Contour { coolant, .. }
             | CamOperation::Pocket { coolant, .. }
             | CamOperation::Face { coolant, .. }
+            | CamOperation::Slot { coolant, .. }
             | CamOperation::Drill { coolant, .. } => *coolant,
         }
     }
@@ -981,6 +1016,7 @@ impl CamOperation {
             CamOperation::Contour { cut, .. }
             | CamOperation::Pocket { cut, .. }
             | CamOperation::Face { cut, .. }
+            | CamOperation::Slot { cut, .. }
             | CamOperation::Drill { cut, .. } => cut,
         }
     }
@@ -1035,6 +1071,16 @@ impl CamOperation {
                 check_expr(&params.overrun, "overrun")?;
                 check_spindle(*spindle_rpm)?;
             }
+            CamOperation::Slot { params, spindle_rpm, .. } => {
+                if let Some(width) = &params.width {
+                    check_expr(width, "width")?;
+                }
+                check_expr(&params.stepover, "stepover")?;
+                check_expr(&params.stock_to_leave, "stock_to_leave")?;
+                check_expr(&params.tolerance, "tolerance")?;
+                check_expr(&params.ramp_angle, "ramp_angle")?;
+                check_spindle(*spindle_rpm)?;
+            }
             CamOperation::Pocket { params, spindle_rpm, .. } => {
                 check_expr(&params.stepover, "stepover")?;
                 check_expr(&params.stock_to_leave, "stock_to_leave")?;
@@ -1086,6 +1132,11 @@ pub fn default_pocket_params(stepover: Expr) -> CamPocketParams {
 /// Default facing params; `stepover` must still be set by the caller.
 pub fn default_face_params(stepover: Expr) -> CamFaceParams {
     CamFaceParams { stepover, overrun: overrun_mm() }
+}
+
+/// Default slot params; `stepover` must still be set by the caller.
+pub fn default_slot_params(stepover: Expr) -> CamSlotParams {
+    CamSlotParams { width: None, stepover, stock_to_leave: zero_mm(), tolerance: tol_mm(), ramp_angle: zero_deg() }
 }
 
 /// Default cut expressions. `bottom` and `stepdown` come from the command.

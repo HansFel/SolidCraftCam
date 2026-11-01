@@ -145,6 +145,7 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("tab_width", "ui.cam.tab_width", "5"),
     ("tab_height", "ui.cam.tab_height", "1"),
     ("overrun", "ui.cam.overrun", "2"),
+    ("slot_width", "ui.cam.slot_width", ""),
     ("feed", "ui.cam.feed", "600"),
     ("plunge_feed", "ui.cam.plunge", "150"),
     ("spindle_rpm", "ui.cam.rpm", "6000"),
@@ -251,6 +252,7 @@ impl Milling {
             CamOperation::Pocket { cut, spindle_rpm, .. } => (1, cut, spindle_rpm),
             CamOperation::Drill { cut, spindle_rpm, .. } => (2, cut, spindle_rpm),
             CamOperation::Face { cut, spindle_rpm, .. } => (3, cut, spindle_rpm),
+            CamOperation::Slot { cut, spindle_rpm, .. } => (4, cut, spindle_rpm),
         };
         let tool = app.session.doc.cam.tool(op.tool());
         let number = |v: f64| format!("{:.4}", v).trim_end_matches('0').trim_end_matches('.').to_string();
@@ -293,6 +295,11 @@ impl Milling {
             CamOperation::Contour { params, .. } => {
                 set("stock_to_leave", plain(&params.stock_to_leave));
                 set("floor_stock", plain(&params.floor_stock));
+            }
+            CamOperation::Slot { params, .. } => {
+                set("stepover", plain(&params.stepover));
+                set("stock_to_leave", plain(&params.stock_to_leave));
+                set("slot_width", params.width.as_ref().map(plain).unwrap_or_default());
             }
             CamOperation::Face { params, cut, .. } => {
                 set("stepover", plain(&params.stepover));
@@ -353,7 +360,7 @@ impl Milling {
                 }
             }
             CamOperation::Pocket { params, .. } => form.climb = params.climb,
-            CamOperation::Drill { .. } | CamOperation::Face { .. } => {}
+            CamOperation::Drill { .. } | CamOperation::Face { .. } | CamOperation::Slot { .. } => {}
         }
         match op {
             CamOperation::Drill { geometry: CamGeometry::Points { points }, .. } => {
@@ -362,7 +369,7 @@ impl Milling {
 ",
                 );
             }
-            CamOperation::Contour { geometry, .. } | CamOperation::Pocket { geometry, .. } => {
+            CamOperation::Contour { geometry, .. } | CamOperation::Pocket { geometry, .. } | CamOperation::Slot { geometry, .. } => {
                 form.kept = serde_json::to_value(geometry).map(|g| json!({"geometry": g})).unwrap_or(Value::Null);
             }
             // Facing keeps a picked face; the stock outline needs nothing kept.
@@ -390,6 +397,7 @@ impl Milling {
             "cam.op.contour" => (0, "ui.cam.contour"),
             "cam.op.drill" => (2, "ui.cam.drill"),
             "cam.op.face" => (3, "ui.cam.face"),
+            "cam.op.slot" => (4, "ui.cam.slot"),
             _ => (1, "ui.cam.pocket"),
         };
         let form = Self::new(app);
@@ -399,6 +407,13 @@ impl Milling {
             form.facing_from(stock_top(&app.session, &form.setup), 0.0);
         }
         form
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_field(&mut self, key: &str, value: &str) {
+        if let Some(field) = self.field(key) {
+            *field = value.to_string();
+        }
     }
 
     #[cfg(test)]
@@ -423,9 +438,13 @@ impl Milling {
             return Err(crate::i18n::tr("ui.cam.name_taken").into());
         }
         let mut p = json!({"setup": self.setup, "name": self.name,
-            "kind": match self.kind { 0 => "contour", 2 => "drill", 3 => "face", _ => "pocket" }});
+            "kind": match self.kind { 0 => "contour", 2 => "drill", 3 => "face", 4 => "slot", _ => "pocket" }});
         let diameter = self.values.get(1).and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok()).unwrap_or(0.0);
         for ((key, _, _), value) in FIELDS.iter().zip(&self.values) {
+            // A slot's width is the tool's diameter when left empty; only slots have one.
+            if *key == "slot_width" && (self.kind != 4 || value.trim().is_empty()) {
+                continue;
+            }
             // Stepdown and stepover can be a share of the tool diameter.
             let number =
                 if matches!(*key, "stepdown" | "stepover") { millimetres(value, diameter) } else { value.trim().replace(',', ".").parse().ok() };
@@ -522,6 +541,9 @@ impl Milling {
                     map.remove(key);
                 }
             }
+        }
+        if self.kind == 4 && p["stock_to_leave"].as_f64().is_some_and(|v| v < 0.0) {
+            return Err(crate::i18n::tr("ui.cam.stock_negative").into());
         }
         if self.kind < 2 {
             p["climb"] = json!(self.climb);
@@ -731,7 +753,7 @@ fn contour_list(ui: &mut egui::Ui, session: &solidcraft_engine::Session, inputs:
 
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &mut [SelInput]) {
     let tr = crate::i18n::tr;
-    let kinds = [tr("ui.cam.contour"), tr("ui.cam.pocket"), tr("ui.cam.drill"), tr("ui.cam.face")];
+    let kinds = [tr("ui.cam.contour"), tr("ui.cam.pocket"), tr("ui.cam.drill"), tr("ui.cam.face"), tr("ui.cam.slot")];
     let was = form.kind;
     ui_kit::choice_row(ui, tr("ui.cam.operation"), "cam-kind", &mut form.kind, &kinds);
     if form.kind == 3 && was != 3 {
@@ -744,6 +766,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             contour_list(ui, &app.session, inputs, false);
         }
     } else {
+        if form.kind == 4 {
+            ui.add(egui::Label::new(tr("ui.cam.slot_hint")).wrap_mode(egui::TextWrapMode::Wrap));
+        }
         contour_list(ui, &app.session, inputs, form.kind == 2);
     }
     if !form.kept.is_null() && crate::selection::items(inputs, 0).is_empty() {
@@ -787,8 +812,11 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::choice_row(ui, tr("ui.cam.open_side"), "cam-open-side", &mut form.open_side, &sides);
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.reverse"), &mut form.reverse));
     }
-    if form.kind < 2 && edges_picked {
-        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.chain"), &mut form.chain));
+    if (form.kind < 2 || form.kind == 4) && edges_picked {
+        // A slot always follows the picked edges themselves.
+        if form.kind < 2 {
+            ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.chain"), &mut form.chain));
+        }
         if ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_chain"), ui_kit::Button::Small)).clicked() {
             match find_chain(app, &form.setup, inputs) {
                 Ok(()) => form.chain = true,
@@ -872,6 +900,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             continue;
         }
         if form.kind != 2 && *key == "dwell" {
+            continue;
+        }
+        if (form.kind == 4) != (*key == "slot_width") && matches!(*key, "slot_width" | "floor_stock") {
+            continue;
+        }
+        if *key == "slot_width" {
+            ui_kit::text_row(ui, tr(label), value, tr("ui.cam.slot_width_hint"));
             continue;
         }
         if form.kind == 0 && *key == "stepover" {
