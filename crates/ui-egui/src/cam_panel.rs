@@ -114,6 +114,68 @@ impl Machines {
     }
 }
 
+/// Where each machine's programs go, by machine name: a local folder or the machine's share
+/// (`\\linuxcnc\nc_files`). An entry that is not a usable folder name is dropped on reading.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ProgramFolders(pub std::collections::BTreeMap<String, String>);
+
+impl<'de> Deserialize<'de> for ProgramFolders {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let rows = std::collections::BTreeMap::<String, Value>::deserialize(deserializer)?;
+        let mut folders = ProgramFolders::default();
+        for (machine, folder) in rows.into_iter().take(MAX_MACHINES) {
+            if let Some(folder) = folder.as_str() {
+                let _ = folders.set(&machine, folder);
+            }
+        }
+        Ok(folders)
+    }
+}
+
+impl ProgramFolders {
+    /// The folder `machine`'s programs go to, if one is set.
+    pub fn get(&self, machine: &str) -> Option<&str> {
+        self.0.get(machine).map(String::as_str)
+    }
+
+    /// Sets `machine`'s folder; an empty one removes it. At most 1024 characters, no control characters.
+    pub fn set(&mut self, machine: &str, folder: &str) -> Result<(), String> {
+        let folder = folder.trim();
+        if folder.is_empty() {
+            self.0.remove(machine);
+            return Ok(());
+        }
+        if machine.is_empty() || folder.chars().count() > 1024 || folder.chars().any(char::is_control) {
+            return Err(tr("ui.cam.folder_invalid").into());
+        }
+        self.0.insert(machine.to_string(), folder.to_string());
+        Ok(())
+    }
+}
+
+/// The program file's name for setup `setup`: characters a file name cannot hold become `_`.
+fn program_file(setup: &str, extension: &str) -> String {
+    let stem: String = setup.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    let stem = stem.trim().trim_end_matches('.');
+    format!("{}.{extension}", if stem.is_empty() { "program" } else { stem })
+}
+
+/// The extension the post of setup `setup` writes: the setup's post, else its machine's, else LinuxCNC.
+fn program_extension(app: &SolveApp, setup: &str) -> String {
+    let cam = &app.session.doc.cam;
+    let setup = cam.setup(setup);
+    let post = setup.and_then(|s| s.post.clone().or_else(|| cam.setup_machine(s).and_then(|m| m.post.clone()))).unwrap_or_else(|| "linuxcnc".into());
+    cam.post(&post).map(|p| p.extension.clone()).or_else(|| Post::builtin(&post).map(|p| p.extension)).unwrap_or_else(|| "ngc".into())
+}
+
+/// The folder setup `setup`'s machine writes its programs to, if one is set.
+fn program_folder(app: &SolveApp, setup: &str) -> Option<String> {
+    let cam = &app.session.doc.cam;
+    let machine = cam.setup(setup).and_then(|s| s.machine.as_deref())?;
+    app.preferences.cam_folders.get(machine).map(str::to_string)
+}
+
 /// A post's name as the user reads it: the controller's own spelling for the built-in ones.
 fn post_label(name: &str) -> String {
     match name {
@@ -264,6 +326,8 @@ struct MachineEdit {
     max_feed: String,
     /// The post its programs are written with; none: the default.
     post: Option<String>,
+    /// Where its programs are written on this computer; empty: asked on each export.
+    folder: String,
 }
 
 impl MachineEdit {
@@ -281,6 +345,7 @@ impl MachineEdit {
             spindle: [number(m.spindle_min), number(m.spindle_max)],
             max_feed: number(m.max_feed),
             post: m.post.clone(),
+            folder: String::new(),
         }
     }
 
@@ -345,6 +410,31 @@ enum Action {
     Machine(Box<Machine>),
     /// Takes a machine off the personal list.
     Unmachine(String),
+    /// Sets where a listed machine's programs go (machine, folder; empty: asked on each export).
+    Folder(String, String),
+}
+
+/// Export setup `setup`'s program: straight into its machine's folder when one is set (an
+/// existing program of that name is replaced), else where the save dialog says. A folder that
+/// cannot be written (the machine is off) says so and offers the dialog, so nothing is lost.
+pub(crate) fn export(app: &mut SolveApp, setup: &str) -> Result<(), String> {
+    let extension = program_extension(app, setup);
+    let file = program_file(setup, &extension);
+    if let Some(folder) = program_folder(app, setup).filter(|_| !cfg!(target_arch = "wasm32")) {
+        let path = std::path::Path::new(&folder).join(&file).to_string_lossy().into_owned();
+        match app.run("cam.export", json!({"setup": setup, "path": path, "overwrite": true})) {
+            Ok(_) => {
+                app.set_status(crate::i18n::format("ui.cam.exported_to", &[("path", &path)]), false);
+                return Ok(());
+            }
+            Err(e) => {
+                app.pick_save_command(&file, &[&extension], "cam.export", json!({"setup": setup}));
+                return Err(crate::i18n::format("ui.cam.folder_unreachable", &[("folder", &folder), ("error", &e)]));
+            }
+        }
+    }
+    app.pick_save_command(&file, &[&extension], "cam.export", json!({"setup": setup}));
+    Ok(())
 }
 
 fn op_kind(op: &CamOperation) -> &'static str {
@@ -594,7 +684,9 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
                 }
                 let picked = d.machine.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(machine.name.as_str()));
                 if ui_kit::list_picker(ui, &format!("cam-machine-{}", machine.name), &machine_label(machine), picked).clicked() {
-                    d.machine = Some((Some(machine.name.clone()), MachineEdit::from_machine(machine)));
+                    let mut edit = MachineEdit::from_machine(machine);
+                    edit.folder = app.preferences.cam_folders.get(&machine.name).unwrap_or_default().to_string();
+                    d.machine = Some((Some(machine.name.clone()), edit));
                 }
             });
         }
@@ -649,9 +741,15 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     let mut chosen = edit.post.as_ref().and_then(|p| posts.iter().position(|n| n == p)).map_or(0, |i| i + 1);
     ui_kit::choice_row(ui, tr("ui.cam.post"), "cam-machine-post", &mut chosen, &refs);
     edit.post = chosen.checked_sub(1).and_then(|i| posts.get(i)).cloned();
+    // The browser has no folders: there an export is always a download.
+    if !cfg!(target_arch = "wasm32") {
+        ui_kit::text_row(ui, tr("ui.cam.program_folder"), &mut edit.folder, r"\\linuxcnc\nc_files");
+        ui.add(egui::Label::new(RichText::new(tr("ui.cam.program_folder_hint")).color(t.text_dim)).wrap());
+    }
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.machine_hint")).color(t.text_dim)).wrap());
     if ui_kit::button(ui, tr("ui.cam.save_machine"), ui_kit::Button::Primary).clicked() {
-        match edit.machine() {
+        let folder_ok = ProgramFolders::default().set("machine", &edit.folder);
+        match edit.machine().and_then(|m| folder_ok.map(|()| m)) {
             Ok(machine) => match list.name_free(&machine.name, original.as_deref()) {
                 Err(e) => d.error = Some(e),
                 Ok(()) => {
@@ -661,6 +759,7 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
                         actions.push(Action::Unmachine(old));
                     }
                     *original = Some(machine.name.clone());
+                    actions.push(Action::Folder(machine.name.clone(), edit.folder.clone()));
                     actions.push(Action::Machine(Box::new(machine)));
                 }
             },
@@ -690,10 +789,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     for action in actions {
         let result = match action {
             Action::Run(id, params) => app.run(id, params).map(|_| ()),
-            Action::Export(setup) => {
-                app.pick_save_command(&format!("{setup}.ngc"), &["ngc"], "cam.export", json!({"setup": setup}));
-                Ok(())
-            }
+            Action::Export(setup) => export(app, &setup),
             Action::Start(id) => {
                 app.start(id);
                 Ok(())
@@ -734,8 +830,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 }
                 result
             }
+            Action::Folder(name, folder) => app.preferences.cam_folders.set(&name, &folder),
             Action::Unmachine(name) => {
                 app.preferences.cam_machines.0.retain(|m| m.name != name);
+                app.preferences.cam_folders.0.remove(&name);
                 if d.machine.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(name.as_str())) {
                     d.machine = None;
                 }

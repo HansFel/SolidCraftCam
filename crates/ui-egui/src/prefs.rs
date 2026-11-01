@@ -1287,6 +1287,9 @@ preference_settings! {
     /// The personal CAM machine list (travel, spindle speeds, fastest feed), shared by every
     /// design in this profile. No page reset discards it.
     cam_machines: crate::cam_panel::Machines = crate::cam_panel::Machines::default();
+    /// Where each listed machine's programs are written (a local folder or the machine's share),
+    /// by machine name. Kept here, not in the design: a path holds on this computer only.
+    cam_folders: crate::cam_panel::ProgramFolders = crate::cam_panel::ProgramFolders::default();
     /// Personal Sheet Metal Rules, offered by the rule manager of every design in this profile
     /// (#9346). No page reset discards this user-authored library.
     personal_sheet_rules: crate::personal_sheet_rules::Library = crate::personal_sheet_rules::Library::default();

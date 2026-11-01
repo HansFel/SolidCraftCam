@@ -1120,6 +1120,42 @@ mod tests {
     }
 
     #[test]
+    fn cam_export_writes_into_the_machine_folder_or_asks_when_it_cannot() {
+        // Folders are personal: a broken row is dropped, an empty folder removes the entry.
+        let mut folders: crate::cam_panel::ProgramFolders =
+            serde_json::from_value(json!({"Portal": r"\\linuxcnc\nc_files", "": "x", "Bell": "a\u{7}b", "Count": 3})).unwrap();
+        assert_eq!(folders.0.keys().collect::<Vec<_>>(), ["Portal"]);
+        folders.set("Portal", "  ").unwrap();
+        assert!(folders.get("Portal").is_none());
+        assert!(folders.set("Portal", &"x".repeat(1025)).is_err());
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        let mill = json!({"name": "Portal", "x": [0, 300], "y": [0, 200], "z": [-100, 0],
+            "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000, "post": "grbl"});
+        h.app.run("cam.tool.define", json!({"number": 1, "diameter": 4, "flute_length": 12})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top: front/back", "machine": mill})).unwrap();
+        h.app
+            .run("cam.op.contour", json!({"setup": "Top: front/back", "name": "C", "tool": 1, "outer": [[0,0],[20,0],[20,10],[0,10]], "bottom": -1}))
+            .unwrap();
+        // The machine's post names the file (GRBL: .nc); a name's slash and colon cannot be in it.
+        let folder = h.dir.join("machine-share");
+        std::fs::create_dir_all(&folder).unwrap();
+        h.app.preferences.cam_folders.set("Portal", &folder.to_string_lossy()).unwrap();
+        crate::cam_panel::export(&mut h.app, "Top: front/back").unwrap();
+        let file = folder.join("Top_ front_back.nc");
+        assert!(std::fs::read_to_string(&file).is_ok_and(|g| g.contains("G1")));
+        // Exported again, the program in the folder is replaced.
+        crate::cam_panel::export(&mut h.app, "Top: front/back").unwrap();
+        // A folder that cannot be written says so and asks where instead: nothing is lost.
+        let unreachable = file.join("not a folder");
+        h.app.preferences.cam_folders.set("Portal", &unreachable.to_string_lossy()).unwrap();
+        let e = crate::cam_panel::export(&mut h.app, "Top: front/back").unwrap_err();
+        assert!(e.contains("not a folder"), "{e}");
+        h.frames(3);
+        assert!(h.dir.join("Top_ front_back.nc").is_file(), "the save dialog took the program");
+    }
+
+    #[test]
     fn cam_machine_list_holds_cutting_data_and_the_form_sets_side_direction_and_stock() {
         let mut h = Harness::new();
         h.app.home.open = false;
@@ -1145,6 +1181,7 @@ mod tests {
         h.step(&json!({"widget": label})).unwrap();
         h.frames(2);
         assert!(h.widget("Post-processor").is_some() && h.widget("RS-274").is_some());
+        assert!(h.widget("Program folder").is_some(), "the machine says where its programs go");
         // Each machine is made once: a new one, or a renamed one, may not take an existing name.
         let list = &h.app.preferences.cam_machines;
         let taken = Err(crate::i18n::tr("ui.cam.machine_exists").to_string());

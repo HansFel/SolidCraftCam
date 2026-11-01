@@ -206,6 +206,16 @@ and more controllers will follow. With a machine on the setup:
 - exporting and the preview write the program with the machine's post, unless the setup
   names its own (`post`) or `cam.post` is given one.
 
+**Program folder** (desktop app only) is where the machine's programs go: a local folder
+(`C:\CNC\Mill`) or the machine's network share (`\\linuxcnc\nc_files`, the `nc_files` folder
+a LinuxCNC machine shares over Samba). With a folder set, **Export G-code…** writes the
+program straight into it as `<setup>.<extension of the post>` and replaces a program of that
+name; empty, the save dialog asks each time. When the folder cannot be written (the machine is
+switched off, the share is gone) the job list says why and the save dialog opens, so the
+program is not lost. The folder is kept with the personal machine list on this computer, never
+in the design, since a path holds on one computer only. In the browser an export is always a
+download.
+
 ## Programmatic commands
 
 `cam.job.preview` and `cam.job.create` share an input schema. The former leaves the

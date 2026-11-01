@@ -219,6 +219,8 @@ Before each export:
 | Tool changer: none (manual), carousel, number of pockets | Planned |
 | Spindle speed range and fastest feed, held in cutting data and checked on export | Done |
 | Default post per machine | Done |
+| Program folder per machine (local folder or the machine's network share), kept on this computer only; export writes straight into it | Done |
+| Sending programs to a controller by FTP, or by serial DNC for older controllers | Planned |
 
 ### 10. Cutting-data calculator
 
