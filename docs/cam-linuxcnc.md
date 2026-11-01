@@ -224,7 +224,7 @@ the travel of each axis as its lowest and highest position (X−, X+, Y−, Y+, 
 optional A axis (limited to A− … A+ degrees, or endless), the slowest and fastest spindle
 speed, the fastest feed (mm/min) and its **Post-processor**: the controller its programs
 are written for. **Default (LinuxCNC)** keeps today's output; every built-in post is listed,
-and more controllers will follow. With a machine on the setup:
+then your own posts (below). With a machine on the setup:
 
 - **Use cutting data** and `cam.tool.speeds` hold the spindle speed to the machine's range
   (the feeds follow the speed actually reached) and every feed to the fastest;
@@ -244,6 +244,25 @@ switched off, the share is gone) the job list says why and the save dialog opens
 program is not lost. The folder is kept with the personal machine list on this computer, never
 in the design, since a path holds on one computer only. In the browser an export is always a
 download.
+
+### Your own posts
+
+The **Posts** tab of the CAM window keeps your own posts. Each one starts from a built-in post
+(**Start from**, then **New post**) and changes its settings: the file extension, millimetres or
+inches, the decimals of coordinates and of feeds, line numbers (`N`, first number and step),
+comments in parentheses, after a semicolon or none, arcs as `G2`/`G3` or as short lines (with
+their chord error), arcs that also move in Z, a decimal point on whole numbers (`X10.`),
+two-digit codes (`G01`), the tool change also for the first tool, the dwell, and the code
+blocks: program start (the safe start), tool change, spindle on and off, coolant on and off,
+and program end, one code line per row. Words in braces are filled in when the program is
+written: `{program}`, `{units}`, `{work_offset}`, `{tool}`, `{diameter}`, `{rpm}`,
+`{seconds}`, `{milliseconds}`; a post with an unknown word, or a built-in post's name, is
+refused when you save it.
+
+Like machines, your posts are kept in the preferences and shared by every design. A machine
+can name one as its post-processor; a setup on that machine copies the post into the design
+with the machine, so a design sent to someone else still writes the same program. A post a
+listed machine names cannot be removed until that machine has another post.
 
 ## Programmatic commands
 
@@ -292,7 +311,7 @@ they use the virtual filesystem and the host's download handling.
 
 The lower-level commands `cam.tool.define`, `cam.setup`, `cam.op.contour`,
 `cam.op.pocket`, `cam.op.drill`, `cam.op.remove`, `cam.tool.remove`, `cam.machine.define`,
-`cam.machine.remove`, `cam.list` and `cam.post` are also available through scripts, CLI and the control channel. Contour
+`cam.machine.remove`, `cam.post.define`, `cam.post.remove`, `cam.list` and `cam.post` are also available through scripts, CLI and the control channel. Contour
 and pocket commands additionally accept sketch profiles, planar faces and polygon
 regions with islands, and expression-based depths and feeds. Use `cam.post` with
 `post: "linuxcnc"` for LinuxCNC output; its existing default remains `rs274`.
@@ -341,7 +360,18 @@ the design. `cam.post` without `post` uses the setup's post, else its machine's,
 the guided job and export fall back to `linuxcnc`.
 `cam.machine.define` adds or replaces the design's machine of that name, `cam.machine.remove`
 removes one no setup names, and `cam.setup` takes `machine` as a name, a whole machine
-(copied into the design) or null. Machining order and skipped steps:
+(copied into the design) or null; with a whole machine, `machine_post` copies the post it
+names in full as well. A post saved on the design:
+
+```json
+{"name": "Werkstatt", "base": "grbl", "line_numbers": true, "line_start": 100, "line_step": 5,
+ "comments": "semicolon", "decimals": 2, "header": ["G17 G21 G90 G94 {work_offset}"]}
+```
+
+`cam.post.define` starts from `base` (a built-in or saved post; default the saved post of that
+name, else `linuxcnc`), changes only the settings given and adds or replaces the design's post
+of that name; a built-in post's name is refused. `cam.post.remove` removes a saved post no
+machine or setup names. Machining order and skipped steps:
 
 ```json
 {"setup": "Top", "name": "Holes", "to": 0}

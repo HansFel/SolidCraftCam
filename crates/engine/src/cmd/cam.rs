@@ -5,8 +5,9 @@
 
 use serde_json::{Value, json};
 use solidcraft_cam::{
-    ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, Move, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
-    Program, Side, SlotParams, Tabs, Tool, ToolKind, contour_open, contour_with_tabs, drill, emit, face, pocket, readback, slot,
+    CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, Move, OpenContourParams, OpenPath, OpenSide,
+    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, Tool, ToolKind, Units, contour_open, contour_with_tabs, drill, emit, face,
+    pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
@@ -43,6 +44,22 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>)
         .icon("delete")
         .params("name (a machine no setup names)"),
+    CommandSpec::new("cam.post.define", "Define Post", crate::checked!("cam.post.define", post_define))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::PostDefineParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::PostDefineResult>)
+        .icon("settings")
+        .params(
+            "name (not a built-in post's); base?: the built-in or saved post it starts from (default: the saved post of that name, \
+             else linuxcnc); then any of extension, units (mm|inch), decimals (0…6), feed_decimals (0…4), line_numbers (bool), \
+             line_start, line_step, comments (parentheses|semicolon|none), header, tool_change, spindle_on, spindle_off, coolant_on, \
+             coolant_off, footer (lists of lines with {placeholders}), tool_change_first, arcs, arc_tolerance (mm), helical_arcs, \
+             trailing_decimal, two_digit_codes, dwell. Adds or replaces the design's post of that name.",
+        ),
+    CommandSpec::new("cam.post.remove", "Remove Post", crate::checked!("cam.post.remove", post_remove))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::PostRemoveParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>)
+        .icon("delete")
+        .params("name (a saved post no machine or setup names)"),
     CommandSpec::new("cam.setup", "CAM Setup", crate::checked!("cam.setup", setup_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SetupParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SetupResult>).icon("settings").params(
         "name?: Setup 1, Setup 2, … when omitted; rename?: a new name for the existing setup `name` (steps and settings stay); work_offset?: 1…6 (G54…G59, default 1); \
          tool_axis?: [x,y,z] (programmed +Z, default [0,0,1]); \
@@ -54,7 +71,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          wcs_origin_mode?: model_origin|selected_point|model_box_point|stock_box_point, with box_point?: \
          {x,y,z: negative|center|positive} in the work frame; stock_spec?: {kind: relative_box|box|cylinder|…}; \
          model_bodies?: [names]; stock?: {min:[x,y,z], max:[x,y,z]}; \
-         machine?: a machine's name, a machine as cam.machine.define takes it (copied into the design), or null; delete?: bool",
+         machine?: a machine's name, a machine as cam.machine.define takes it (copied into the design), or null; machine_post?: the post that machine names, in full as cam.post.define returns it (copied too); delete?: bool",
     ),
     CommandSpec::new("cam.op.contour", "2D Contour", crate::checked!("cam.op.contour", contour_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?: as solid.extrude; faces?: [{body, name, at?, contour_at?}]; \
@@ -349,6 +366,132 @@ fn machine_remove(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"deleted": name}))
 }
 
+/// Most posts saved on one design.
+pub const MAX_POSTS: usize = 64;
+
+/// `base` with the settings `p` gives, named `p.name`; checked as the post writes programs.
+pub fn post_from(cam: &CamSettings, p: &crate::schema::cam::PostDefineParams) -> std::result::Result<Post, String> {
+    let name = p.name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err("a post name must be 1 to 64 characters".into());
+    }
+    if Post::builtin(name).is_some() {
+        return Err(format!("`{name}` is a built-in post; give yours another name"));
+    }
+    let mut post = match &p.base {
+        Some(base) => resolve_post(cam, base)?,
+        None => cam.post(name).cloned().unwrap_or_else(Post::linuxcnc),
+    };
+    post.name = name.to_string();
+    if let Some(v) = &p.extension {
+        post.extension = v.trim().trim_start_matches('.').to_string();
+    }
+    if let Some(v) = &p.units {
+        post.units = match v.as_str() {
+            "mm" => Units::Mm,
+            "inch" => Units::Inch,
+            other => return Err(format!("`units` must be mm or inch, not `{other}`")),
+        };
+    }
+    if let Some(v) = p.decimals {
+        post.decimals = u8::try_from(v).map_err(|_| "a post writes at most 6 decimals for coordinates".to_string())?;
+    }
+    if let Some(v) = p.feed_decimals {
+        post.feed_decimals = u8::try_from(v).map_err(|_| "a post writes at most 4 decimals for feeds".to_string())?;
+    }
+    let numbers = post.line_numbers.unwrap_or(LineNumbers { start: 10, step: 10 });
+    let numbers = LineNumbers { start: p.line_start.unwrap_or(numbers.start), step: p.line_step.unwrap_or(numbers.step) };
+    post.line_numbers = match p.line_numbers {
+        Some(false) => None,
+        Some(true) => Some(numbers),
+        None => post.line_numbers.map(|_| numbers),
+    };
+    if let Some(v) = &p.comments {
+        post.comments = match v.as_str() {
+            "parentheses" => CommentStyle::Parentheses,
+            "semicolon" => CommentStyle::Semicolon,
+            "none" => CommentStyle::None,
+            other => return Err(format!("`comments` must be parentheses, semicolon or none, not `{other}`")),
+        };
+    }
+    for (block, lines) in [
+        (&mut post.header, &p.header),
+        (&mut post.tool_change, &p.tool_change),
+        (&mut post.spindle_on, &p.spindle_on),
+        (&mut post.spindle_off, &p.spindle_off),
+        (&mut post.coolant_on, &p.coolant_on),
+        (&mut post.coolant_off, &p.coolant_off),
+        (&mut post.footer, &p.footer),
+    ] {
+        if let Some(lines) = lines {
+            *block = lines.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        }
+    }
+    let flags = [
+        (&mut post.tool_change_first, p.tool_change_first),
+        (&mut post.arcs, p.arcs),
+        (&mut post.helical_arcs, p.helical_arcs),
+        (&mut post.trailing_decimal, p.trailing_decimal),
+        (&mut post.two_digit_codes, p.two_digit_codes),
+    ];
+    for (flag, given) in flags {
+        if let Some(v) = given {
+            *flag = v;
+        }
+    }
+    if let Some(v) = p.arc_tolerance {
+        post.arc_tolerance = v;
+    }
+    if let Some(v) = &p.dwell {
+        post.dwell = v.trim().to_string();
+    }
+    post.validate().map_err(|e| e.to_string())?;
+    Ok(post)
+}
+
+/// Adds `post` to the design, or replaces its post of that name.
+fn put_post(s: &mut Session, cmd: &str, post: Post) -> Result<()> {
+    post.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    if Post::builtin(&post.name).is_some() {
+        return Err(bad(cmd, format!("`{}` is a built-in post; give yours another name", post.name)));
+    }
+    let doc = s.doc_mut();
+    let full = doc.cam.posts.len() >= MAX_POSTS;
+    match doc.cam.posts.iter_mut().find(|p| p.name == post.name) {
+        Some(slot) => *slot = post,
+        None if full => return Err(bad(cmd, format!("a design has at most {MAX_POSTS} posts"))),
+        None => doc.cam.posts.push(post),
+    }
+    doc.cam.posts.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(())
+}
+
+fn post_define(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.post.define";
+    let params: crate::schema::cam::PostDefineParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+    let post = post_from(&s.doc.cam, &params).map_err(|e| bad(cmd, e))?;
+    put_post(s, cmd, post.clone())?;
+    Ok(json!({"post": post}))
+}
+
+fn post_remove(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.post.remove";
+    let name = str_(p, "name").ok_or_else(|| bad(cmd, "`name` is required"))?.to_string();
+    if let Some(m) = s.doc.cam.machines.iter().find(|m| m.post.as_deref() == Some(name.as_str())) {
+        return Err(bad(cmd, format!("machine `{}` uses post `{name}`", m.name)));
+    }
+    if let Some(setup) = s.doc.cam.setups.iter().find(|x| x.post.as_deref() == Some(name.as_str())) {
+        return Err(bad(cmd, format!("setup `{}` uses post `{name}`", setup.name)));
+    }
+    let doc = s.doc_mut();
+    let before = doc.cam.posts.len();
+    doc.cam.posts.retain(|x| x.name != name);
+    if doc.cam.posts.len() == before {
+        return Err(bad(cmd, format!("no saved post `{name}`")));
+    }
+    Ok(json!({"deleted": name}))
+}
+
 pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "cam.setup";
     let named = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).map(str::to_string);
@@ -539,6 +682,15 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             WorkCoordinateSystem { origin: setup.work_origin, x_axis: [frame.x.x, frame.x.y, frame.x.z], y_axis: [frame.y.x, frame.y.y, frame.y.z] };
     }
     setup.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    // The post a copied machine names, given in full, comes into the design with it.
+    let machine_post = match p.get("machine_post") {
+        Some(v @ Value::Object(_)) => Some(serde_json::from_value::<Post>(v.clone()).map_err(|e| bad(cmd, format!("`machine_post`: {e}")))?),
+        Some(Value::Null) | None => None,
+        Some(_) => return Err(bad(cmd, "`machine_post` must be a post or null")),
+    };
+    if let Some(post) = machine_post {
+        put_post(s, cmd, post)?;
+    }
     if let Some(machine) = new_machine {
         put_machine(s, cmd, machine)?;
     }
@@ -3205,6 +3357,77 @@ mod tests {
             panic!("no contour J");
         };
         assert_eq!((params.side, params.climb, params.stock_to_leave.as_str(), params.floor_stock.as_str()), (CamSide::Inside, false, "0.3", "0.2"));
+    }
+
+    #[test]
+    fn saved_posts_change_how_programs_are_written() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
+        run(&mut s, "cam.setup", json!({"name": "Top"}));
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "A", "tool": 1, "outer": [[0, 0], [40, 0], [40, 30], [0, 30]],
+            "bottom": -1, "stepdown": 1, "spindle_rpm": 6000, "feed": 800}),
+        );
+        // A saved post starts from a built-in one and changes some of its settings.
+        let defined = run(
+            &mut s,
+            "cam.post.define",
+            json!({"name": "Werkstatt", "base": "grbl", "line_numbers": true, "line_start": 100, "line_step": 5,
+                "comments": "semicolon", "decimals": 2, "header": ["G21 G90", "", "  G17  "], "footer": ["M5", "M30"]}),
+        );
+        assert_eq!(defined["post"]["extension"], "nc");
+        assert_eq!(defined["post"]["header"], json!(["G21 G90", "G17"]));
+        let gcode = run(&mut s, "cam.post", json!({"setup": "Top", "post": "Werkstatt"}))["gcode"].as_str().unwrap_or_default().to_string();
+        // Comments go after a semicolon and carry no line number; the header is numbered from 100 by 5.
+        let lines: Vec<&str> = gcode.lines().collect();
+        assert_eq!(lines.get(..3), Some(&["; Top", "N100 G21 G90", "N105 G17"][..]), "{gcode}");
+        // Defining it again keeps what is not given; line numbers off.
+        let again = run(&mut s, "cam.post.define", json!({"name": "Werkstatt", "line_numbers": false}));
+        assert_eq!((again["post"]["comments"].as_str(), again["post"]["line_numbers"].is_null()), (Some("semicolon"), true));
+        assert_eq!(s.doc.cam.posts.len(), 1);
+        // A machine names it; then it stays until the machine lets go.
+        let mill = json!({"name": "Fräse", "x": [0, 300], "y": [0, 200], "z": [-100, 0],
+            "spindle_min": 2000, "spindle_max": 8000, "max_feed": 2000, "post": "Werkstatt"});
+        run(&mut s, "cam.machine.define", mill.clone());
+        assert!(s.execute("cam.post.remove", &json!({"name": "Werkstatt"})).is_err());
+        // A setup in another design takes the machine and its post in full.
+        let post = s.doc.cam.post("Werkstatt").cloned();
+        let mut other = Session::default();
+        assert!(other.execute("cam.setup", &json!({"name": "Top", "machine": mill})).is_err());
+        run(&mut other, "cam.setup", json!({"name": "Top", "machine": mill, "machine_post": post}));
+        assert_eq!(other.doc.cam.post("Werkstatt"), s.doc.cam.post("Werkstatt"));
+        run(&mut s, "cam.machine.remove", json!({"name": "Fräse"}));
+        run(&mut s, "cam.post.remove", json!({"name": "Werkstatt"}));
+        assert!(s.doc.cam.posts.is_empty());
+        // Refused, and nothing changes: a built-in name, unknown base, bad settings, a missing post.
+        let before = s.doc.to_json();
+        for bad in [
+            json!({"name": "linuxcnc"}),
+            json!({"name": "GRBL"}),
+            json!({"name": ""}),
+            json!({"name": "P", "base": "Heidenhain 9000"}),
+            json!({"name": "P", "decimals": 7}),
+            json!({"name": "P", "decimals": 4_294_967_295u64}),
+            json!({"name": "P", "feed_decimals": 300}),
+            json!({"name": "P", "units": "furlong"}),
+            json!({"name": "P", "comments": "loud"}),
+            json!({"name": "P", "extension": "a.b"}),
+            json!({"name": "P", "line_numbers": true, "line_step": 0}),
+            json!({"name": "P", "arc_tolerance": 0}),
+            json!({"name": "P", "arc_tolerance": -1}),
+            json!({"name": "P", "header": ["{nonsense}"]}),
+            json!({"name": "P", "header": ["G0\u{7}"]}),
+            json!({"name": "P", "dwell": "x".repeat(1000)}),
+            json!({"name": "P", "spare": 1}),
+        ] {
+            assert!(s.execute("cam.post.define", &bad).is_err(), "{bad}");
+        }
+        assert!(s.execute("cam.post.remove", &json!({"name": "Werkstatt"})).is_err());
+        assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": 3})).is_err());
+        assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": {"name": "linuxcnc"}})).is_err());
+        assert_eq!(s.doc.to_json(), before);
     }
 
     #[test]

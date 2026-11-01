@@ -43,6 +43,8 @@ pub struct CamSetupForm {
     max_rpm: String,
     /// The machine the setup runs on: one of the personal list's or the design's.
     machine: Option<Machine>,
+    /// The personal post that machine names, copied into the design with it.
+    machine_post: Option<solidcraft_engine::cam::Post>,
 }
 
 /// The picks: part zero (a corner, or an edge: a round edge gives its centre), zero per axis
@@ -101,6 +103,7 @@ impl CamSetupForm {
             material: app.session.doc.cam.setups.last().and_then(|s| s.material.clone()),
             max_rpm: String::new(),
             machine: app.session.doc.cam.setups.last().and_then(|s| app.session.doc.cam.setup_machine(s)).cloned(),
+            machine_post: None,
         }
     }
 
@@ -137,11 +140,13 @@ impl CamSetupForm {
             material: setup.material.clone(),
             max_rpm: setup.max_rpm.map(number).unwrap_or_default(),
             machine: app.session.doc.cam.setup_machine(setup).cloned(),
+            machine_post: None,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn set_machine(&mut self, machine: Option<Machine>) {
+    pub(crate) fn set_machine(&mut self, app: &crate::SolveApp, machine: Option<Machine>) {
+        self.machine_post = machine.as_ref().and_then(|m| crate::cam_panel::machine_post(&app.preferences.cam_posts, m)).cloned();
         self.machine = machine;
     }
 
@@ -226,6 +231,9 @@ impl CamSetupForm {
         };
         p["material"] = self.material.as_ref().map_or(Value::Null, |m| json!(m));
         p["machine"] = self.machine.as_ref().and_then(|m| serde_json::to_value(m).ok()).unwrap_or(Value::Null);
+        if let Some(post) = self.machine_post.as_ref().filter(|p| self.machine.as_ref().is_some_and(|m| m.post.as_ref() == Some(&p.name))) {
+            p["machine_post"] = serde_json::to_value(post).unwrap_or(Value::Null);
+        }
         let rpm = self.max_rpm.trim().replace(',', ".");
         p["max_rpm"] = if rpm.is_empty() { Value::Null } else { json!(rpm.parse::<f64>().map_err(|_| tr("ui.cam.invalid_number").to_string())?) };
         Ok(p)
@@ -321,6 +329,7 @@ fn machine_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm
     if let Some(machine) = &form.machine {
         note(ui, &crate::cam_panel::machine_label(machine));
     }
+    form.machine_post = form.machine.as_ref().and_then(|m| crate::cam_panel::machine_post(&app.preferences.cam_posts, m)).cloned();
 }
 
 /// Part zero with its axes and the stock's edges for setup `name`, as the design holds it.

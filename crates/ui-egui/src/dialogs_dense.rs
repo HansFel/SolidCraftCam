@@ -1279,6 +1279,63 @@ mod tests {
     }
 
     #[test]
+    fn cam_posts_tab_edits_own_posts_and_a_machine_takes_its_post_into_the_design() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h);
+        // The post list drops broken rows and built-in names, and keeps the rest by name.
+        let mut own = solidcraft_engine::cam::Post::grbl();
+        own.name = "Werkstatt".into();
+        own.line_numbers = Some(solidcraft_engine::cam::LineNumbers { start: 100, step: 5 });
+        let mut builtin_name = own.clone();
+        builtin_name.name = "LinuxCNC".into();
+        let mut broken = serde_json::to_value(&own).unwrap();
+        broken["name"] = json!("Broken");
+        broken["decimals"] = json!(9);
+        h.app.preferences.cam_posts = serde_json::from_value(json!([own, builtin_name, broken])).unwrap();
+        let listed: Vec<&str> = h.app.preferences.cam_posts.0.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(listed, ["Werkstatt"]);
+        let list = &h.app.preferences.cam_posts;
+        let builtin = Err(crate::i18n::tr("ui.cam.post_builtin_name").to_string());
+        let taken = Err(crate::i18n::tr("ui.cam.post_exists").to_string());
+        assert_eq!((list.name_free("grbl", None), list.name_free("Werkstatt", None)), (builtin, taken));
+        assert_eq!((list.name_free("Werkstatt", Some("Werkstatt")), list.name_free("Fräse", None)), (Ok(()), Ok(())));
+        // The tab lists it; its form shows every setting with the post's values.
+        crate::cam_panel::open(&mut h.app, 3);
+        h.frames(3);
+        assert!(h.widget("New post").is_some() && h.widget("Start from").is_some());
+        h.step(&json!({"widget": "Werkstatt – .nc"})).unwrap();
+        h.frames(2);
+        for label in
+            ["File extension", "Line numbers (N)", "First line number", "Arcs as G2/G3", "Program start (safe start)", "Program end", "Save post"]
+        {
+            assert!(h.widget(label).is_some(), "{label} is shown");
+        }
+        // A machine names it, so its machine choice lists it; a setup copies both into the design.
+        h.app.preferences.cam_machines = serde_json::from_value(json!([
+            {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000, "post": "Werkstatt"},
+        ]))
+        .unwrap();
+        let portal = h.app.preferences.cam_machines.find("Portal").cloned();
+        let mut setup = crate::dialogs_cam_setup::CamSetupForm::new(&h.app);
+        setup.set_machine(&h.app, portal.clone());
+        let p = setup.params(&crate::dialogs_cam_setup::inputs()).unwrap();
+        h.app.run("cam.setup", p).unwrap();
+        let cam = &h.app.session.doc.cam;
+        assert_eq!((cam.machine("Portal"), cam.post("Werkstatt")), (portal.as_ref(), h.app.preferences.cam_posts.find("Werkstatt")));
+        // The design's machine names it, so the design keeps it.
+        assert!(h.app.run("cam.post.remove", json!({"name": "Werkstatt"})).is_err());
+        // The parameters the tab sends to the design define the same post.
+        let params = crate::cam_panel::post_params(h.app.preferences.cam_posts.find("Werkstatt").unwrap());
+        let defined = h.app.run("cam.post.define", params).unwrap();
+        assert_eq!(
+            serde_json::from_value::<solidcraft_engine::cam::Post>(defined["post"].clone()).ok().as_ref(),
+            h.app.session.doc.cam.post("Werkstatt")
+        );
+    }
+
+    #[test]
     fn cam_machine_list_holds_cutting_data_and_the_form_sets_side_direction_and_stock() {
         let mut h = Harness::new();
         h.app.home.open = false;
@@ -1312,7 +1369,7 @@ mod tests {
         assert_eq!((list.name_free("Portal", Some("Portal")), list.name_free("Fräse", None)), (Ok(()), Ok(())));
         // The setup form copies the chosen machine into the design.
         let mut setup = crate::dialogs_cam_setup::CamSetupForm::new(&h.app);
-        setup.set_machine(portal.clone());
+        setup.set_machine(&h.app, portal.clone());
         let mut p = setup.params(&crate::dialogs_cam_setup::inputs()).unwrap();
         p["material"] = json!("wood");
         h.app.run("cam.setup", p).unwrap();

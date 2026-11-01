@@ -67,6 +67,65 @@ pub struct MachineResult {
     pub machine: serde_json::Value,
 }
 
+/// A post saved on the design: a built-in or saved post with some settings changed.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct PostDefineParams {
+    pub name: String,
+    /// The built-in or saved post it starts from. Default: the saved post of this name, else `linuxcnc`.
+    pub base: Option<String>,
+    /// File extension without the dot (1 to 8 letters or digits).
+    pub extension: Option<String>,
+    /// `mm` or `inch`.
+    pub units: Option<String>,
+    /// Decimals of coordinates (0 to 6).
+    pub decimals: Option<u32>,
+    /// Decimals of feed rates (0 to 4).
+    pub feed_decimals: Option<u32>,
+    /// Whether every line gets an `N` number.
+    pub line_numbers: Option<bool>,
+    pub line_start: Option<u32>,
+    pub line_step: Option<u32>,
+    /// `parentheses`, `semicolon` or `none`.
+    pub comments: Option<String>,
+    /// Lines written once at the start (the safe start), with `{placeholders}`.
+    pub header: Option<Vec<String>>,
+    /// Lines written before the first operation of each tool.
+    pub tool_change: Option<Vec<String>>,
+    pub spindle_on: Option<Vec<String>>,
+    pub spindle_off: Option<Vec<String>>,
+    pub coolant_on: Option<Vec<String>>,
+    pub coolant_off: Option<Vec<String>>,
+    /// Lines written once at the end.
+    pub footer: Option<Vec<String>>,
+    /// Whether the tool change is also written for the program's first tool.
+    pub tool_change_first: Option<bool>,
+    /// Whether arcs are written as `G2`/`G3`; otherwise as short lines.
+    pub arcs: Option<bool>,
+    /// Chord error of arcs written as lines (mm).
+    pub arc_tolerance: Option<f64>,
+    /// Whether an arc that also moves in Z is written as an arc.
+    pub helical_arcs: Option<bool>,
+    /// Whether whole numbers carry a decimal point (`X10.`).
+    pub trailing_decimal: Option<bool>,
+    /// Whether motion codes have two digits (`G01`).
+    pub two_digit_codes: Option<bool>,
+    /// How a dwell is written: `{seconds}` or `{milliseconds}` stands for its length.
+    pub dwell: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PostRemoveParams {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PostDefineResult {
+    pub post: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct SetupParams {
@@ -95,6 +154,8 @@ pub struct SetupParams {
     pub post_opts: Option<serde_json::Value>,
     /// A machine's name, a machine as `cam.machine.define` takes it (copied into the design), or null.
     pub machine: Option<serde_json::Value>,
+    /// The post a machine given in full names, in full as `cam.post.define` returns it (copied into the design), or null.
+    pub machine_post: Option<serde_json::Value>,
     pub post: Option<serde_json::Value>,
     /// Programmed +Z out of the flat face picked here.
     pub z_face: Option<PickParams>,

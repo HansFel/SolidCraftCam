@@ -1290,6 +1290,10 @@ preference_settings! {
     /// Where each listed machine's programs are written (a local folder or the machine's share),
     /// by machine name. Kept here, not in the design: a path holds on this computer only.
     cam_folders: crate::cam_panel::ProgramFolders = crate::cam_panel::ProgramFolders::default();
+    /// The personal CAM posts (built-in posts with their settings changed), shared by every
+    /// design in this profile; a machine that names one copies it into the design. No page
+    /// reset discards it.
+    cam_posts: crate::cam_panel::Posts = crate::cam_panel::Posts::default();
     /// Personal Sheet Metal Rules, offered by the rule manager of every design in this profile
     /// (#9346). No page reset discards this user-authored library.
     personal_sheet_rules: crate::personal_sheet_rules::Library = crate::personal_sheet_rules::Library::default();

@@ -1,15 +1,16 @@
 //! The CAM window: the job list (each setup's material, highest spindle speed and machining
 //! steps in order, with skip, move and remove), the personal tool library with cutting data
-//! by material, and the personal machine list (travel, spindle speeds, fastest feed). Both
-//! lists live in the preferences and are shared by every design; a tool or machine used in a
-//! design is copied into it (`cam.tool.define`, `cam.machine.define`), so a shared file stays
+//! by material, the personal machine list (travel, spindle speeds, fastest feed) and the
+//! personal posts (a built-in post with its settings changed). The lists live in the preferences
+//! and are shared by every design; a tool, machine or post used in a design is copied into it
+//! (`cam.tool.define`, `cam.machine.define`, `cam.post.define`), so a shared file stays
 //! complete. The ribbon's Job list (`cam.list`), Tool library (`cam.tool.define`) and Machine
 //! list (`cam.machine.define`) open it.
 
 use egui::RichText;
 use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
-use solidcraft_engine::cam::{CuttingData, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind};
+use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind, Units};
 use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
 
 use crate::SolveApp;
@@ -21,6 +22,8 @@ use crate::ui_kit;
 const MAX_TOOLS: usize = 500;
 /// Most machines the machine list keeps.
 const MAX_MACHINES: usize = 100;
+/// Most posts the post list keeps.
+const MAX_POSTS: usize = 100;
 
 /// The personal tool library: tools by number, each with its cutting data. A malformed row is
 /// dropped without discarding the others.
@@ -112,6 +115,78 @@ impl Machines {
         self.0.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
     }
+}
+
+/// The personal posts, by name: built-in posts with their settings changed. A malformed row, or
+/// one named like a built-in post, is dropped without discarding the others.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Posts(pub Vec<Post>);
+
+impl<'de> Deserialize<'de> for Posts {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let rows = Vec::<Value>::deserialize(deserializer)?;
+        let mut list = Posts::default();
+        for row in rows.into_iter().take(MAX_POSTS) {
+            if let Ok(post) = serde_json::from_value::<Post>(row) {
+                let _ = list.put(post);
+            }
+        }
+        Ok(list)
+    }
+}
+
+impl Posts {
+    pub fn find(&self, name: &str) -> Option<&Post> {
+        self.0.iter().find(|p| p.name == name)
+    }
+
+    /// Whether `name` may be saved by the form that edits `original` (None for a new post):
+    /// not a built-in post's name, and not another listed post's.
+    pub fn name_free(&self, name: &str, original: Option<&str>) -> Result<(), String> {
+        if Post::builtin(name).is_some() {
+            return Err(tr("ui.cam.post_builtin_name").into());
+        }
+        match self.find(name) {
+            Some(_) if original != Some(name) => Err(tr("ui.cam.post_exists").into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Adds `post`, or replaces the list's post of its name.
+    pub fn put(&mut self, post: Post) -> Result<(), String> {
+        post.validate().map_err(|e| e.to_string())?;
+        if post.name.trim().is_empty() || Post::builtin(&post.name).is_some() {
+            return Err(tr("ui.cam.post_builtin_name").into());
+        }
+        let full = self.0.len() >= MAX_POSTS;
+        match self.0.iter_mut().find(|p| p.name == post.name) {
+            Some(slot) => *slot = post,
+            None if full => return Err(format!("the list holds at most {MAX_POSTS} posts")),
+            None => self.0.push(post),
+        }
+        self.0.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(())
+    }
+}
+
+/// The parameters of `cam.post.define` for `post`: every setting, so nothing comes from a base.
+pub fn post_params(post: &Post) -> Value {
+    let mut p = serde_json::to_value(post).unwrap_or(Value::Null);
+    if let Some(map) = p.as_object_mut() {
+        map.remove("line_numbers");
+        map.insert("line_numbers".into(), json!(post.line_numbers.is_some()));
+        if let Some(n) = post.line_numbers {
+            map.insert("line_start".into(), json!(n.start));
+            map.insert("line_step".into(), json!(n.step));
+        }
+    }
+    p
+}
+
+/// The personal post machine `machine` writes with, if it names one of `posts`.
+pub fn machine_post<'a>(posts: &'a Posts, machine: &Machine) -> Option<&'a Post> {
+    machine.post.as_deref().filter(|p| Post::builtin(p).is_none()).and_then(|p| posts.find(p))
 }
 
 /// Where each machine's programs go, by machine name: a local folder or the machine's share
@@ -373,10 +448,119 @@ impl MachineEdit {
     }
 }
 
+/// A post's settings as the form types them. Code blocks are one line per row.
+struct PostEdit {
+    name: String,
+    extension: String,
+    /// 0: mm, 1: inch.
+    units: usize,
+    decimals: String,
+    feed_decimals: String,
+    line_numbers: bool,
+    line_start: String,
+    line_step: String,
+    /// 0: parentheses, 1: semicolon, 2: none.
+    comments: usize,
+    arcs: bool,
+    arc_tolerance: String,
+    helical_arcs: bool,
+    trailing_decimal: bool,
+    two_digit_codes: bool,
+    tool_change_first: bool,
+    dwell: String,
+    /// Program start, tool change, spindle on, spindle off, coolant on, coolant off, program end.
+    blocks: [String; 7],
+}
+
+/// The code blocks' labels, in [`PostEdit::blocks`] order.
+const POST_BLOCKS: [&str; 7] = [
+    "ui.cam.post_header",
+    "ui.cam.post_tool_change",
+    "ui.cam.post_spindle_on",
+    "ui.cam.post_spindle_off",
+    "ui.cam.post_coolant_on",
+    "ui.cam.post_coolant_off",
+    "ui.cam.post_footer",
+];
+
+impl PostEdit {
+    fn from_post(p: &Post) -> PostEdit {
+        let numbers = p.line_numbers.unwrap_or(LineNumbers { start: 10, step: 10 });
+        let block = |lines: &[String]| lines.join("\n");
+        PostEdit {
+            name: p.name.clone(),
+            extension: p.extension.clone(),
+            units: usize::from(p.units == Units::Inch),
+            decimals: p.decimals.to_string(),
+            feed_decimals: p.feed_decimals.to_string(),
+            line_numbers: p.line_numbers.is_some(),
+            line_start: numbers.start.to_string(),
+            line_step: numbers.step.to_string(),
+            comments: match p.comments {
+                CommentStyle::Parentheses => 0,
+                CommentStyle::Semicolon => 1,
+                CommentStyle::None => 2,
+            },
+            arcs: p.arcs,
+            arc_tolerance: number(p.arc_tolerance),
+            helical_arcs: p.helical_arcs,
+            trailing_decimal: p.trailing_decimal,
+            two_digit_codes: p.two_digit_codes,
+            tool_change_first: p.tool_change_first,
+            dwell: p.dwell.clone(),
+            blocks: [
+                block(&p.header),
+                block(&p.tool_change),
+                block(&p.spindle_on),
+                block(&p.spindle_off),
+                block(&p.coolant_on),
+                block(&p.coolant_off),
+                block(&p.footer),
+            ],
+        }
+    }
+
+    fn post(&self) -> Result<Post, String> {
+        let whole = |s: &str| s.trim().parse::<u32>().map_err(|_| tr("ui.cam.invalid_number").to_string());
+        let small = |s: &str| whole(s).and_then(|v| u8::try_from(v).map_err(|_| tr("ui.cam.invalid_number").to_string()));
+        let lines = |s: &str| -> Vec<String> { s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect() };
+        let [header, tool_change, spindle_on, spindle_off, coolant_on, coolant_off, footer] = &self.blocks;
+        let post = Post {
+            name: self.name.trim().to_string(),
+            extension: self.extension.trim().trim_start_matches('.').to_string(),
+            units: if self.units == 1 { Units::Inch } else { Units::Mm },
+            decimals: small(&self.decimals)?,
+            feed_decimals: small(&self.feed_decimals)?,
+            line_numbers: if self.line_numbers { Some(LineNumbers { start: whole(&self.line_start)?, step: whole(&self.line_step)? }) } else { None },
+            comments: match self.comments {
+                1 => CommentStyle::Semicolon,
+                2 => CommentStyle::None,
+                _ => CommentStyle::Parentheses,
+            },
+            header: lines(header),
+            tool_change: lines(tool_change),
+            tool_change_first: self.tool_change_first,
+            spindle_on: lines(spindle_on),
+            spindle_off: lines(spindle_off),
+            coolant_on: lines(coolant_on),
+            coolant_off: lines(coolant_off),
+            footer: lines(footer),
+            arcs: self.arcs,
+            arc_tolerance: self.arc_tolerance.trim().replace(',', ".").parse::<f64>().map_err(|_| tr("ui.cam.invalid_number").to_string())?,
+            helical_arcs: self.helical_arcs,
+            trailing_decimal: self.trailing_decimal,
+            two_digit_codes: self.two_digit_codes,
+            dwell: self.dwell.trim().to_string(),
+        };
+        post.validate().map_err(|e| e.to_string())?;
+        Ok(post)
+    }
+}
+
 /// The window's state.
 #[derive(Default)]
 pub struct CamPanel {
-    /// 0: job list, 1: tool library, 2: machines.
+    /// 0: job list, 1: tool library, 2: machines, 3: posts.
     pub tab: usize,
     /// The highest spindle speed as typed, by setup.
     rpm: Vec<(String, String)>,
@@ -384,6 +568,10 @@ pub struct CamPanel {
     editing: Option<(Option<u32>, ToolEdit)>,
     /// The listed machine being edited (its name before the edit), or a new one.
     machine: Option<(Option<String>, MachineEdit)>,
+    /// The listed post being edited (its name before the edit), or a new one.
+    post: Option<(Option<String>, PostEdit)>,
+    /// The built-in post a new one starts from, by its place in `Post::BUILTIN`.
+    post_base: usize,
     pub(crate) error: Option<String>,
     /// Every step's toolpath for the view, and the design they were made for.
     paths: Option<(usize, Vec<solidcraft_engine::cmd::CamToolpath>)>,
@@ -555,6 +743,10 @@ enum Action {
     Unmachine(String),
     /// Sets where a listed machine's programs go (machine, folder; empty: asked on each export).
     Folder(String, String),
+    /// Puts a post on the personal list.
+    Post(Box<Post>),
+    /// Takes a post off the personal list.
+    Unpost(String),
 }
 
 /// Export setup `setup`'s program: straight into its machine's folder when one is set (an
@@ -928,6 +1120,9 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
                 }
                 let in_design = app.session.doc.cam.machine(&machine.name);
                 if in_design != Some(machine) && ui_kit::button(ui, tr("ui.cam.to_design"), ui_kit::Button::Small).clicked() {
+                    if let Some(post) = machine_post(&app.preferences.cam_posts, machine) {
+                        actions.push(Action::Run("cam.post.define", post_params(post)));
+                    }
                     actions.push(Action::Run("cam.machine.define", serde_json::to_value(machine).unwrap_or(Value::Null)));
                 }
                 let picked = d.machine.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(machine.name.as_str()));
@@ -977,8 +1172,9 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     ui_kit::text_row(ui, tr("ui.cam.spindle_min"), slow, "");
     ui_kit::text_row(ui, tr("ui.cam.spindle_max"), fast, "");
     ui_kit::text_row(ui, tr("ui.cam.max_feed"), &mut edit.max_feed, "");
-    // The default, every built-in post, and the machine's own if it names another.
+    // The default, every built-in post, the personal posts, and the machine's own if it names another.
     let mut posts: Vec<String> = Post::BUILTIN.iter().map(|p| (*p).to_string()).collect();
+    posts.extend(app.preferences.cam_posts.0.iter().map(|p| p.name.clone()));
     if let Some(own) = &edit.post
         && !posts.contains(own)
     {
@@ -1016,6 +1212,96 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     }
 }
 
+fn posts_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut Vec<Action>) {
+    let t = Tokens::get();
+    let list = &app.preferences.cam_posts;
+    ui.label(RichText::new(tr("ui.cam.posts")).strong());
+    if list.0.is_empty() {
+        ui.add(egui::Label::new(RichText::new(tr("ui.cam.posts_empty")).color(t.text_dim)).wrap());
+    }
+    for post in &list.0 {
+        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui_kit::button(ui, tr("ui.cam.remove"), ui_kit::Button::Small).clicked() {
+                actions.push(Action::Unpost(post.name.clone()));
+            }
+            if app.session.doc.cam.post(&post.name) != Some(post) && ui_kit::button(ui, tr("ui.cam.to_design"), ui_kit::Button::Small).clicked() {
+                actions.push(Action::Run("cam.post.define", post_params(post)));
+            }
+            let picked = d.post.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(post.name.as_str()));
+            let label = format!("{} – .{}", post.name, post.extension);
+            if ui_kit::list_picker(ui, &format!("cam-post-{}", post.name), &label, picked).clicked() {
+                d.post = Some((Some(post.name.clone()), PostEdit::from_post(post)));
+            }
+        });
+    }
+    let labels: Vec<String> = Post::BUILTIN.iter().map(|p| post_label(p)).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    ui_kit::choice_row(ui, tr("ui.cam.post_base"), "cam-post-base", &mut d.post_base, &refs);
+    if ui_kit::button(ui, tr("ui.cam.new_post"), ui_kit::Button::Normal).clicked() {
+        let base = Post::BUILTIN.get(d.post_base).and_then(|b| Post::builtin(b)).unwrap_or_else(Post::linuxcnc);
+        let stem = post_label(&base.name);
+        let name = (1..=MAX_POSTS).map(|i| format!("{stem} {i}")).find(|n| list.find(n).is_none()).unwrap_or_default();
+        d.post = Some((None, PostEdit::from_post(&Post { name, ..base })));
+    }
+    let design: Vec<&Post> = app.session.doc.cam.posts.iter().filter(|p| list.find(&p.name) != Some(*p)).collect();
+    if !design.is_empty() {
+        ui.separator();
+        ui.label(RichText::new(tr("ui.cam.design_posts")).strong());
+        for post in design {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} – .{}", post.name, post.extension));
+                if ui_kit::button(ui, tr("ui.cam.to_library"), ui_kit::Button::Small).clicked() {
+                    match list.name_free(&post.name, None) {
+                        Err(e) => d.error = Some(e),
+                        Ok(()) => actions.push(Action::Post(Box::new(post.clone()))),
+                    }
+                }
+            });
+        }
+    }
+    let Some((original, edit)) = &mut d.post else { return };
+    ui.separator();
+    ui_kit::text_row(ui, tr("ui.cam.machine_name"), &mut edit.name, "");
+    ui_kit::text_row(ui, tr("ui.cam.post_extension"), &mut edit.extension, "ngc");
+    let units = [tr("ui.cam.units_mm"), tr("ui.cam.units_inch")];
+    ui_kit::choice_row(ui, tr("ui.cam.post_units"), "cam-post-units", &mut edit.units, &units);
+    ui_kit::text_row(ui, tr("ui.cam.post_decimals"), &mut edit.decimals, "");
+    ui_kit::text_row(ui, tr("ui.cam.post_feed_decimals"), &mut edit.feed_decimals, "");
+    let comments = [tr("ui.cam.comments_parentheses"), tr("ui.cam.comments_semicolon"), tr("ui.cam.comments_none")];
+    ui_kit::choice_row(ui, tr("ui.cam.post_comments"), "cam-post-comments", &mut edit.comments, &comments);
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_line_numbers"), &mut edit.line_numbers));
+    if edit.line_numbers {
+        ui_kit::text_row(ui, tr("ui.cam.post_line_start"), &mut edit.line_start, "");
+        ui_kit::text_row(ui, tr("ui.cam.post_line_step"), &mut edit.line_step, "");
+    }
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_arcs"), &mut edit.arcs));
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_helical_arcs"), &mut edit.helical_arcs));
+    ui_kit::text_row(ui, tr("ui.cam.post_arc_tolerance"), &mut edit.arc_tolerance, "");
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_trailing_decimal"), &mut edit.trailing_decimal));
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_two_digit"), &mut edit.two_digit_codes));
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_tool_change_first"), &mut edit.tool_change_first));
+    ui_kit::text_row(ui, tr("ui.cam.post_dwell"), &mut edit.dwell, "G4 P{seconds}");
+    ui.add(egui::Label::new(RichText::new(tr("ui.cam.post_hint")).color(t.text_dim)).wrap());
+    for (key, block) in POST_BLOCKS.iter().zip(edit.blocks.iter_mut()) {
+        ui_kit::multiline_text_field(ui, tr(key), egui::Id::new(("cam-post-block", *key)), block);
+    }
+    if ui_kit::button(ui, tr("ui.cam.save_post"), ui_kit::Button::Primary).clicked() {
+        match edit.post().and_then(|post| list.name_free(&post.name, original.as_deref()).map(|()| post)) {
+            Ok(post) => {
+                if let Some(old) = original.clone()
+                    && old != post.name
+                {
+                    actions.push(Action::Unpost(old));
+                }
+                *original = Some(post.name.clone());
+                actions.push(Action::Post(Box::new(post)));
+            }
+            Err(e) => d.error = Some(e),
+        }
+    }
+}
+
 /// Draw the window when it is open. Called once per frame.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.cam_window.take() else { return };
@@ -1039,7 +1325,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut actions = Vec::new();
     let height = Tokens::get().form_card_width * 2.0;
     let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).resizable(height).show_body(ctx, |ui| {
-        let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines")];
+        let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts")];
         ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
         ui.separator();
         // The window is sized by the user; its tabs scroll inside it.
@@ -1047,7 +1333,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             match d.tab {
                 0 => jobs_tab(app, ui, &mut d, &mut actions),
                 1 => tools_tab(app, ui, &mut d, &mut actions),
-                _ => machines_tab(app, ui, &mut d, &mut actions),
+                2 => machines_tab(app, ui, &mut d, &mut actions),
+                _ => posts_tab(app, ui, &mut d, &mut actions),
             }
             if let Some(e) = &d.error {
                 // The window truncates text; a refusal is read in full.
@@ -1119,6 +1406,24 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 result
             }
             Action::Folder(name, folder) => app.preferences.cam_folders.set(&name, &folder),
+            Action::Post(post) => {
+                let result = app.preferences.cam_posts.put(*post);
+                if result.is_ok() {
+                    app.set_status(tr("ui.cam.saved"), false);
+                }
+                result
+            }
+            Action::Unpost(name) => match app.preferences.cam_machines.0.iter().find(|m| m.post.as_deref() == Some(name.as_str())) {
+                // A renamed post is taken off after its new name is saved, so its machines are asked about here too.
+                Some(m) => Err(crate::i18n::format("ui.cam.post_in_use", &[("machine", &m.name)])),
+                None => {
+                    app.preferences.cam_posts.0.retain(|p| p.name != name);
+                    if d.post.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(name.as_str())) {
+                        d.post = None;
+                    }
+                    Ok(())
+                }
+            },
             Action::Unmachine(name) => {
                 app.preferences.cam_machines.0.retain(|m| m.name != name);
                 app.preferences.cam_folders.0.remove(&name);
