@@ -645,13 +645,21 @@ fn hostile_values_are_errors_never_panics() {
         let pocket_params = PocketParams { stepover: b, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b };
         let contour_params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b };
         let bad_cut = Cut { heights: Heights { clearance: b, retract: b, top: b, bottom: -b }, feeds: Feeds { cut: b, plunge: b }, stepdown: b };
+        let slot_params_bad = SlotParams { width: Some(b), stepover: b, stock_to_leave: b, tolerance: b, ramp_angle: b };
+        let slot_path = open_line((0.0, 0.0), (40.0, 0.0));
         for c in [good_cut, bad_cut, Cut { stepdown: b, ..good_cut }] {
             for tl in [&t, &tool(6.0)] {
                 let _ = pocket(&regions, tl, &pocket_params, &c);
                 let _ = pocket(&regions, tl, &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }, &c);
                 let _ = contour(&regions, tl, &contour_params, &c);
+                let _ = slot(std::slice::from_ref(&slot_path), tl, &slot_params_bad, &c);
             }
         }
+        let _ = ToolLibraryFile::from_json(&format!("{{\"pad\":{b}}}"));
+        let _ = ToolLibraryFile::from_json(&b.to_string());
+        let _ = ToolLibraryFile::from_json(&format!(
+            "{{\"format\":\"solidcraft-tools\",\"version\":1,\"tools\":[{{\"number\":1,\"kind\":\"flat_endmill\",\"diameter\":{b},\"flute_length\":{b}}}]}}"
+        ));
         let moves = vec![
             Move::Rapid { to: Vec3::new(b, b, b) },
             Move::Arc { to: Vec3::new(b, 0.0, b), center: v(b, b), ccw: true, feed: b },
@@ -691,6 +699,186 @@ fn hostile_values_are_errors_never_panics() {
     let open = Region2 { outer: Loop2 { segs: rect(0.0, 0.0, 10.0, 10.0).outer.segs.into_iter().take(3).collect() }, holes: vec![] };
     assert!(offset_regions(&[open], 1.0, 0.01).is_err());
     assert!(emit(&Program::default(), &Post::rs274()).is_err());
+}
+
+/// An open path of one straight segment.
+fn open_line(a: (f64, f64), b: (f64, f64)) -> OpenPath {
+    OpenPath { segs: vec![Seg2::Line { a: v(a.0, a.1), b: v(b.0, b.1) }] }
+}
+
+/// Length of the moves that stay at `z` (a lift or a rapid is not part of it).
+fn length_at(path: &Toolpath, z: f64) -> f64 {
+    path.points(0.001)
+        .windows(2)
+        .filter(|w| (w[0].0.z - z).abs() < 1e-9 && (w[1].0.z - z).abs() < 1e-9)
+        .map(|w| (w[1].0.x - w[0].0.x).hypot(w[1].0.y - w[0].0.y))
+        .sum()
+}
+
+fn slot_params() -> SlotParams {
+    SlotParams { width: None, stepover: 3.0, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }
+}
+
+#[test]
+fn a_straight_slot_as_wide_as_the_tool_cuts_each_depth_once() {
+    let c = cut(0.0, -6.0, 3.0);
+    let path = slot(&[open_line((0.0, 0.0), (40.0, 0.0))], &tool(3.0), &slot_params(), &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    close(length_at(&path, -3.0), 40.0, 1e-6);
+    close(length_at(&path, -6.0), 40.0, 1e-6);
+    // Between the passes the tool goes up to the retract height to get back to the start.
+    assert!(path.moves.iter().any(|m| matches!(m, Move::Rapid { to } if (to.z - c.heights.retract).abs() < 1e-9)));
+    // A slot as wide as the tool is one pass, so the stock to leave changes nothing.
+    let left = SlotParams { stock_to_leave: 2.0, ..slot_params() };
+    assert_eq!(slot(&[open_line((0.0, 0.0), (40.0, 0.0))], &tool(3.0), &left, &c).unwrap().stats(), path.stats());
+}
+
+#[test]
+fn an_arc_slot_keeps_its_arc() {
+    let c = cut(0.0, -3.0, 3.0);
+    let arc = OpenPath { segs: vec![Seg2::Arc { center: v(0.0, 0.0), radius: 10.0, start: 0.0, sweep: FRAC_PI_2 }] };
+    let path = slot(&[arc], &tool(4.0), &slot_params(), &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    assert!(path.moves.iter().any(|m| matches!(m, Move::Arc { .. })), "the arc stays an arc");
+    close(length_at(&path, -3.0), 10.0 * FRAC_PI_2, 0.01);
+    // And the program keeps it as G2/G3 and reads back.
+    let program = Program {
+        name: "Slot".into(),
+        operations: vec![Operation { name: "Slot".into(), tool: tool(4.0), spindle_rpm: 4000.0, coolant: false, path }],
+        work_offset: None,
+    };
+    let post = Post::builtin("linuxcnc").unwrap();
+    let text = emit(&program, &post).unwrap();
+    assert!(text.contains("G2") || text.contains("G3"));
+    assert!(readback(&text, &program, &post).unwrap().within());
+}
+
+#[test]
+fn a_wide_slot_reaches_both_walls_with_side_passes() {
+    let c = cut(0.0, -3.0, 3.0);
+    let t = tool(4.0);
+    let line = open_line((0.0, 0.0), (40.0, 0.0));
+    // 10 mm wide with a 4 mm tool: the centre pass and one pass each side at 3 mm, where the
+    // tool's edge is exactly at the wall (width/2 = 5).
+    let wide = SlotParams { width: Some(10.0), stepover: 3.0, stock_to_leave: 0.0, ..slot_params() };
+    let path = slot(std::slice::from_ref(&line), &t, &wide, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let ys: Vec<f64> = cutting_points(&path, 0.0).iter().map(|p| p.y).collect();
+    close(ys.iter().copied().fold(f64::NEG_INFINITY, f64::max), 3.0, 1e-6);
+    close(ys.iter().copied().fold(f64::INFINITY, f64::min), -3.0, 1e-6);
+    close(length_at(&path, -3.0), 3.0 * 40.0, 1e-6);
+    // A smaller stepover adds passes in between, and stock to leave pulls them off the wall.
+    let closer = SlotParams { width: Some(10.0), stepover: 1.0, stock_to_leave: 1.0, ..slot_params() };
+    let path = slot(&[line], &t, &closer, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let ys: Vec<f64> = cutting_points(&path, 0.0).iter().map(|p| p.y).collect();
+    close(ys.iter().copied().fold(f64::NEG_INFINITY, f64::max), 2.0, 1e-6);
+    close(ys.iter().copied().fold(f64::INFINITY, f64::min), -2.0, 1e-6);
+    close(length_at(&path, -3.0), 5.0 * 40.0, 1e-6);
+}
+
+#[test]
+fn a_slot_ramps_into_an_open_path_and_round_a_closed_one() {
+    let ramp = 5.0f64.to_radians();
+    let params = SlotParams { ramp_angle: ramp, stepover: 2.0, ..slot_params() };
+    let c = cut(0.0, -6.0, 2.0);
+    // Open: back and forth along the first part, never straight down.
+    let path = slot(&[open_line((0.0, 0.0), (40.0, 0.0))], &tool(3.0), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let (angle, plunges) = steepest(&path, 0.0);
+    assert!(!plunges, "an open slot ramps instead of plunging");
+    assert!(angle <= ramp + 1e-6, "{angle} is steeper than {ramp}");
+    close(length_at(&path, -2.0), 40.0, 1e-6);
+    // Closed: round the loop itself.
+    let square = OpenPath {
+        segs: vec![
+            Seg2::Line { a: v(0.0, 0.0), b: v(40.0, 0.0) },
+            Seg2::Line { a: v(40.0, 0.0), b: v(40.0, 30.0) },
+            Seg2::Line { a: v(40.0, 30.0), b: v(0.0, 30.0) },
+            Seg2::Line { a: v(0.0, 30.0), b: v(0.0, 0.0) },
+        ],
+    };
+    let path = slot(&[square], &tool(3.0), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let (angle, plunges) = steepest(&path, 0.0);
+    assert!(!plunges, "a closed slot ramps round itself");
+    assert!(angle <= ramp + 1e-6, "{angle} is steeper than {ramp}");
+    close(length_at(&path, -2.0), 140.0, 1e-6);
+}
+
+#[test]
+fn slots_that_do_not_fit_are_refused() {
+    let c = cut(0.0, -3.0, 3.0);
+    let t = tool(6.0);
+    let line = open_line((0.0, 0.0), (40.0, 0.0));
+    let err = slot(std::slice::from_ref(&line), &t, &SlotParams { width: Some(4.0), ..slot_params() }, &c).unwrap_err();
+    assert!(format!("{err}").contains("the slot is narrower than the tool"), "{err}");
+    assert!(slot(std::slice::from_ref(&line), &t, &SlotParams { stepover: 7.0, ..slot_params() }, &c).is_err());
+    assert!(slot(std::slice::from_ref(&line), &t, &SlotParams { stepover: 0.0, ..slot_params() }, &c).is_err());
+    assert!(slot(std::slice::from_ref(&line), &t, &SlotParams { ramp_angle: 2.0, ..slot_params() }, &c).is_err());
+    assert!(slot(std::slice::from_ref(&line), &t, &SlotParams { width: Some(f64::NAN), ..slot_params() }, &c).is_err());
+    assert!(slot(std::slice::from_ref(&line), &t, &SlotParams { stock_to_leave: -1.0, ..slot_params() }, &c).is_err());
+    // A side pass that would turn the arc inside out.
+    let tight = OpenPath { segs: vec![Seg2::Arc { center: v(0.0, 0.0), radius: 4.0, start: 0.0, sweep: FRAC_PI_2 }] };
+    let err = slot(&[tight], &t, &SlotParams { width: Some(14.0), ..slot_params() }, &c).unwrap_err();
+    assert!(format!("{err}").contains("the tool does not fit the open contour"), "{err}");
+    // A drill cuts only at its point; no paths at all is no slot.
+    assert!(slot(std::slice::from_ref(&line), &Tool::new(4, ToolKind::Drill, 6.0, 30.0), &slot_params(), &c).is_err());
+    assert!(slot(&[], &t, &slot_params(), &c).is_err());
+}
+
+#[test]
+fn a_tool_library_round_trips_with_cutting_data_per_material() {
+    let mut flat = Tool::new(3, ToolKind::FlatEndmill, 6.0, 20.0);
+    flat.description = "6 mm flat".into();
+    flat.cutting.insert("aluminium".into(), CuttingData { vc: 250.0, fz: 0.06, ap: 0.5, ae: 0.4 });
+    flat.cutting.insert("oak".into(), CuttingData { vc: 120.0, fz: 0.05, ap: 1.0, ae: 0.5 });
+    let drill = Tool::new(1, ToolKind::Drill, 5.0, 40.0);
+    let library = ToolLibraryFile { tools: vec![flat.clone(), drill.clone()] };
+    let text = library.to_json().unwrap();
+    assert!(text.contains("\"format\": \"solidcraft-tools\""), "{text}");
+    assert!(text.contains("\"version\": 1"));
+    // Sorted by number, so a second export of the same library is the same file.
+    let back = ToolLibraryFile::from_json(&text).unwrap();
+    assert_eq!(back.tools, vec![drill, flat]);
+    assert_eq!(ToolLibraryFile { tools: back.tools.clone() }.to_json().unwrap(), text);
+}
+
+#[test]
+fn a_tool_library_refuses_what_it_cannot_read() {
+    let refused = |result: Result<ToolLibraryFile>, what: &str| {
+        let message = match result {
+            Ok(_) => String::new(),
+            Err(error) => format!("{error}"),
+        };
+        assert!(message.contains(what), "expected `{what}` in `{message}`");
+    };
+    let tool = |number: u32| serde_json::to_value(Tool::new(number, ToolKind::FlatEndmill, 6.0, 20.0)).unwrap();
+    let good = serde_json::json!({"format": "solidcraft-tools", "version": 1, "tools": [tool(1)]}).to_string();
+    assert_eq!(ToolLibraryFile::from_json(&good).unwrap().tools.len(), 1);
+    refused(ToolLibraryFile::from_json(r#"{"format":"other","version":1,"tools":[]}"#), "not a SolidCraft tool library");
+    refused(ToolLibraryFile::from_json(r#"{"format":"solidcraft-tools","version":2,"tools":[]}"#), "version 2");
+    refused(ToolLibraryFile::from_json(r#"{"format":"solidcraft-tools","version":1}"#), "no `tools` list");
+    refused(ToolLibraryFile::from_json("[]"), "is a JSON object");
+    refused(ToolLibraryFile::from_json("{"), "not valid JSON");
+    refused(ToolLibraryFile::from_json(""), "not valid JSON");
+    // The same number twice.
+    let twice = serde_json::json!({"format": "solidcraft-tools", "version": 1, "tools": [tool(3), tool(3)]}).to_string();
+    refused(ToolLibraryFile::from_json(&twice), "tool 3 is in the file twice");
+    // A tool that is not valid, named by its number.
+    let mut bad = Tool::new(7, ToolKind::FlatEndmill, 6.0, 20.0);
+    bad.diameter = 0.0;
+    let text = serde_json::json!({"format": "solidcraft-tools", "version": 1, "tools": [serde_json::to_value(bad).unwrap()]}).to_string();
+    refused(ToolLibraryFile::from_json(&text), "tool 7:");
+    // A tool that is not a tool at all.
+    let text = serde_json::json!({"format": "solidcraft-tools", "version": 1, "tools": [{"number": "x"}]}).to_string();
+    assert!(ToolLibraryFile::from_json(&text).is_err());
+    // More tools than are kept, and more text than is read.
+    let many: Vec<_> = (0..=MAX_LIBRARY_TOOLS).map(|i| tool((i % 9_999) as u32 + 1)).collect();
+    let text = serde_json::json!({"format": "solidcraft-tools", "version": 1, "tools": many}).to_string();
+    refused(ToolLibraryFile::from_json(&text), "more than 10000 tools");
+    let big = format!(r#"{{"format":"solidcraft-tools","version":1,"tools":[],"pad":"{}"}}"#, "x".repeat(MAX_LIBRARY_TEXT));
+    assert!(ToolLibraryFile::from_json(&big).is_err());
 }
 
 #[test]

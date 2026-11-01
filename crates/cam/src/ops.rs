@@ -115,7 +115,7 @@ pub struct Cut {
 }
 
 impl Cut {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         self.heights.validate()?;
         self.feeds.validate()?;
         if !(self.stepdown > 0.0) || !self.stepdown.is_finite() {
@@ -125,7 +125,7 @@ impl Cut {
     }
 
     /// Depth passes from the top down to the bottom, evenly spaced and at most a stepdown apart.
-    fn levels(&self) -> Result<Vec<f64>> {
+    pub(crate) fn levels(&self) -> Result<Vec<f64>> {
         let (top, bottom) = (self.heights.top, self.heights.bottom);
         let n = ((top - bottom) / self.stepdown - 1e-9).ceil().max(1.0);
         if !(n <= MAX_LEVELS as f64) {
@@ -176,7 +176,7 @@ pub struct PocketParams {
 }
 
 /// Collects moves, keeping the tool's position.
-struct Builder {
+pub(crate) struct Builder {
     moves: Vec<Move>,
     pos: Option<Vec3>,
     h: Heights,
@@ -184,7 +184,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn new(cut: &Cut) -> Builder {
+    pub(crate) fn new(cut: &Cut) -> Builder {
         Builder { moves: Vec::new(), pos: None, h: cut.heights, feeds: cut.feeds }
     }
 
@@ -204,7 +204,7 @@ impl Builder {
     }
 
     /// Up to the clearance height (if below it), then across to `p`.
-    fn travel_to(&mut self, p: Vec2) -> Result<()> {
+    pub(crate) fn travel_to(&mut self, p: Vec2) -> Result<()> {
         if let Some(q) = self.pos {
             if self.at(p) && q.z >= self.h.clearance {
                 return Ok(());
@@ -217,7 +217,7 @@ impl Builder {
     }
 
     /// Straight down to `z`: rapid to the retract height, then at the plunge feed.
-    fn plunge_to(&mut self, z: f64) -> Result<()> {
+    pub(crate) fn plunge_to(&mut self, z: f64) -> Result<()> {
         let Some(q) = self.pos else { return Err(CamError::Unsafe("a plunge before the first positioning move".into())) };
         if q.z > self.h.retract {
             self.push(Move::Rapid { to: Vec3::new(q.x, q.y, self.h.retract) })?;
@@ -237,7 +237,7 @@ impl Builder {
 
     /// Cuts along `piece` from wherever the tool is (within the offsetting's joining tolerance
     /// of the piece's start), going evenly from depth `z0` to `z1`.
-    fn cut_piece(&mut self, piece: &Piece, z0: f64, z1: f64) -> Result<()> {
+    pub(crate) fn cut_piece(&mut self, piece: &Piece, z0: f64, z1: f64) -> Result<()> {
         match *piece {
             Piece::Line { b, .. } => self.cut_to(b, z1),
             Piece::Arc { c, sweep, .. } => {
@@ -253,14 +253,14 @@ impl Builder {
         }
     }
 
-    fn cut_loop(&mut self, lp: &[Piece], z: f64) -> Result<()> {
+    pub(crate) fn cut_loop(&mut self, lp: &[Piece], z: f64) -> Result<()> {
         lp.iter().try_for_each(|piece| self.cut_piece(piece, z, z))
     }
 
     /// Goes down to `z` along `lp`, no steeper than `angle`, round as often as that takes; the
     /// tool ends where the loop starts. Straight down when there is no angle or the loop is too
     /// short to ramp along.
-    fn ramp_loop(&mut self, lp: &[Piece], z: f64, angle: f64) -> Result<()> {
+    pub(crate) fn ramp_loop(&mut self, lp: &[Piece], z: f64, angle: f64) -> Result<()> {
         let Some(from) = self.pos.map(|p| p.z) else { return Err(CamError::Unsafe("a ramp before the first positioning move".into())) };
         let drop = from - z;
         if !(drop > 1e-9) {
@@ -289,7 +289,7 @@ impl Builder {
 
     /// Up to the retract height (if below it), then across to `p` at that height: the return
     /// between passes, where the tool goes back to where it plunges.
-    fn return_to(&mut self, p: Vec2) -> Result<()> {
+    pub(crate) fn return_to(&mut self, p: Vec2) -> Result<()> {
         if let Some(q) = self.pos
             && q.z < self.h.retract
         {
@@ -310,14 +310,19 @@ impl Builder {
         Ok(())
     }
 
-    fn retract(&mut self) -> Result<()> {
+    /// Where the tool is (work coordinates).
+    pub(crate) fn pos(&self) -> Option<Vec3> {
+        self.pos
+    }
+
+    pub(crate) fn retract(&mut self) -> Result<()> {
         match self.pos {
             Some(q) if q.z < self.h.clearance => self.push(Move::Rapid { to: Vec3::new(q.x, q.y, self.h.clearance) }),
             _ => Ok(()),
         }
     }
 
-    fn finish(mut self) -> Result<Toolpath> {
+    pub(crate) fn finish(mut self) -> Result<Toolpath> {
         self.retract()?;
         let path = Toolpath { moves: self.moves };
         verify(&path, &self.h)?;
@@ -334,7 +339,7 @@ fn check_leave(leave: f64) -> Result<()> {
 }
 
 /// A milling operation needs a tool that cuts with its side: a drill only cuts at its point.
-fn mills(tool: &Tool) -> Result<()> {
+pub(crate) fn mills(tool: &Tool) -> Result<()> {
     if tool.kind == ToolKind::Drill { invalid("a drill cannot mill: it cuts only at its point") } else { Ok(()) }
 }
 

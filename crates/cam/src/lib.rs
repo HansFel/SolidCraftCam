@@ -26,6 +26,7 @@ mod piece;
 mod post;
 mod readback;
 mod tabs;
+mod slot;
 mod tool;
 
 pub use check::verify;
@@ -43,7 +44,8 @@ pub use path::{Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
 pub use tabs::Tabs;
-pub use tool::{Tool, ToolKind};
+pub use slot::{SlotParams, slot};
+pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, Tool, ToolKind, ToolLibraryFile};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CamError {

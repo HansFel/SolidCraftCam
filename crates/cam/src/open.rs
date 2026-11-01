@@ -60,8 +60,9 @@ pub struct OpenPath {
 
 impl OpenPath {
     /// The path as lines and arcs (its other curves as lines within `tol`), checked to run from
-    /// segment to segment without closing.
-    fn pieces(&self, tol: f64) -> Result<Vec<Piece>> {
+    /// segment to segment. With `closed`, the path may end where it starts (a loop, for a slot);
+    /// otherwise that is refused, since a contour of regions machines a closed profile.
+    pub(crate) fn pieces(&self, tol: f64, closed: bool) -> Result<Vec<Piece>> {
         let mut out = Vec::new();
         for seg in &self.segs {
             match *seg {
@@ -107,6 +108,7 @@ impl OpenPath {
         let (first, last) = (out.first().map(Piece::start), out.last().map(Piece::end));
         if let (Some(a), Some(b)) = (first, last)
             && a.dist(b) <= JOIN_TOL
+            && !closed
         {
             return invalid("the open path closes: machine it as a contour of regions");
         }
@@ -127,7 +129,7 @@ pub(crate) fn side_normal(side: OpenSide, t: Vec2) -> Vec2 {
 /// get an arc round them, corners closing towards it are trimmed to their crossing.
 pub(crate) fn offset_path(path: &OpenPath, params: &OpenContourParams, radius: f64) -> Result<Vec<Piece>> {
     params.validate()?;
-    let mut pieces = path.pieces(params.tolerance)?;
+    let mut pieces = path.pieces(params.tolerance, false)?;
     if params.reverse {
         pieces = pieces.iter().rev().map(Piece::reversed).collect();
     }
@@ -136,13 +138,16 @@ pub(crate) fn offset_path(path: &OpenPath, params: &OpenContourParams, radius: f
         OpenSide::Left => radius + params.stock_to_leave,
         OpenSide::Right => -(radius + params.stock_to_leave),
     };
-    let mut out = if away.abs() > 1e-9 { offset_pieces(&pieces, away)? } else { pieces };
+    let mut out = if away.abs() > 1e-9 { offset_pieces(&pieces, away, false)? } else { pieces };
     extend(&mut out, params.extend_start, params.extend_end)?;
-    check_self(&out)?;
+    check_self(&out, false)?;
     Ok(out)
 }
 
-fn offset_pieces(pieces: &[Piece], d: f64) -> Result<Vec<Piece>> {
+/// `pieces` moved `d` to the left (negative: to the right), corners joined as [`offset_path`]
+/// joins them. With `cyclic`, `pieces` is a loop: the corner between its last and first piece
+/// is joined too.
+pub(crate) fn offset_pieces(pieces: &[Piece], d: f64, cyclic: bool) -> Result<Vec<Piece>> {
     let mut off = Vec::with_capacity(pieces.len());
     for piece in pieces {
         off.push(match *piece {
@@ -162,11 +167,15 @@ fn offset_pieces(pieces: &[Piece], d: f64) -> Result<Vec<Piece>> {
     }
     // Corners, read off the pieces as they came: an arc round the vertex where the two sides
     // open away from each other, the crossing where they close.
-    let mut arcs: Vec<Option<Piece>> = vec![None; pieces.len()];
-    let mut starts: Vec<Option<f64>> = vec![None; pieces.len()];
-    let mut ends: Vec<Option<f64>> = vec![None; pieces.len()];
-    for (i, (piece, next)) in pieces.iter().zip(pieces.iter().skip(1)).enumerate() {
-        let bend = turn(piece.tangent_at(1.0), next.tangent_at(0.0));
+    let count = pieces.len();
+    let corners = if cyclic { count } else { count.saturating_sub(1) };
+    let mut arcs: Vec<Option<Piece>> = vec![None; count];
+    let mut starts: Vec<Option<f64>> = vec![None; count];
+    let mut ends: Vec<Option<f64>> = vec![None; count];
+    for i in 0..corners {
+        let next = (i + 1) % count;
+        let (Some(piece), Some(following)) = (pieces.get(i), pieces.get(next)) else { continue };
+        let bend = turn(piece.tangent_at(1.0), following.tangent_at(0.0));
         if bend.abs() <= 1e-12 {
             continue;
         }
@@ -176,11 +185,11 @@ fn offset_pieces(pieces: &[Piece], d: f64) -> Result<Vec<Piece>> {
                 arcs[i] = Some(Piece::Arc { c: v, r: d.abs(), a0: (end - v).angle(), sweep: bend });
             }
         } else {
-            let (Some(a), Some(b)) = (off.get(i), off.get(i + 1)) else { continue };
+            let (Some(a), Some(b)) = (off.get(i), off.get(next)) else { continue };
             match a.intersect_extended(b) {
                 Some((t, u)) if t.is_finite() && u.is_finite() => {
                     ends[i] = Some(t);
-                    starts[i + 1] = Some(u);
+                    starts[next] = Some(u);
                 }
                 _ => return invalid("the tool does not fit the open contour"),
             }
@@ -244,11 +253,18 @@ fn extended(piece: Piece, by: f64, at_start: bool) -> Result<Piece> {
     }
 }
 
-/// Refuses a path that runs into itself.
-fn check_self(pieces: &[Piece]) -> Result<()> {
-    for (i, a) in pieces.iter().enumerate() {
+/// Refuses a path that runs into itself. With `cyclic`, the last and first pieces touch at the
+/// loop's seam and are neighbours, not a crossing.
+pub(crate) fn check_self(pieces: &[Piece], cyclic: bool) -> Result<()> {
+    let count = pieces.len();
+    for i in 0..count {
+        let Some(a) = pieces.get(i) else { continue };
         let (alo, ahi) = a.bounds();
-        for b in pieces.iter().skip(i + 2) {
+        for j in (i + 1)..count {
+            if j == i + 1 || (cyclic && i == 0 && j + 1 == count) {
+                continue;
+            }
+            let Some(b) = pieces.get(j) else { continue };
             let (blo, bhi) = b.bounds();
             if alo.x > bhi.x + 1e-9 || blo.x > ahi.x + 1e-9 || alo.y > bhi.y + 1e-9 || blo.y > ahi.y + 1e-9 {
                 continue;
