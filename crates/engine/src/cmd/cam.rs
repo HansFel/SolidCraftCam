@@ -44,7 +44,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("delete")
         .params("name (a machine no setup names)"),
     CommandSpec::new("cam.setup", "CAM Setup", crate::checked!("cam.setup", setup_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SetupParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SetupResult>).icon("settings").params(
-        "name?: Setup 1, Setup 2, … when omitted; work_offset?: 1…6 (G54…G59, default 1); \
+        "name?: Setup 1, Setup 2, … when omitted; rename?: a new name for the existing setup `name` (steps and settings stay); work_offset?: 1…6 (G54…G59, default 1); \
          tool_axis?: [x,y,z] (programmed +Z, default [0,0,1]); \
          x_axis?: [x,y,z] (programmed +X, square to the tool axis; omitted, derived); \
          work_origin?: [x,y,z] mm part zero in the model (default [0,0,0]); \
@@ -361,6 +361,15 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let name = named.unwrap_or_else(|| s.doc.cam.unused_setup_name());
     let existing = s.doc.cam.setup(&name).cloned();
+    // A new name for an existing setup: its steps and settings stay, and so does its place in the list.
+    let renamed = match str_(p, "rename").map(str::trim) {
+        None => None,
+        Some(n) if n == name => None,
+        Some(n) if n.is_empty() || n.len() > 128 => return Err(bad(cmd, "`rename` is 1 to 128 characters")),
+        Some(_) if existing.is_none() => return Err(bad(cmd, format!("no setup `{name}` to rename"))),
+        Some(n) if s.doc.cam.setup(n).is_some() => return Err(bad(cmd, format!("a setup `{n}` already exists"))),
+        Some(n) => Some(n.to_string()),
+    };
     let work_offset = if p.get("work_offset").is_some() {
         num(p, "work_offset")
             .filter(|v| (1.0..=6.0).contains(v) && v.fract() == 0.0)
@@ -395,7 +404,7 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) if v.get("min").is_some() => Some(stock_box(cmd, v)?),
         Some(_) => existing.as_ref().and_then(|e| e.stock),
     };
-    let mut setup = CamSetup::new(&name);
+    let mut setup = CamSetup::new(renamed.as_deref().unwrap_or(&name));
     setup.work_offset = work_offset;
     setup.tool_axis = tool_axis;
     setup.x_axis = x_axis;
@@ -542,7 +551,7 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => doc.cam.setups.push(setup.clone()),
     }
-    Ok(json!({"setup": setup_json(s.doc.cam.setup(&name).unwrap_or(&setup))}))
+    Ok(json!({"setup": setup_json(s.doc.cam.setup(&setup.name).unwrap_or(&setup))}))
 }
 
 fn parse_value<T: serde::de::DeserializeOwned>(cmd: &str, p: &Value, k: &str, fallback: T) -> Result<T> {
@@ -2383,6 +2392,33 @@ mod tests {
         assert_eq!(run(&mut s, "cam.setup", json!({}))["setup"]["name"], "Setup 2");
         assert_eq!(s.doc.cam.setups.len(), 2);
         assert!(s.execute("cam.setup", &json!({"delete": true})).is_err());
+    }
+
+    #[test]
+    fn a_renamed_setup_keeps_its_steps_settings_and_place() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 4, "flute_length": 12}));
+        run(&mut s, "cam.setup", json!({"name": "Setup 1", "work_offset": 2}));
+        run(&mut s, "cam.setup", json!({"name": "Setup 2"}));
+        run(&mut s, "cam.op.contour", json!({"setup": "Setup 1", "name": "C", "tool": 1, "outer": [[0,0],[20,0],[20,10],[0,10]], "bottom": -2}));
+        let r = run(&mut s, "cam.setup", json!({"name": "Setup 1", "rename": " Top side "}));
+        assert_eq!(r["setup"]["name"], "Top side");
+        let names: Vec<&str> = s.doc.cam.setups.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["Top side", "Setup 2"]);
+        let top = s.doc.cam.setup("Top side").unwrap();
+        assert_eq!((top.work_offset, top.operations.len()), (2, 1));
+        // The same name again is no change; a taken, empty or missing one is refused and changes nothing.
+        run(&mut s, "cam.setup", json!({"name": "Top side", "rename": "Top side"}));
+        let before = s.doc.cam.clone();
+        for bad in [
+            json!({"name": "Top side", "rename": "Setup 2"}),
+            json!({"name": "Top side", "rename": "  "}),
+            json!({"name": "Top side", "rename": "x".repeat(129)}),
+            json!({"name": "Nothing", "rename": "Other"}),
+        ] {
+            assert!(s.execute("cam.setup", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc.cam, before, "{bad}");
+        }
     }
 
     #[test]

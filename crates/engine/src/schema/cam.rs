@@ -71,6 +71,8 @@ pub struct MachineResult {
 #[schemars(deny_unknown_fields)]
 pub struct SetupParams {
     pub name: Option<String>,
+    /// A new name for the existing setup `name`; its steps and settings stay.
+    pub rename: Option<String>,
     /// Material group name, or null to clear it.
     pub material: Option<serde_json::Value>,
     /// Highest spindle speed (rev/min), or null to clear it.

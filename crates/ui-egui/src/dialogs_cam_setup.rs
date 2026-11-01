@@ -21,7 +21,7 @@ const BOX_REFS: [&str; 3] = ["negative", "center", "positive"];
 
 #[derive(Clone, Debug)]
 pub struct CamSetupForm {
-    name: String,
+    pub(crate) name: String,
     /// The setup being changed; None makes a new one.
     editing: Option<String>,
     /// Work offset 1…6 as 0…5 (G54…G59).
@@ -163,6 +163,11 @@ impl CamSetupForm {
             (zero, _) => zero,
         };
         let mut p = json!({"name": name, "work_offset": self.offset + 1, "wcs_origin_mode": ZERO.get(mode).copied().unwrap_or("selected_point")});
+        // An edited setup keeps its name in `name`; a changed name field renames it.
+        if let Some(old) = self.editing.as_deref().filter(|old| *old != name) {
+            p["name"] = json!(old);
+            p["rename"] = json!(name);
+        }
         if mode >= BOX_MODES {
             let r = |i: usize| self.corner.get(i).and_then(|c| BOX_REFS.get(*c)).copied().unwrap_or("center");
             p["box_point"] = json!({"x": r(0), "y": r(1), "z": r(2)});
@@ -235,9 +240,7 @@ fn note(ui: &mut egui::Ui, text: &str) {
 /// Above the pick rows: name, work offset and how part zero is found.
 pub fn head_rows(ui: &mut egui::Ui, form: &mut CamSetupForm) {
     let tr = crate::i18n::tr;
-    if form.editing.is_none() {
-        ui_kit::text_row(ui, tr("ui.cam.setup"), &mut form.name, "");
-    }
+    ui_kit::text_row(ui, tr("ui.cam.setup"), &mut form.name, "");
     let offsets = ["G54", "G55", "G56", "G57", "G58", "G59"];
     ui_kit::choice_row(ui, tr("ui.cam.work_offset"), "cam-setup-offset", &mut form.offset, &offsets);
     let zero = [tr("ui.cam.zero_point"), tr("ui.cam.zero_axes"), tr("ui.cam.zero_origin"), tr("ui.cam.zero_model"), tr("ui.cam.zero_stock")];

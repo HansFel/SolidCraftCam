@@ -1338,6 +1338,15 @@ mod tests {
         assert!(p["zero_axes"].get("y").is_none());
         h.app.run("cam.setup", p).unwrap();
         assert_eq!(h.app.session.doc.cam.setup("Setup 3").map(|s| s.work_origin), Some([10.0, 0.0, 5.0]));
+        // Editing a setup shows its name; a changed name renames it and keeps its part zero.
+        let third = h.app.session.doc.cam.setup("Setup 3").cloned().unwrap();
+        let mut form = crate::dialogs_cam_setup::CamSetupForm::edit(&h.app, &third);
+        form.name = "Clamped on the side".into();
+        let p = form.params(&crate::dialogs_cam_setup::inputs()).unwrap();
+        assert_eq!((p["name"].as_str(), p["rename"].as_str()), (Some("Setup 3"), Some("Clamped on the side")));
+        h.app.run("cam.setup", p).unwrap();
+        assert!(h.app.session.doc.cam.setup("Setup 3").is_none());
+        assert_eq!(h.app.session.doc.cam.setup("Clamped on the side").map(|s| s.work_origin), Some([10.0, 0.0, 5.0]));
         // The job list offers each setup for editing and deleting.
         h.step(&json!({"start":"cam.list"})).unwrap();
         h.frames(3);

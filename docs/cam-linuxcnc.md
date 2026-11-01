@@ -46,6 +46,7 @@ preview and verify tool table, work zero and clearance for the actual machine.
 A setup is one clamping of the part. **New setup** (Machining tab, or the job list) and a
 setup's **Edit** button in the job list open the setup form:
 
+- **Setup**: its name. Changing it on an existing setup renames it; its steps stay.
 - **Work offset** G54–G59.
 - **Part zero**: a **Picked point** (a corner, or an edge: a round edge gives its centre, so
   part zero can sit on a bore's axis; a straight edge its middle), **Picked per axis** (a
@@ -267,7 +268,8 @@ contour's `lead_in`/`lead_out` (`{"kind": "direct"}`, `{"kind": "arc", "radius",
 (`{"count": 4, "width": 5, "height": 1}`, or `spacing` instead of `count`; null removes them), and a contour's
 `start` is a model point. `cam.tool.define` takes `cutting`
 (`{"aluminium": {"vc": 300, "fz": 0.05, "ap": 0.5, "ae": 0.4}}`); `cam.setup` takes
-`material` and `max_rpm` (null clears either). `cam.setup` also takes picks on the model:
+`material` and `max_rpm` (null clears either), and `rename` (a new name for the setup `name`;
+a name another setup has is refused). `cam.setup` also takes picks on the model:
 `z_face` and `x_edge` (`{body, at}`), `zero_edge` (a round edge's centre, else its middle),
 `flip_z` and `flip_x`, `zero_axes` (`{x?, y?, z?: {body, at, edge?}}`), `wcs_origin_mode` (`selected_point`, `model_origin`,
 `model_box_point`, `stock_box_point`) with `box_point` (`{x, y, z}`, each `negative`,
