@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_cam::{
-    ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
+    ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, Machine, Move, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post,
     Program, Side, Tabs, Tool, ToolKind, contour_open, contour_with_tabs, drill, emit, face, pocket, readback,
 };
 use solidcraft_doc::cam::{
@@ -997,6 +997,11 @@ fn delete_op(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn post_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    post_program(s, p)
+}
+
+/// `cam.post` without changing anything, for [`Session::cam_program`] too.
+fn post_program(s: &Session, p: &Value) -> Result<Value> {
     let cmd = "cam.post";
     let setup_name = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?.to_string();
     let setup = s.doc.cam.setup(&setup_name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{setup_name}`")))?;
@@ -1808,6 +1813,67 @@ impl Session {
         }
         out
     }
+}
+
+impl Session {
+    /// Setup `setup`'s program as it is exported (the setup's post, else its machine's, else
+    /// LinuxCNC), each line's move in model coordinates, for the G-code preview.
+    pub fn cam_program(&self, setup: &str) -> std::result::Result<CamProgram, String> {
+        let found = self.doc.cam.setup(setup).ok_or_else(|| format!("no setup `{setup}`"))?;
+        let post = chosen_post(&self.doc.cam, found).unwrap_or_else(|| "linuxcnc".into());
+        let frame = work_frame(found)?;
+        let out = post_program(self, &json!({"setup": setup, "post": post})).map_err(|e| e.to_string())?;
+        let gcode = out.get("gcode").and_then(Value::as_str).ok_or("post returned no G-code")?.to_string();
+        let extension = out.get("extension").and_then(Value::as_str).unwrap_or("ngc").to_string();
+        let mut moves = Vec::new();
+        let mut at: Option<Vec3> = None;
+        for (line, m) in solidcraft_cam::parse_lines(&gcode).map_err(|e| e.to_string())? {
+            let Some(to) = m.target() else { continue };
+            if let Some(from) = at {
+                let points = match m {
+                    Move::Arc { center, ccw, .. } => arc_points(from, to, center, ccw),
+                    _ => vec![from, to],
+                };
+                moves.push(CamProgramMove { line, points: points.into_iter().map(|p| frame.model(p)).collect(), cutting: m.feed().is_some() });
+            }
+            at = Some(to);
+        }
+        Ok(CamProgram { gcode, extension, moves })
+    }
+}
+
+/// Points along an arc move (a helix when Z changes), about every 5 degrees.
+fn arc_points(from: Vec3, to: Vec3, center: Vec2, ccw: bool) -> Vec<Vec3> {
+    let sweep = solidcraft_cam::arc_sweep(from, to, center, ccw);
+    let radius = (Vec2::new(from.x, from.y) - center).len();
+    let start = (from.y - center.y).atan2(from.x - center.x);
+    let steps = ((sweep.abs() / 5f64.to_radians()).ceil() as usize).clamp(1, 720);
+    let mut points: Vec<Vec3> = (0..steps)
+        .map(|k| {
+            let f = k as f64 / steps as f64;
+            let a = start + sweep * f;
+            Vec3::new(center.x + radius * a.cos(), center.y + radius * a.sin(), from.z + (to.z - from.z) * f)
+        })
+        .collect();
+    points.push(to);
+    points
+}
+
+/// A setup's program for the G-code preview (see [`Session::cam_program`]).
+pub struct CamProgram {
+    pub gcode: String,
+    /// The post's file extension, without the dot.
+    pub extension: String,
+    /// Every motion line's move, in program order.
+    pub moves: Vec<CamProgramMove>,
+}
+
+/// One line's move: the line number (from 1), the tool's way in model coordinates, and whether
+/// it cuts (a rapid does not).
+pub struct CamProgramMove {
+    pub line: usize,
+    pub points: Vec<Vec3>,
+    pub cutting: bool,
 }
 
 /// One operation's toolpath in model coordinates (see [`Session::cam_toolpaths`]).

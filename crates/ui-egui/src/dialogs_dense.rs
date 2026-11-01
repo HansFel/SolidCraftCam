@@ -1156,6 +1156,60 @@ mod tests {
     }
 
     #[test]
+    fn cam_window_shows_a_setups_gcode_and_draws_the_selected_lines_move() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        let mill = json!({"name": "Portal", "x": [0, 300], "y": [0, 200], "z": [-100, 0],
+            "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000, "post": "grbl"});
+        h.app.run("cam.tool.define", json!({"number": 1, "diameter": 4, "flute_length": 12})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top", "machine": mill})).unwrap();
+        h.app.run("cam.op.contour", json!({"setup": "Top", "name": "C", "tool": 1, "outer": [[0,0],[20,0],[20,10],[0,10]], "bottom": -1})).unwrap();
+        // Every move belongs to a motion line of the program as it is exported.
+        let program = h.app.session.cam_program("Top").unwrap();
+        let lines: Vec<&str> = program.gcode.lines().collect();
+        assert!(!program.moves.is_empty());
+        for m in &program.moves {
+            let text = lines[m.line - 1];
+            assert!(text.contains('X') || text.contains('Y') || text.contains('Z'), "line {}: {text}", m.line);
+        }
+        h.step(&json!({"start":"cam.list"})).unwrap();
+        h.frames(3);
+        h.step(&json!({"widget": "Show G-code"})).unwrap();
+        h.frames(3);
+        let summary = format!("{} lines, post GRBL", lines.len());
+        assert!(h.widget(&summary).is_some(), "{summary}");
+        // Stepping through the moves selects their lines; the cuts run round the outline.
+        fn view(h: &Harness) -> Option<&crate::cam_panel::GcodeView> {
+            h.app.cam_window.as_ref().and_then(|w| w.gcode.as_ref())
+        }
+        let mut cuts = 0;
+        for _ in 0..program.moves.len() {
+            h.app.cam_window.as_mut().and_then(|w| w.gcode.as_mut()).unwrap().step(1);
+            let m = view(&h).and_then(|v| v.selected_move()).unwrap();
+            if m.cutting {
+                cuts += 1;
+                assert!(m.points.iter().all(|p| (-2.1..=22.1).contains(&p.x) && (-2.1..=12.1).contains(&p.y)), "{:?}", m.points);
+            }
+        }
+        assert!(cuts >= 4);
+        let last = view(&h).and_then(|v| v.selected);
+        h.frames(2);
+        // A changed design is posted again; the selected line stays.
+        h.app.run("cam.op.contour", json!({"setup": "Top", "name": "C", "tool": 1, "outer": [[0,0],[30,0],[30,10],[0,10]], "bottom": -2})).unwrap();
+        h.frames(2);
+        assert_eq!(view(&h).and_then(|v| v.selected), last);
+        let summary = format!("{} lines, post GRBL", h.app.session.cam_program("Top").unwrap().gcode.lines().count());
+        assert!(h.widget(&summary).is_some(), "{summary}");
+        // Only the small G-code panel is shown meanwhile; closing it brings the window back.
+        assert!(h.widget("G-code: Top").is_some());
+        assert!(h.widget("Show G-code").is_none());
+        h.app.cam_window.as_mut().unwrap().gcode = None;
+        h.frames(2);
+        assert!(h.widget("Show G-code").is_some());
+    }
+
+    #[test]
     fn cam_machine_list_holds_cutting_data_and_the_form_sets_side_direction_and_stock() {
         let mut h = Harness::new();
         h.app.home.open = false;

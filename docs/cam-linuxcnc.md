@@ -172,6 +172,19 @@ order, and a step whose box is cleared is left out of the G-code. **Edit** opens
 the milling form with its values, tool and geometry (shown as kept until new contours are
 picked); OK replaces it in place. **Remove** deletes a step; **Export G-code…** writes the whole setup.
 
+The window can be sized by dragging its edges; its tabs scroll inside it.
+
+**Show G-code** swaps the window for a small panel at the bottom right, so the model stays
+free. It lists the setup's program as it would be exported, with the post its machine names
+(LinuxCNC when none), one numbered row per line, and only this setup's toolpaths stay drawn.
+Clicking a row draws that line's move on the model, thick for a cut and thinner for a rapid,
+with a ring where it ends; **◀ Previous move** and **Next move ▶** step through the motion
+lines. The program is posted again whenever the design changes, so it always shows what an
+export would write. **Copy** puts the whole program on the clipboard. The panel can be sized
+too; closing it brings the CAM window back. It is read-only: edit the steps, not the code, so
+every program stays checked against its toolpaths. It shows the moves, it does not remove
+material, so it is not yet a simulation.
+
 The tool library is kept in the preferences, for every design. **Use in design**
 copies a library tool into the open design; **Add to library** goes the other way and
 lists the design's tools that are missing from the library or differ from it. A tool

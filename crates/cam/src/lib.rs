@@ -25,13 +25,13 @@ mod path;
 mod piece;
 mod post;
 mod readback;
-mod tabs;
 mod slot;
+mod tabs;
 mod tool;
 
 pub use check::verify;
 pub use cutting::{CuttingData, MATERIALS, Speeds, valid_material};
-pub use gcode::{Operation, Program, emit, parse, work_offset_code};
+pub use gcode::{Operation, Program, emit, parse, parse_lines, work_offset_code};
 pub use lead::{Lead, Leads};
 pub use machine::{MAX_MACHINE_NAME, Machine, RotaryAxis, reach};
 pub use offset::offset_regions;
@@ -43,8 +43,8 @@ pub use ops::{
 pub use path::{Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
-pub use tabs::Tabs;
 pub use slot::{SlotParams, slot};
+pub use tabs::Tabs;
 pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, Tool, ToolKind, ToolLibraryFile};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

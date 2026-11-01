@@ -177,7 +177,7 @@ Project
 | Siemens Sinumerik | Planned |
 | Heidenhain (conversational Klartext, not G-code) | Planned |
 | Marlin: only for pen, laser and light routers driven by 3D-printer firmware | Planned, low priority |
-| G-code preview in the panel, with the line that belongs to the selected move | Planned |
+| G-code preview in the panel, with the selected line's move drawn on the model | Done (picking a move in the viewport to find its line: planned) |
 | G-code editor (view, search, edit before export; edits are not read back) | Planned |
 | Post settings in the UI: comments, line numbers, decimals, arcs, canned cycles, tool change, safe start | Partial: `Post` struct has them, no UI |
 

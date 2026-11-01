@@ -926,6 +926,8 @@ pub struct Window<'a> {
     page_padding: egui::Margin,
     page_chrome: bool,
     left_slot: bool,
+    /// Starting height of a window the user can resize; `None`: sized by its contents.
+    resizable: Option<f32>,
 }
 
 impl<'a> Window<'a> {
@@ -950,7 +952,18 @@ impl<'a> Window<'a> {
             page_padding: egui::Margin::same(Tokens::get().space_16 as i8),
             page_chrome: false,
             left_slot: false,
+            resizable: None,
         }
+    }
+
+    /// The user can drag the card's edges to size it, from the width set here and `height`
+    /// (both still bounded by the screen). The body then gets exactly the card's room and does
+    /// not scroll by itself: a long body brings its own scroll area.
+    pub(crate) fn resizable(mut self, height: f32) -> Self {
+        if height.is_finite() && height > 0.0 {
+            self.resizable = Some(height);
+        }
+        self
     }
 
     /// Pin the card at `align` of the screen, `offset` away (it then no longer moves).
@@ -1057,7 +1070,9 @@ impl<'a> Window<'a> {
             header_impl(ui, (self.icon, self.page_chrome.then_some(t.form_primary)), self.title, None, self.closeable, || close = true);
             egui::Frame::NONE.inner_margin(if self.body_padding { t.space_12 } else { 0.0 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = t.form_gap_y;
-                if self.body_padding {
+                if self.resizable.is_some() {
+                    body(ui);
+                } else if self.body_padding {
                     let height =
                         (dimension(ui.ctx().content_rect().height()) - t.form_header_height - t.form_footer_height - t.space_24 * 2.0).max(0.0);
                     // Offer the body all the room the screen leaves, not just the height the card
@@ -1177,6 +1192,20 @@ impl<'a> Window<'a> {
             .frame(frame)
             .fade_in(false)
             .fade_out(false);
+        let window = match self.resizable {
+            Some(height) => {
+                let screen = ctx.content_rect().size();
+                let t = Tokens::get();
+                window
+                    .resizable(true)
+                    .min_width(inner_width.min(t.form_card_width))
+                    .max_width(dimension(screen.x) - frame.total_margin().sum().x)
+                    .min_height(t.form_header_height + row_height() * 4.0)
+                    .max_height(dimension(screen.y) - frame.total_margin().sum().y)
+                    .default_height(height.min(dimension(screen.y) * 0.8))
+            }
+            None => window,
+        };
         let window = match (self.anchor, self.placed) {
             (Some((align, offset)), _) => window.anchor(align, offset),
             (None, Some((pivot, pos))) => window.pivot(pivot).default_pos(pos),

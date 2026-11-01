@@ -358,6 +358,11 @@ fn words(line: &str, n: usize) -> Result<Vec<(char, f64)>> {
 /// `G4 P`, `G20`/`G21`. Everything else (spindle, tools, coolant, offsets) is skipped. The
 /// result is in millimetres and mm/min.
 pub fn parse(text: &str) -> Result<Vec<Move>> {
+    Ok(parse_lines(text)?.into_iter().map(|(_, m)| m).collect())
+}
+
+/// [`parse`], each move with the number of the line it is written on (from 1).
+pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
     let mut units = 1.0;
     let mut mode: Option<u8> = None;
     let mut feed: Option<f64> = None;
@@ -390,7 +395,7 @@ pub fn parse(text: &str) -> Result<Vec<Move>> {
         let word = |letter: char| ws.iter().find(|(c, _)| *c == letter).map(|(_, v)| *v);
         if dwell {
             // `G4 P` in seconds as this crate's own posts write it, or `G04 X` in seconds.
-            moves.push(Move::Dwell { seconds: word('X').or(word('P')).unwrap_or(0.0).max(0.0) });
+            moves.push((n, Move::Dwell { seconds: word('X').or(word('P')).unwrap_or(0.0).max(0.0) }));
             continue;
         }
         if let Some(f) = word('F') {
@@ -407,18 +412,18 @@ pub fn parse(text: &str) -> Result<Vec<Move>> {
         let (Some(px), Some(py), Some(pz)) = (x, y, z) else { continue };
         let to = Vec3::new(px, py, pz);
         match mode {
-            0 => moves.push(Move::Rapid { to }),
+            0 => moves.push((n, Move::Rapid { to })),
             _ => {
                 let Some(feed) = feed.filter(|f| *f > 0.0) else { return Err(CamError::Parse(n, "a cutting move without a feed rate".into())) };
                 if mode == 1 {
-                    moves.push(Move::Feed { to, feed });
+                    moves.push((n, Move::Feed { to, feed }));
                 } else {
                     let Some(from) = pos else { return Err(CamError::Parse(n, "an arc before the position is known".into())) };
                     if ti.is_none() && tj.is_none() {
                         return Err(CamError::Parse(n, "not supported yet: arcs without I and J".into()));
                     }
                     let center = Vec2::new(from.x + ti.unwrap_or(0.0) * units, from.y + tj.unwrap_or(0.0) * units);
-                    moves.push(Move::Arc { to, center, ccw: mode == 3, feed });
+                    moves.push((n, Move::Arc { to, center, ccw: mode == 3, feed }));
                 }
             }
         }

@@ -39,7 +39,7 @@ mod face;
 mod features;
 mod features_more;
 mod join_pieces;
-pub use cam::{CamToolpath, SetupOutline};
+pub use cam::{CamProgram, CamProgramMove, CamToolpath, SetupOutline};
 pub(crate) use construct::{GeoForm, GeoFormError, REF as GEO_REF_FORMS, SKETCH_PART, geo_form, is_model_axis};
 pub(crate) use face::{FaceRefForm, face_ref_form};
 pub(crate) use features::profiles as feature_profiles;

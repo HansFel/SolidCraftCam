@@ -387,6 +387,69 @@ pub struct CamPanel {
     error: Option<String>,
     /// Every step's toolpath for the view, and the design they were made for.
     paths: Option<(usize, Vec<solidcraft_engine::cmd::CamToolpath>)>,
+    /// The setup whose G-code is shown.
+    pub(crate) gcode: Option<GcodeView>,
+}
+
+/// A setup's program in the window: its lines, each motion line's move, the selected line.
+pub(crate) struct GcodeView {
+    setup: String,
+    /// The design it was posted from.
+    key: usize,
+    program: Result<GcodeProgram, String>,
+    /// The selected line (from 1).
+    pub(crate) selected: Option<usize>,
+    /// Scroll the list to the selected line on the next frame.
+    scroll: bool,
+}
+
+pub(crate) struct GcodeProgram {
+    text: String,
+    lines: Vec<String>,
+    post: String,
+    moves: Vec<solidcraft_engine::cmd::CamProgramMove>,
+}
+
+impl GcodeView {
+    fn new(app: &SolveApp, setup: &str) -> GcodeView {
+        let program = app.session.cam_program(setup).map(|p| GcodeProgram {
+            lines: p.gcode.lines().map(str::to_string).collect(),
+            text: p.gcode,
+            post: chosen_post_label(app, setup),
+            moves: p.moves,
+        });
+        GcodeView { setup: setup.to_string(), key: design_key(app), program, selected: None, scroll: false }
+    }
+
+    /// The selected line's move.
+    pub(crate) fn selected_move(&self) -> Option<&solidcraft_engine::cmd::CamProgramMove> {
+        let (Ok(program), Some(line)) = (&self.program, self.selected) else { return None };
+        program.moves.binary_search_by_key(&line, |m| m.line).ok().and_then(|i| program.moves.get(i))
+    }
+
+    /// Selects the move before (`-1`) or after (`1`) the selected line.
+    pub(crate) fn step(&mut self, by: i32) {
+        let Ok(program) = &self.program else { return };
+        let line = self.selected.unwrap_or(0);
+        let next = if by < 0 { program.moves.iter().rev().find(|m| m.line < line) } else { program.moves.iter().find(|m| m.line > line) };
+        if let Some(m) = next {
+            self.selected = Some(m.line);
+            self.scroll = true;
+        }
+    }
+}
+
+/// Identifies the design: a new one after every change.
+fn design_key(app: &SolveApp) -> usize {
+    std::sync::Arc::as_ptr(&app.session.doc) as usize
+}
+
+/// The post setup `setup` is exported with, as the machine editor names it.
+fn chosen_post_label(app: &SolveApp, setup: &str) -> String {
+    let cam = &app.session.doc.cam;
+    let name =
+        cam.setup(setup).and_then(|s| s.post.clone().or_else(|| s.machine.as_deref().and_then(|m| cam.machine(m)).and_then(|m| m.post.clone())));
+    post_label(name.as_deref().unwrap_or("linuxcnc"))
 }
 
 /// Open the window on `tab`.
@@ -536,8 +599,80 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             ui.end_row();
         }
     });
-    if count > 0 && ui_kit::button(ui, tr("ui.cam.export_setup"), ui_kit::Button::Normal).clicked() {
-        actions.push(Action::Export(setup.name.clone()));
+    if count > 0 {
+        ui.horizontal(|ui| {
+            if ui_kit::button(ui, tr("ui.cam.export_setup"), ui_kit::Button::Normal).clicked() {
+                actions.push(Action::Export(setup.name.clone()));
+            }
+            if ui_kit::button(ui, tr("ui.cam.show_gcode"), ui_kit::Button::Normal).clicked() {
+                d.gcode = Some(GcodeView::new(app, &setup.name));
+            }
+        });
+    }
+}
+
+/// The G-code panel's body: the move buttons, then one row per line with its number, the
+/// selected line marked and its move drawn on the model ([`draw_paths`]), filling the panel.
+/// Posted again when the design changes.
+fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
+    let t = Tokens::get();
+    if view.key != design_key(app) {
+        let selected = view.selected;
+        *view = GcodeView::new(app, &view.setup);
+        view.selected = selected;
+    }
+    let program = match &view.program {
+        Ok(program) => program,
+        Err(e) => {
+            ui_kit::text(ui, e, ui_kit::Text::Error("cam_gcode"));
+            return;
+        }
+    };
+    let mut step = 0;
+    ui.horizontal_wrapped(|ui| {
+        if ui_kit::button(ui, tr("ui.cam.prev_move"), ui_kit::Button::Normal).clicked() {
+            step = -1;
+        }
+        if ui_kit::button(ui, tr("ui.cam.next_move"), ui_kit::Button::Normal).clicked() {
+            step = 1;
+        }
+        if ui_kit::button(ui, tr("ui.cam.copy_gcode"), ui_kit::Button::Small).clicked() {
+            ui.ctx().copy_text(program.text.clone());
+        }
+    });
+    let count = program.lines.len().to_string();
+    ui.add(
+        egui::Label::new(RichText::new(crate::i18n::format("ui.cam.gcode_lines", &[("lines", &count), ("post", &program.post)])).color(t.text_dim))
+            .wrap(),
+    );
+    ui.add(egui::Label::new(RichText::new(tr("ui.cam.gcode_hint")).color(t.text_dim)).wrap());
+    let row = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
+    let digits = program.lines.len().max(1).to_string().len();
+    let mut area =
+        egui::ScrollArea::both().id_salt(format!("cam-gcode-{}", view.setup)).max_height(ui.available_height()).auto_shrink([false, false]);
+    if view.scroll
+        && let Some(line) = view.selected
+    {
+        area = area.vertical_scroll_offset(((line.saturating_sub(4)) as f32 * row).max(0.0));
+    }
+    let mut clicked = None;
+    area.show_rows(ui, row, program.lines.len(), |ui, range| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        for i in range {
+            let number = i + 1;
+            let Some(text) = program.lines.get(i) else { continue };
+            let label = RichText::new(format!("{number:>digits$}  {text}")).monospace();
+            if ui.selectable_label(view.selected == Some(number), label).clicked() {
+                clicked = Some(number);
+            }
+        }
+    });
+    view.scroll = false;
+    if let Some(number) = clicked {
+        view.selected = Some(number);
+    }
+    if step != 0 {
+        view.step(step);
     }
 }
 
@@ -555,12 +690,10 @@ fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut V
     if setups.is_empty() {
         ui.add(egui::Label::new(tr("ui.cam.no_setups")).wrap());
     }
-    egui::ScrollArea::vertical().id_salt("cam-jobs").max_height(420.0).show(ui, |ui| {
-        for setup in &setups {
-            ui.separator();
-            setup_rows(app, ui, d, setup, actions);
-        }
-    });
+    for setup in &setups {
+        ui.separator();
+        setup_rows(app, ui, d, setup, actions);
+    }
 }
 
 fn cutting_rows(ui: &mut egui::Ui, edit: &mut ToolEdit) {
@@ -771,20 +904,41 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
 /// Draw the window when it is open. Called once per frame.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.cam_window.take() else { return };
+    // While a setup's G-code is gone through, only its small panel is shown, at the bottom
+    // right, so the model stays free; closing it brings the window back.
+    if let Some(view) = d.gcode.as_mut() {
+        let t = Tokens::get();
+        let title = crate::i18n::format("ui.cam.gcode_title", &[("setup", &view.setup)]);
+        let corner = ctx.content_rect().right_bottom() - egui::vec2(t.space_24, t.space_24);
+        let closed = ui_kit::Window::new(egui::Id::new("sc_cam_gcode"), "cut", &title)
+            .cards(1.6)
+            .resizable(t.form_card_width * 1.4)
+            .placed(egui::Align2::RIGHT_BOTTOM, corner)
+            .show_body(ctx, |ui| gcode_rows(app, ui, view));
+        if closed {
+            d.gcode = None;
+        }
+        app.cam_window = Some(d);
+        return;
+    }
     let mut actions = Vec::new();
-    let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).show_body(ctx, |ui| {
+    let height = Tokens::get().form_card_width * 2.0;
+    let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).resizable(height).show_body(ctx, |ui| {
         let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines")];
         ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
         ui.separator();
-        match d.tab {
-            0 => jobs_tab(app, ui, &mut d, &mut actions),
-            1 => tools_tab(app, ui, &mut d, &mut actions),
-            _ => machines_tab(app, ui, &mut d, &mut actions),
-        }
-        if let Some(e) = &d.error {
-            // The window truncates text; a refusal is read in full.
-            ui_kit::text(ui, e, ui_kit::Text::Error("cam"));
-        }
+        // The window is sized by the user; its tabs scroll inside it.
+        egui::ScrollArea::vertical().id_salt("cam-body").auto_shrink([false, false]).show(ui, |ui| {
+            match d.tab {
+                0 => jobs_tab(app, ui, &mut d, &mut actions),
+                1 => tools_tab(app, ui, &mut d, &mut actions),
+                _ => machines_tab(app, ui, &mut d, &mut actions),
+            }
+            if let Some(e) = &d.error {
+                // The window truncates text; a refusal is read in full.
+                ui_kit::text(ui, e, ui_kit::Text::Error("cam"));
+            }
+        });
     });
     for action in actions {
         let result = match action {
@@ -860,7 +1014,10 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
     }
     let Some((_, paths)) = &window.paths else { return };
     let t = Tokens::get();
-    for path in paths {
+    let selected = window.gcode.as_ref().and_then(GcodeView::selected_move);
+    // Going through a setup's G-code shows that setup's toolpaths only.
+    let only = window.gcode.as_ref().map(|g| g.setup.as_str());
+    for path in paths.iter().filter(|p| only.is_none_or(|s| s == p.setup)) {
         let Ok(points) = &path.points else { continue };
         let cut = if path.skipped { egui::Stroke::new(1.0, t.text_dim) } else { egui::Stroke::new(2.0, t.preview_sketch) };
         let rapid = egui::Stroke::new(1.0, t.text_dim);
@@ -870,6 +1027,15 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
             {
                 painter.line_segment([a, b], if *cutting { cut } else { rapid });
             }
+        }
+    }
+    // The G-code line picked in the window: its move drawn over the rest, its end marked.
+    if let Some(m) = selected {
+        let points: Vec<egui::Pos2> = m.points.iter().filter_map(|p| proj.to_screen(*p)).collect();
+        let stroke = egui::Stroke::new(if m.cutting { 4.0 } else { 2.5 }, t.accent);
+        painter.add(egui::Shape::line(points.clone(), stroke));
+        if let Some(end) = points.last() {
+            painter.circle_stroke(*end, 5.0, stroke);
         }
     }
 }
