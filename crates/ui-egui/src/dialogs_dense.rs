@@ -1183,6 +1183,64 @@ mod tests {
     }
 
     #[test]
+    fn cam_drill_form_takes_a_sketch_circle_and_a_sketch_point_as_holes() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.circle.center", json!({"center": [10, 10], "radius": 2})).unwrap();
+        h.app.run("sketch.point", json!({"point": [30, 25], "id": "p"})).unwrap();
+        let sketch = h.app.session.active_sketch.unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("cam.tool.define", json!({"number": 2, "kind": "drill", "diameter": 4, "flute_length": 30})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top"})).unwrap();
+        h.step(&json!({"start":"cam.op.drill"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        d.pick(&h.app.session, Sel::Profile { sketch, index: 0 });
+        d.pick(&h.app.session, Sel::ExternalSketchPoint { sketch, id: "p".into() });
+        assert_eq!(d.inputs[0].items.len(), 2);
+        h.app.dialog = Some(d);
+        h.frames(2);
+        assert!(h.widget("1. Sketch profile 1").is_some() && h.widget("2. Sketch point p").is_some());
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let op = h.app.session.doc.cam.setup("Top").and_then(|s| s.operations.first().cloned()).unwrap();
+        let solidcraft_engine::doc::cam::CamOperation::Drill { geometry: solidcraft_engine::doc::cam::CamGeometry::Points { points }, .. } = op
+        else {
+            panic!("{op:?}")
+        };
+        assert_eq!(points, [[10.0, 10.0], [30.0, 25.0]]);
+    }
+
+    #[test]
+    fn cam_typed_hole_centres_take_decimal_commas_and_separators() {
+        let mut h = Harness::new();
+        h.app.run("cam.tool.define", json!({"number": 2, "kind": "drill", "diameter": 5, "flute_length": 30})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top"})).unwrap();
+        h.app.run("cam.op.drill", json!({"setup": "Top", "name": "H", "tool": 2, "points": [[1, 2]], "bottom": -5})).unwrap();
+        let setup = h.app.session.doc.cam.setup("Top").cloned().unwrap();
+        let op = setup.operations.first().cloned().unwrap();
+        let mut form = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op);
+        assert_eq!(form.params().unwrap()["points"], json!([[1.0, 2.0]]));
+        form.set_holes(
+            "10 20
+10.5; 20
+10,5 20,25
+10, 20
+10,20
+
+  7	8  ",
+        );
+        let points = form.params().unwrap()["points"].clone();
+        assert_eq!(points, json!([[10.0, 20.0], [10.5, 20.0], [10.5, 20.25], [10.0, 20.0], [10.0, 20.0], [7.0, 8.0]]));
+        for bad in ["10", "10 20 30", "10,5,20", "x 20", "10;;"] {
+            form.set_holes(bad);
+            assert!(form.params().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn cam_tool_library_goes_to_a_file_and_comes_back_asking_before_it_replaces() {
         use solidcraft_engine::cam::{Tool, ToolKind};
         let mut h = Harness::new();

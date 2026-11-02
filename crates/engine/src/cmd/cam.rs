@@ -108,7 +108,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("hole")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
     CommandSpec::new("cam.post", "Post Process", crate::checked!("cam.post", post_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::PostParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::PostResult>).icon("export").noundo().params(
         "setup; post?: a built-in post or the name of a saved post (default: the setup's post, else its machine's, else rs274); program?: name (default the setup's) → \
          {gcode, extension, post, operations, readback}. G-code is always read back and checked against the toolpaths, \
@@ -152,15 +152,26 @@ pub(super) fn drill_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let args: crate::schema::cam::DrillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, "define the drill tool first"))?;
     let mut points = if p.get("points").is_some() { vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)? } else { Vec::new() };
-    // Picked bores: a round edge's centre, or every round hole of a picked flat face, in work XY.
+    // Picked bores: a round edge's centre, every round hole of a picked flat face, a sketch
+    // point, or the circles of a sketch profile, in work XY.
     if let Some(holes) = p.get("holes") {
         let holes = holes
             .as_array()
             .filter(|h| h.len() <= solidcraft_doc::cam::MAX_LOOP_POINTS)
-            .ok_or_else(|| bad(cmd, "`holes` must be a list of {body, at}"))?;
+            .ok_or_else(|| bad(cmd, "`holes` must be a list of {body, at} or {sketch, point | profile}"))?;
         let setup = s.doc.cam.setup(&args.setup).ok_or_else(|| bad(cmd, "create the setup first"))?;
         let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
         for pick in holes {
+            if pick.get("sketch").is_some() {
+                for c in sketch_hole_centres(s, cmd, pick)? {
+                    let w = frame.local(c);
+                    let w = Vec2::new(w.x, w.y);
+                    if !points.iter().any(|q| q.dist(w) < 1e-6) {
+                        points.push(w);
+                    }
+                }
+                continue;
+            }
             let (body, at) = pick_param(cmd, pick, "holes")?;
             let centres = if bool_(pick, "edge") == Some(true) {
                 vec![edge_centre(s, &body, at).map_err(|e| bad(cmd, e))?]
@@ -1851,6 +1862,55 @@ fn edge_centre(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Ve
     Ok(if round { centre } else { edge.mid })
 }
 
+/// The centre and radius of a loop made only of arcs about one centre: a circle.
+fn circle_of(lp: &Loop2) -> Option<(Vec2, f64)> {
+    let mut circle: Option<(Vec2, f64)> = None;
+    for seg in &lp.segs {
+        let Seg2::Arc { center, radius, .. } = seg else { return None };
+        match circle {
+            None => circle = Some((*center, *radius)),
+            Some((c, _)) if c.dist(*center) <= 1e-6 => {}
+            Some(_) => return None,
+        }
+    }
+    circle
+}
+
+/// Hole centres from a sketch, in model coordinates: a sketch point (`point`, its id), or the
+/// circles of a profile (`profile`, its index): its outline when that is a circle, and every
+/// round hole in it.
+fn sketch_hole_centres(s: &Session, cmd: &str, pick: &Value) -> Result<Vec<Vec3>> {
+    let key = super::sketch_key(pick.get("sketch")).ok_or_else(|| bad(cmd, "`sketch` must be a sketch id or name"))?;
+    let id = match s.doc.find_feature(&key) {
+        Some(f) if matches!(f.kind, FeatureKind::Sketch { .. }) => f.id,
+        _ => return Err(bad(cmd, format!("no sketch `{key}`"))),
+    };
+    let state = s.model.state();
+    let solved = state.sketch(id).ok_or_else(|| bad(cmd, format!("sketch `{key}` has no solved geometry")))?;
+    if let Some(point) = str_(pick, "point") {
+        let p = solved
+            .sketch
+            .point_index(point)
+            .and_then(|i| solved.sketch.point(i))
+            .ok_or_else(|| bad(cmd, format!("sketch `{key}` has no point `{point}`")))?;
+        return Ok(vec![solved.plane.to_world(p)]);
+    }
+    let index = pick
+        .get("profile")
+        .and_then(Value::as_u64)
+        .and_then(|i| usize::try_from(i).ok())
+        .ok_or_else(|| bad(cmd, "a hole from a sketch needs `point` (a point id) or `profile` (a profile index)"))?;
+    let profile = solved.profiles.get(index).ok_or_else(|| bad(cmd, format!("sketch `{key}` has no profile {index}")))?;
+    let mut centres: Vec<Vec3> = Vec::new();
+    for (c, _) in std::iter::once(&profile.region.outer).chain(&profile.region.holes).filter_map(circle_of) {
+        let c = solved.plane.to_world(c);
+        if !centres.iter().any(|q| q.dist(c) < 1e-6) {
+            centres.push(c);
+        }
+    }
+    if centres.is_empty() { Err(bad(cmd, "the picked sketch profile has no circle: pick a circle or a sketch point")) } else { Ok(centres) }
+}
+
 /// The centres of the round holes in the flat face of `body_name` that `at` lies on.
 fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Vec<Vec3>, String> {
     let state = s.model.state();
@@ -1869,18 +1929,7 @@ fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Res
     let centres: Vec<Vec3> = region
         .holes
         .iter()
-        .filter_map(|lp| {
-            let mut circle: Option<(Vec2, f64)> = None;
-            for seg in &lp.segs {
-                let Seg2::Arc { center, radius, .. } = seg else { return None };
-                match circle {
-                    None => circle = Some((*center, *radius)),
-                    Some((c, _)) if c.dist(*center) <= 1e-6 => {}
-                    Some(_) => return None,
-                }
-            }
-            circle
-        })
+        .filter_map(circle_of)
         // A boss standing on the face has a round rim too: just inside its rim and above the
         // face is its wall, where a hole has none (a bore in the boss leaves the wall there).
         .filter(|(c, r)| {
@@ -3073,11 +3122,37 @@ mod tests {
             "top": 0, "bottom": -8, "clearance": 10, "retract": 2, "stepdown": 2, "stepover": 1, "feed": 100, "plunge_feed": 100,
             "spindle_rpm": 2000, "work_offset": 1, "exact_regions": true});
         // The dialogs add `exact_regions` to sketch picks; the job takes it.
-        run(&mut s, "cam.job.create", job);
+        run(&mut s, "cam.job.create", job.clone());
         assert_eq!(points(&s, "Job"), [[32000, 8000]]);
-        // A face without round holes, or no body, is refused.
+        // A sketch gives holes too: a circle's centre (its profile) and a point.
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [10, 10], "radius": 2}));
+        run(&mut s, "sketch.point", json!({"point": [30, 25], "id": "p"}));
+        let marks = s.active_sketch.expect("sketch");
+        run(&mut s, "sketch.finish", json!({}));
+        let sketch = json!({"setup": "Top", "name": "Sketch", "tool": 2, "bottom": -8,
+            "holes": [{"sketch": marks, "profile": 0}, {"sketch": marks, "point": "p"}]});
+        run(&mut s, "cam.op.drill", sketch);
+        assert_eq!(points(&s, "Sketch"), [[10000, 10000], [30000, 25000]]);
+        let mut job_sketch = job.clone();
+        job_sketch["name"] = json!("JobSketch");
+        job_sketch.as_object_mut().unwrap().remove("edges");
+        job_sketch["sketch"] = json!(marks);
+        job_sketch["profiles"] = json!([0]);
+        job_sketch["sketch_points"] = json!([{"sketch": marks, "point": "p"}]);
+        run(&mut s, "cam.job.create", job_sketch);
+        assert_eq!(points(&s, "JobSketch"), [[10000, 10000], [30000, 25000]]);
+        // A face without round holes, no body, a missing sketch point or profile, or a sketch
+        // pick naming neither, is refused.
         let before = s.doc.to_json();
-        for holes in [json!([{"body": "Plate", "at": [0, 15, 4]}]), json!([{"body": "Nope", "at": [5, 5, 8]}])] {
+        for holes in [
+            json!([{"body": "Plate", "at": [0, 15, 4]}]),
+            json!([{"body": "Nope", "at": [5, 5, 8]}]),
+            json!([{"sketch": marks, "point": "nope"}]),
+            json!([{"sketch": marks, "profile": 7}]),
+            json!([{"sketch": marks}]),
+            json!([{"sketch": 999_999, "point": "p"}]),
+        ] {
             assert!(s.execute("cam.op.drill", &json!({"setup": "Top", "name": "Bad", "tool": 2, "bottom": -8, "holes": holes})).is_err());
         }
         assert_eq!(s.doc.to_json(), before);

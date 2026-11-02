@@ -168,9 +168,12 @@ slot adds side passes, at most **Stepover** apart, until the walls are reached, 
 
 ## Drilling at picked bores
 
-For **Drill**, pick round edges (each gives its centre) or a flat face (every round hole in
-it) instead of typing hole centres; the typed list is used only while nothing is picked.
-The centres are taken in the setup's work XY when the step is saved.
+For **Drill**, pick round edges (each gives its centre), a flat face (every round hole in
+it), a sketch circle (click inside it: the circle's centre; a profile with round holes gives
+each of them) or a sketch point, instead of typing hole centres. The typed list is used only
+while nothing is picked: one hole per line, `10 20`, `10.5; 20`, `10,5 20` (a decimal comma)
+or `10,20`. The centres are taken in the setup's work XY when the step is saved, so moving the
+sketch afterwards needs the step saved again.
 
 ## Job list, tool library and machines
 

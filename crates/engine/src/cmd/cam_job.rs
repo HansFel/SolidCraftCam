@@ -164,6 +164,18 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             for f in a.faces.as_ref().and_then(Value::as_array).into_iter().flatten() {
                 holes.push(json!({"body": f.get("body"), "at": f.get("at")}));
             }
+            // A picked sketch profile drills its circles; picked sketch points are holes too.
+            if let Some(sketch) = &a.sketch {
+                let profiles =
+                    a.profiles.as_ref().and_then(Value::as_array).ok_or_else(|| bad(cmd, "drilling a sketch needs `profiles`: profile indices"))?;
+                for index in profiles {
+                    let index = index.as_u64().ok_or_else(|| bad(cmd, "drilling a sketch takes `profiles` as profile indices"))?;
+                    holes.push(json!({"sketch": sketch, "profile": index}));
+                }
+            }
+            for point in a.sketch_points.iter().flatten() {
+                holes.push(json!({"sketch": point.sketch, "point": point.point}));
+            }
             if holes.is_empty() {
                 map.insert("points".into(), json!(a.points));
             } else {

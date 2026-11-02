@@ -177,6 +177,27 @@ pub struct ZeroAxesParams {
     pub z: Option<AxisPickParams>,
 }
 
+/// A point of a sketch: the sketch (id or name) and the point's id.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SketchPointParams {
+    pub sketch: serde_json::Value,
+    pub point: String,
+}
+
+/// A bore picked for drilling: on a body (`body`, `at`, `edge`), or in a sketch (`sketch` with
+/// `point` or `profile`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HolePickParams {
+    pub body: Option<String>,
+    pub at: Option<[f64; 3]>,
+    pub edge: Option<bool>,
+    pub sketch: Option<super::IdOrName>,
+    pub point: Option<String>,
+    pub profile: Option<usize>,
+}
+
 /// A point picked for one axis's zero; `edge`: on an edge (a round edge gives its centre).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -330,8 +351,9 @@ pub struct DrillParams {
     pub tool: u32,
     #[serde(default)]
     pub points: Vec<[f64; 2]>,
-    /// Picked bores: `{body, at, edge?}`; an edge gives its centre, a flat face its round holes.
-    pub holes: Option<Vec<AxisPickParams>>,
+    /// Picked bores: `{body, at, edge?}` (an edge gives its centre, a flat face its round
+    /// holes), or `{sketch, point}` (a sketch point) or `{sketch, profile}` (a profile's circles).
+    pub holes: Option<Vec<HolePickParams>>,
     pub bottom: NumberExpr,
     pub clearance: Option<NumberExpr>,
     pub retract: Option<NumberExpr>,
@@ -446,6 +468,9 @@ pub struct JobParams {
     /// The picked `edges` themselves, joined end to end into closed contours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain: Option<bool>,
+    /// Drilling: sketch points picked as hole centres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sketch_points: Option<Vec<SketchPointParams>>,
     /// Contours: leads, overlap and the open-contour settings, as `cam.op.contour` takes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_in: Option<serde_json::Value>,

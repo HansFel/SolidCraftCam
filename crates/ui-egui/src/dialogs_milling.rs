@@ -1,6 +1,6 @@
 //! Guided rectangle milling and hole-pattern CAM. The form invokes the same engine commands
 //! as scripts; the preview worker never changes the open document.
-use crate::selection::{EDGES, PLANAR_FACES, PROFILES, SelInput, SelectionExt as _, VERTICES};
+use crate::selection::{EDGES, EXTERNAL_POINTS, PLANAR_FACES, PROFILES, SelInput, SelectionExt as _, VERTICES};
 use crate::viewport::Proj;
 use crate::{SolveApp, theme::Tokens, ui_kit};
 use egui::{Sense, Stroke, pos2, vec2};
@@ -81,7 +81,7 @@ fn free_name(app: &SolveApp, setup: &str, base: &str) -> String {
 /// are taken from.
 pub fn inputs() -> Vec<SelInput> {
     vec![
-        SelInput::new("Contours", PROFILES | PLANAR_FACES | EDGES, true),
+        SelInput::new("Contours", PROFILES | PLANAR_FACES | EDGES | EXTERNAL_POINTS, true),
         SelInput::new("Start point", VERTICES | EDGES, false),
         SelInput::new("Final depth", VERTICES | EDGES | PLANAR_FACES, false),
         SelInput::new("Start depth", VERTICES | EDGES | PLANAR_FACES, false),
@@ -422,6 +422,11 @@ impl Milling {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_holes(&mut self, text: &str) {
+        self.holes = text.to_string();
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_cutting(&mut self, side: usize, climb: bool, wall: &str, floor: &str) {
         (self.side, self.climb) = (side, climb);
         for (key, value) in [("stock_to_leave", wall), ("floor_stock", floor)] {
@@ -464,9 +469,9 @@ impl Milling {
         let mut points = Vec::new();
         if self.kind == 2 {
             for line in self.holes.lines().filter(|line| !line.trim().is_empty()) {
-                let values = line
-                    .split_whitespace()
-                    .map(str::parse::<f64>)
+                let values = hole_values(line)
+                    .iter()
+                    .map(|v| v.parse::<f64>())
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| crate::i18n::tr("ui.cam.holes_hint").to_string())?;
                 let [x, y] = values.as_slice() else {
@@ -615,14 +620,36 @@ impl Milling {
     }
 }
 
+/// The numbers of a typed hole line: `10 20`, `10.5; 20`, `10,5 20`, `10, 20` or `10,20`.
+/// Between two numbers a comma is a decimal comma; a line with no space has its pair split there.
+fn hole_values(line: &str) -> Vec<String> {
+    let words: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == ';').filter(|w| !w.is_empty()).collect();
+    match words.as_slice() {
+        [one] => one.split(',').map(str::to_string).collect(),
+        _ => words.iter().map(|w| w.trim_end_matches(',').replace(',', ".")).collect(),
+    }
+}
+
 /// The picks as job parameters: profiles of one sketch, else planar faces by persistent name
-/// and the contours through picked edges.
-fn geometry(app: &SolveApp, inputs: &[SelInput]) -> Value {
+/// and the contours through picked edges; for drilling, picked sketch points as well.
+fn geometry(app: &SolveApp, inputs: &[SelInput], drill: bool) -> Value {
     let picks = crate::selection::items(inputs, 0);
+    let points: Vec<Value> = picks
+        .iter()
+        .filter(|_| drill)
+        .filter_map(|pick| match pick {
+            Sel::ExternalSketchPoint { sketch, id } => Some(json!({"sketch": sketch, "point": id})),
+            _ => None,
+        })
+        .collect();
     let profiles = picks.profiles();
     if let Some((sketch, _)) = profiles.first() {
         let indices: Vec<usize> = profiles.iter().filter(|(s, _)| s == sketch).map(|(_, i)| *i).collect();
-        return json!({"sketch": sketch, "profiles": indices});
+        let mut out = json!({"sketch": sketch, "profiles": indices});
+        if !points.is_empty() {
+            out["sketch_points"] = json!(points);
+        }
+        return out;
     }
     let state = app.session.world_state();
     let faces: Vec<Value> = picks
@@ -647,6 +674,9 @@ fn geometry(app: &SolveApp, inputs: &[SelInput]) -> Value {
     }
     if !edges.is_empty() {
         out.insert("edges".into(), json!(edges));
+    }
+    if !points.is_empty() {
+        out.insert("sketch_points".into(), json!(points));
     }
     if out.is_empty() { Value::Null } else { Value::Object(out) }
 }
@@ -737,6 +767,7 @@ fn contour_list(ui: &mut egui::Ui, session: &solidcraft_engine::Session, inputs:
             Sel::Edge { body, .. } => format!("{} – {body}", tr("ui.cam.edge_contour")),
             Sel::Face { body, .. } => format!("{} – {body}", tr("ui.cam.face_contours")),
             Sel::Profile { index, .. } => format!("{} {}", tr("ui.cam.sketch_profile"), index + 1),
+            Sel::ExternalSketchPoint { id, .. } if drill => format!("{} {id}", tr("ui.cam.sketch_point")),
             _ => continue,
         };
         ui.horizontal(|ui| {
@@ -830,7 +861,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::choice_row(ui, tr("ui.cam.direction"), "cam-direction", &mut direction, &directions);
         form.climb = direction == 0;
     }
-    let picked = geometry(app, inputs);
+    let picked = geometry(app, inputs, form.kind == 2);
     form.geometry = if picked.is_null() { form.kept.clone() } else { picked };
     form.start = start(inputs).or(form.kept_start);
     // A picked face, edge or corner gives the final depth; the field stays free to change.
