@@ -223,6 +223,13 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         "drill" => ToolKind::Drill,
         other => return Err(bad(cmd, format!("unknown tool kind `{other}` (flat_endmill, ball_endmill, drill)"))),
     };
+    // A drill cuts only at its point: turning a tool that mills into one would break those steps.
+    if kind == ToolKind::Drill
+        && let Some(op) =
+            s.doc.cam.setups.iter().flat_map(|x| &x.operations).find(|op| op.tool() == number && !matches!(op, CamOperation::Drill { .. }))
+    {
+        return Err(bad(cmd, format!("tool {number} mills in operation `{}`, which a drill cannot do: give the drill another number", op.name())));
+    }
     let diameter = num(p, "diameter").ok_or_else(|| bad(cmd, "`diameter` is required (mm)"))?;
     let flute_length = num(p, "flute_length").ok_or_else(|| bad(cmd, "`flute_length` is required (mm)"))?;
     let mut tool = Tool::new(number, kind, diameter, flute_length);
@@ -1237,7 +1244,7 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
     let mut reach: Option<([f64; 3], [f64; 3])> = None;
     for op in setup.operations.iter().filter(|op| !setup.skipped.iter().any(|n| n == op.name())) {
         let tool = s.doc.cam.tool(op.tool()).cloned().ok_or_else(|| bad(cmd, format!("operation `{}` needs tool {}", op.name(), op.tool())))?;
-        let path = build_path(s, &setup, op).map_err(|e| bad(cmd, e))?;
+        let path = build_path(s, &setup, op).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?;
         move_count = move_count.saturating_add(path.moves.len());
         if move_count > 2_000_000 {
             return Err(bad(cmd, "setup exceeds 2000000 toolpath moves; split the job"));
@@ -2632,9 +2639,21 @@ mod tests {
         assert!(gcode.contains("M30"));
         assert!(posted["readback"]["within"].as_bool().unwrap());
         assert_eq!(posted["operations"], 2);
+        // The tool these steps mill with cannot become a drill; another number can.
+        let refused = s.execute("cam.tool.define", &json!({"number": 1, "kind": "drill", "diameter": 5, "flute_length": 30})).unwrap_err();
+        assert!(refused.to_string().contains("operation `Outside`"), "{refused}");
+        assert_eq!(s.doc.cam.tool(1).map(|t| t.kind), Some(ToolKind::FlatEndmill));
+        run(&mut s, "cam.tool.define", json!({"number": 2, "kind": "drill", "diameter": 5, "flute_length": 30}));
+        // A design where it happened anyway names the step that cannot be posted.
+        let mut broken = Session::new(s.doc.as_ref().clone());
+        if let Some(t) = broken.doc_mut().cam.tools.iter_mut().find(|t| t.number == 1) {
+            t.kind = ToolKind::Drill;
+        }
+        let failed = broken.execute("cam.post", &json!({"setup": "Top"})).unwrap_err();
+        assert!(failed.to_string().contains("operation `Outside`: invalid value: a drill cannot mill"), "{failed}");
 
         let cold = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
-        assert_eq!(cold.doc.cam.tools.len(), 1);
+        assert_eq!(cold.doc.cam.tools.len(), 2);
         assert_eq!(cold.doc.cam.setups[0].operations.len(), 2);
         assert!(cold.doc.format_pending.iter().any(|n| n == "cam-milling"));
         let again = run(&mut Session::new(cold.doc.as_ref().clone()), "cam.post", json!({"setup": "Top"}));
