@@ -591,6 +591,29 @@ impl Milling {
         self.library_tool = tool;
     }
 
+    /// Takes a library tool picked in the form. A design tool of the same number that is another
+    /// tool stays: the copy gets a free number. A drill picked for milling makes the step a drill.
+    pub(crate) fn pick_library_tool(&mut self, app: &SolveApp, tool: Option<Tool>) {
+        let mut tool = tool;
+        let cam = &app.session.doc.cam;
+        if let Some(t) = &mut tool
+            && cam.tool(t.number).is_some_and(|d| d.kind != t.kind || d.diameter != t.diameter)
+        {
+            t.number = (1..=9999).find(|n| cam.tool(*n).is_none()).unwrap_or(t.number);
+        }
+        if tool.as_ref().is_some_and(|t| t.kind == ToolKind::Drill) && self.kind != 2 {
+            let old = [(0, "ui.cam.contour"), (1, "ui.cam.pocket"), (3, "ui.cam.face"), (4, "ui.cam.slot")]
+                .iter()
+                .find(|(k, _)| *k == self.kind)
+                .map(|(_, name)| free_name(app, &self.setup, app.tr(name)));
+            if old.as_deref() == Some(self.name.as_str()) {
+                self.name = free_name(app, &self.setup, app.tr("ui.cam.drill"));
+            }
+            self.kind = 2;
+        }
+        self.choose_tool(tool);
+    }
+
     /// Fills spindle speed, feeds, stepdown and stepover from the tool's cutting data for the material.
     pub(crate) fn take_cutting(&mut self, app: &SolveApp) -> Result<(), String> {
         let tr = crate::i18n::tr;
@@ -1148,11 +1171,14 @@ fn tool_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
         let labels: Vec<String> =
             std::iter::once(tr("ui.cam.own_tool").to_string()).chain(library.iter().map(crate::cam_panel::tool_label)).collect();
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let current = form.library_tool.as_ref().and_then(|t| library.iter().position(|l| l.number == t.number)).map_or(0, |i| i + 1);
+        // The copy may have another number than the library's: it is the same tool otherwise.
+        let same =
+            |l: &Tool, t: &Tool| l.kind == t.kind && l.diameter == t.diameter && l.flute_length == t.flute_length && l.description == t.description;
+        let current = form.library_tool.as_ref().and_then(|t| library.iter().position(|l| same(l, t))).map_or(0, |i| i + 1);
         let mut chosen = current;
         ui_kit::choice_row(ui, tr("ui.cam.library_tool"), "cam-library-tool", &mut chosen, &refs);
         if chosen != current {
-            form.choose_tool(chosen.checked_sub(1).and_then(|i| library.get(i)).cloned());
+            form.pick_library_tool(app, chosen.checked_sub(1).and_then(|i| library.get(i)).cloned());
         }
     }
     let labels: Vec<String> =

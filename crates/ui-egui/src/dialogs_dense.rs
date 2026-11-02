@@ -1213,6 +1213,48 @@ mod tests {
         assert_eq!(points, [[10.0, 10.0], [30.0, 25.0]]);
     }
 
+    /// A library drill picked in a pocket form, while T1 is the design's end mill that a contour
+    /// uses: the step becomes a drill on a free number and the contour still posts.
+    #[test]
+    fn cam_a_library_drill_picked_for_a_circle_drills_without_taking_the_mills_number() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.circle.center", json!({"center": [10, 10], "radius": 2})).unwrap();
+        let sketch = h.app.session.active_sketch.unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top", "stock": {"min": [0, 0, -10], "max": [40, 30, 0]}})).unwrap();
+        h.app
+            .run(
+                "cam.op.contour",
+                json!({"setup": "Top", "name": "Outside", "tool": 1, "outer": [[0,0],[40,0],[40,30],[0,30]], "side": "outside", "bottom": -3}),
+            )
+            .unwrap();
+        h.app.preferences.cam_tools = serde_json::from_value(json!([{"number": 1, "kind": "drill", "diameter": 4, "flute_length": 30}])).unwrap();
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        d.pick(&h.app.session, Sel::Profile { sketch, index: 0 });
+        let Kind::Milling(form) = &mut d.kind else { panic!("the pocket form") };
+        form.pick_library_tool(&h.app, h.app.preferences.cam_tools.find(1).cloned());
+        let p = form.params().unwrap();
+        assert_eq!((p["kind"].as_str(), p["tool"].as_u64()), (Some("drill"), Some(2)), "{p}");
+        h.app.dialog = Some(d);
+        h.frames(2);
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let cam = &h.app.session.doc.cam;
+        assert_eq!(
+            (cam.tool(1).map(|t| t.kind), cam.tool(2).map(|t| t.kind)),
+            (Some(solidcraft_engine::cam::ToolKind::FlatEndmill), Some(solidcraft_engine::cam::ToolKind::Drill))
+        );
+        let ops = cam.setup("Top").map(|s| s.operations.len());
+        assert_eq!(ops, Some(2));
+        h.app.run("cam.post", json!({"setup": "Top"})).unwrap();
+    }
+
     #[test]
     fn cam_typed_hole_centres_take_decimal_commas_and_separators() {
         let mut h = Harness::new();
