@@ -193,8 +193,15 @@ with a ring where it ends; **◀ Previous move** and **Next move ▶** step thro
 lines. The program is posted again whenever the design changes, so it always shows what an
 export would write. **Copy** puts the whole program on the clipboard. The panel can be sized
 too; closing it brings the CAM window back. It is read-only: edit the steps, not the code, so
-every program stays checked against its toolpaths. It shows the moves, it does not remove
-material, so it is not yet a simulation.
+every program stays checked against its toolpaths.
+
+**Play** runs the tool along the program as it is written: the way it has come is drawn over
+the toolpaths, the tool is shown as a line up its axis with a ring at its tip, and the row it
+is on is selected as it goes. **Pause** holds it, **To start** puts it back at the beginning,
+**Speed** sets how fast it travels (mm of tool travel per second, rapids alike), and the slider
+moves it to any point of the program. Clicking a row or stepping puts the tool at the end of
+that line's move. It shows the moves, it does not remove material, so it is not yet a
+simulation.
 
 The tool library is kept in the preferences, for every design. **Export library…** writes it
 to a file (desktop app; `{"format": "solidcraft-tools", "version": 1, "tools": [...]}`), for

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
 use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind, Units};
 use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
+use solidcraft_engine::geom::Vec3;
 
 use crate::SolveApp;
 use crate::i18n::tr;
@@ -668,24 +669,134 @@ pub(crate) struct GcodeView {
     pub(crate) selected: Option<usize>,
     /// Scroll the list to the selected line on the next frame.
     scroll: bool,
+    /// Playback: how far the tool has come along the program (mm of travel), shown in the
+    /// view once set; whether it moves on by itself; and how fast, by its place in [`SPEEDS`].
+    pub(crate) travelled: Option<f64>,
+    pub(crate) playing: bool,
+    pub(crate) speed: usize,
 }
+
+/// Playback speeds (mm of tool travel per second).
+pub(crate) const SPEEDS: [f64; 5] = [5.0, 20.0, 100.0, 500.0, 2500.0];
 
 pub(crate) struct GcodeProgram {
     text: String,
     lines: Vec<String>,
     post: String,
     moves: Vec<solidcraft_engine::cmd::CamProgramMove>,
+    /// The travel at the end of each move (mm), rising.
+    ends: Vec<f64>,
+    axis: Vec3,
+}
+
+impl GcodeProgram {
+    fn total(&self) -> f64 {
+        self.ends.last().copied().unwrap_or(0.0)
+    }
+
+    /// The move the tool is on after `travelled` mm, and where on it the tool is.
+    fn at(&self, travelled: f64) -> Option<(usize, Vec3)> {
+        let i = self.ends.partition_point(|e| *e < travelled).min(self.moves.len().checked_sub(1)?);
+        let m = self.moves.get(i)?;
+        let mut left = travelled - i.checked_sub(1).and_then(|k| self.ends.get(k)).copied().unwrap_or(0.0);
+        for pair in m.points.windows(2) {
+            let [a, b] = pair else { continue };
+            let len = a.dist(*b);
+            if left <= len && len > 0.0 {
+                return Some((i, *a + (*b - *a) * (left / len).max(0.0)));
+            }
+            left -= len;
+        }
+        m.points.last().map(|p| (i, *p))
+    }
 }
 
 impl GcodeView {
     fn new(app: &SolveApp, setup: &str) -> GcodeView {
-        let program = app.session.cam_program(setup).map(|p| GcodeProgram {
-            lines: p.gcode.lines().map(str::to_string).collect(),
-            text: p.gcode,
-            post: chosen_post_label(app, setup),
-            moves: p.moves,
+        let program = app.session.cam_program(setup).map(|p| {
+            let mut sum = 0.0;
+            let ends = p
+                .moves
+                .iter()
+                .map(|m| {
+                    sum += m.points.windows(2).map(|w| if let [a, b] = w { a.dist(*b) } else { 0.0 }).sum::<f64>();
+                    sum
+                })
+                .collect();
+            GcodeProgram {
+                lines: p.gcode.lines().map(str::to_string).collect(),
+                text: p.gcode,
+                post: chosen_post_label(app, setup),
+                moves: p.moves,
+                ends,
+                axis: p.axis,
+            }
         });
-        GcodeView { setup: setup.to_string(), key: design_key(app), program, selected: None, scroll: false }
+        GcodeView {
+            setup: setup.to_string(),
+            key: design_key(app),
+            program,
+            selected: None,
+            scroll: false,
+            travelled: None,
+            playing: false,
+            speed: 2,
+        }
+    }
+
+    /// Where the tool is in the playback: its move and the point, in model coordinates.
+    pub(crate) fn tool_at(&self) -> Option<(usize, Vec3)> {
+        let (Ok(program), Some(travelled)) = (&self.program, self.travelled) else { return None };
+        program.at(travelled)
+    }
+
+    /// Starts or pauses the playback; at the end it starts again from the beginning.
+    pub(crate) fn play(&mut self) {
+        let Ok(program) = &self.program else { return };
+        if self.playing {
+            self.playing = false;
+            return;
+        }
+        if self.travelled.is_none_or(|t| t >= program.total()) {
+            self.travelled = Some(0.0);
+        }
+        self.playing = program.total() > 0.0;
+    }
+
+    /// Back to the program's start, paused.
+    pub(crate) fn rewind(&mut self) {
+        (self.travelled, self.playing, self.selected) = (Some(0.0), false, None);
+    }
+
+    /// Moves the tool on by `seconds` of playback, selecting the line it is on.
+    pub(crate) fn advance(&mut self, seconds: f64) {
+        let Ok(program) = &self.program else { return };
+        if !self.playing {
+            return;
+        }
+        let speed = SPEEDS.get(self.speed).copied().unwrap_or(SPEEDS[0]);
+        let total = program.total();
+        let next = (self.travelled.unwrap_or(0.0) + speed * seconds.clamp(0.0, 0.25)).min(total);
+        self.travelled = Some(next);
+        if next >= total {
+            self.playing = false;
+        }
+        if let Some(line) = program.at(next).and_then(|(i, _)| program.moves.get(i)).map(|m| m.line)
+            && self.selected != Some(line)
+        {
+            self.selected = Some(line);
+            self.scroll = true;
+        }
+    }
+
+    /// Puts the tool at the end of line `line`'s move, paused.
+    fn go_to_line(&mut self, line: usize) {
+        self.selected = Some(line);
+        self.playing = false;
+        let Ok(program) = &self.program else { return };
+        if let Some(i) = program.moves.iter().rposition(|m| m.line == line) {
+            self.travelled = program.ends.get(i).copied();
+        }
     }
 
     /// The selected line's move.
@@ -699,8 +810,8 @@ impl GcodeView {
         let Ok(program) = &self.program else { return };
         let line = self.selected.unwrap_or(0);
         let next = if by < 0 { program.moves.iter().rev().find(|m| m.line < line) } else { program.moves.iter().find(|m| m.line > line) };
-        if let Some(m) = next {
-            self.selected = Some(m.line);
+        if let Some(line) = next.map(|m| m.line) {
+            self.go_to_line(line);
             self.scroll = true;
         }
     }
@@ -893,9 +1004,14 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
 fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     let t = Tokens::get();
     if view.key != design_key(app) {
-        let selected = view.selected;
+        let (selected, travelled, speed) = (view.selected, view.travelled, view.speed);
         *view = GcodeView::new(app, &view.setup);
-        view.selected = selected;
+        (view.selected, view.speed) = (selected, speed);
+        view.travelled = travelled.zip(view.program.as_ref().ok()).map(|(t, p)| t.min(p.total()));
+    }
+    view.advance(f64::from(ui.ctx().input(|i| i.stable_dt)));
+    if view.playing {
+        ui.ctx().request_repaint();
     }
     let program = match &view.program {
         Ok(program) => program,
@@ -916,6 +1032,22 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
             ui.ctx().copy_text(program.text.clone());
         }
     });
+    let (mut play, mut rewind, mut speed) = (false, false, view.speed);
+    let mut travelled = view.travelled.unwrap_or(0.0);
+    let total = program.total();
+    ui.horizontal_wrapped(|ui| {
+        if ui_kit::button(ui, tr(if view.playing { "ui.cam.pause" } else { "ui.cam.play" }), ui_kit::Button::Normal).clicked() {
+            play = true;
+        }
+        if ui_kit::button(ui, tr("ui.cam.rewind"), ui_kit::Button::Small).clicked() {
+            rewind = true;
+        }
+    });
+    let labels: Vec<String> = SPEEDS.iter().map(|s| format!("{} mm/s", number(*s))).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    ui_kit::choice_row(ui, tr("ui.cam.play_speed"), "cam-play-speed", &mut speed, &refs);
+    let travel = format!("{travelled:.0} / {total:.0} mm");
+    let slid = total > 0.0 && ui.add(egui::Slider::new(&mut travelled, 0.0..=total).show_value(false).text(travel)).changed();
     let count = program.lines.len().to_string();
     ui.add(
         egui::Label::new(RichText::new(crate::i18n::format("ui.cam.gcode_lines", &[("lines", &count), ("post", &program.post)])).color(t.text_dim))
@@ -944,11 +1076,26 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
         }
     });
     view.scroll = false;
+    view.speed = speed.min(SPEEDS.len() - 1);
+    if slid {
+        view.travelled = Some(travelled);
+        view.playing = false;
+        if let Some(line) = program.at(travelled).and_then(|(i, _)| program.moves.get(i)).map(|m| m.line) {
+            view.selected = Some(line);
+            view.scroll = true;
+        }
+    }
     if let Some(number) = clicked {
-        view.selected = Some(number);
+        view.go_to_line(number);
     }
     if step != 0 {
         view.step(step);
+    }
+    if rewind {
+        view.rewind();
+    }
+    if play {
+        view.play();
     }
 }
 
@@ -1447,6 +1594,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// How far up its axis the playback draws the tool (mm).
+const TOOL_MARK_LENGTH: f64 = 25.0;
+
 /// With the window open, every step's toolpath: cutting moves in the preview colour, rapid
 /// moves thin, the steps left out of the G-code dimmed. Made again only when the design changes.
 pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::viewport::Proj) {
@@ -1471,6 +1621,23 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
                 painter.line_segment([a, b], if *cutting { cut } else { rapid });
             }
         }
+    }
+    // Playback: the way the tool has come drawn over the toolpaths, and the tool where it is,
+    // a line up its axis for the shank and a ring at its tip.
+    if let Some(view) = window.gcode.as_ref()
+        && let (Ok(program), Some((index, tip))) = (&view.program, view.tool_at())
+    {
+        let done = egui::Stroke::new(1.5, t.accent);
+        for m in program.moves.iter().take(index) {
+            let points: Vec<egui::Pos2> = m.points.iter().filter_map(|p| proj.to_screen(*p)).collect();
+            painter.add(egui::Shape::line(points, done));
+        }
+        let shank = tip + program.axis * TOOL_MARK_LENGTH;
+        if let (Some(a), Some(b)) = (proj.to_screen(tip), proj.to_screen(shank)) {
+            painter.line_segment([a, b], egui::Stroke::new(5.0, t.text));
+            painter.circle_stroke(a, 6.0, egui::Stroke::new(2.5, t.accent));
+        }
+        return;
     }
     // The G-code line picked in the window: its move drawn over the rest, its end marked.
     if let Some(m) = selected {

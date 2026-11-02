@@ -1262,6 +1262,44 @@ mod tests {
             }
         }
         assert!(cuts >= 4);
+        // Playback: from the start the tool runs along the program, line by line, and stops at
+        // its end; Play again starts over, Pause holds it, a step puts it at that move's end.
+        fn view_mut(h: &mut Harness) -> &mut crate::cam_panel::GcodeView {
+            h.app.cam_window.as_mut().and_then(|w| w.gcode.as_mut()).unwrap()
+        }
+        view_mut(&mut h).rewind();
+        assert_eq!(view(&h).and_then(|v| v.tool_at()).map(|(i, _)| i), Some(0));
+        h.step(&json!({"widget": "Play"})).unwrap();
+        assert!(view(&h).is_some_and(|v| v.playing));
+        assert!(h.widget("Pause").is_some());
+        let mut lines_seen = Vec::new();
+        for _ in 0..10_000 {
+            view_mut(&mut h).advance(0.05);
+            let v = view(&h).unwrap();
+            if lines_seen.last() != v.selected.as_ref() {
+                lines_seen.extend(v.selected);
+            }
+            if !v.playing {
+                break;
+            }
+        }
+        assert!(view(&h).is_some_and(|v| !v.playing), "the playback ends");
+        assert!(lines_seen.windows(2).all(|w| w[0] < w[1]) && lines_seen.len() >= 4, "{lines_seen:?}");
+        let end = program.moves.last().and_then(|m| m.points.last()).copied().unwrap();
+        let (_, tip) = view(&h).and_then(|v| v.tool_at()).unwrap();
+        assert!(tip.dist(end) < 1e-6, "{tip:?} {end:?}");
+        view_mut(&mut h).play();
+        assert_eq!(view(&h).and_then(|v| v.travelled), Some(0.0));
+        view_mut(&mut h).advance(0.1);
+        view_mut(&mut h).play();
+        let held = view(&h).and_then(|v| v.travelled);
+        view_mut(&mut h).advance(1.0);
+        assert_eq!(view(&h).and_then(|v| v.travelled), held);
+        view_mut(&mut h).step(1);
+        let (index, tip) = view(&h).and_then(|v| v.tool_at()).unwrap();
+        assert_eq!(view(&h).and_then(|v| v.selected), program.moves.get(index).map(|m| m.line));
+        assert!(program.moves.get(index).and_then(|m| m.points.last()).is_some_and(|p| p.dist(tip) < 1e-6));
+        h.frames(2);
         let last = view(&h).and_then(|v| v.selected);
         h.frames(2);
         // A changed design is posted again; the selected line stays.

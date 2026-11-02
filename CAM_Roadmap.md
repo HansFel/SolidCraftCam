@@ -190,7 +190,7 @@ All posts are written from the controllers' public programming manuals.
 | Item | Status |
 |---|---|
 | Every step's toolpath shown while the CAM window is open | Done |
-| Tool motion along the path (play, step, speed) | Planned |
+| Tool motion along the path (play, step, speed) | Done (in the G-code panel, along the program as written) |
 | Rapid moves shown apart from cutting moves | Done (preview) |
 | Material removal (dexel or voxel stock, shown in the viewport) | Planned |
 | Collision of tool, holder and fixtures with stock and model | Planned |

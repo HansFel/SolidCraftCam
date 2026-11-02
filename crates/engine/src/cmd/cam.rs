@@ -2037,7 +2037,7 @@ impl Session {
             }
             at = Some(to);
         }
-        Ok(CamProgram { gcode, extension, moves })
+        Ok(CamProgram { gcode, extension, moves, axis: frame.z })
     }
 }
 
@@ -2065,6 +2065,8 @@ pub struct CamProgram {
     pub extension: String,
     /// Every motion line's move, in program order.
     pub moves: Vec<CamProgramMove>,
+    /// The tool axis (the work Z direction) in model coordinates, a unit vector.
+    pub axis: Vec3,
 }
 
 /// One line's move: the line number (from 1), the tool's way in model coordinates, and whether
