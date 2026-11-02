@@ -12,12 +12,15 @@
 # The site is wasm, the same on every platform, so it is built once on the build machine's own
 # platform even for a multi-platform image. CI builds it outside Docker (with its Rust cache and
 # git commit for Help › About) and passes it in as the `site` stage: --build-context site=dist/web.
+# Built from a tarball without .git, pass the commit for Help › About:
+#   --build-arg SOLIDCRAFT_GIT_COMMIT=$(git rev-parse --short HEAD)
 
 ARG RUST_VERSION=1.95
 ARG TRUNK_VERSION=0.21.14
 
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build
 ARG TRUNK_VERSION
+ARG SOLIDCRAFT_GIT_COMMIT=
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

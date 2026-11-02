@@ -10,6 +10,8 @@ use crate::ui_kit::{Container, Surface};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
+/// The build's time of day, `HH:MM` UTC.
+pub const BUILD_TIME: &str = env!("SOLIDCRAFT_BUILD_TIME");
 /// The user and developer guide (docs/book, published by .github/workflows/pages.yml).
 pub const DOCS_URL: &str = "https://docs.solidcraft.io/";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
@@ -176,7 +178,7 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
         .show(ctx, true, |ui| {
             ui_kit::text(
                 ui,
-                &crate::i18n::format("help.build", &[("version", VERSION), ("commit", COMMIT), ("date", BUILD_DATE)]),
+                &crate::i18n::format("help.build", &[("version", VERSION), ("commit", COMMIT), ("date", &format!("{BUILD_DATE} {BUILD_TIME} UTC"))]),
                 ui_kit::Text::Report("version", false),
             );
             ui_kit::text(
@@ -224,7 +226,7 @@ mod tests {
 
     #[test]
     fn about_knows_its_build_and_diagnostics_say_where_it_runs() {
-        assert!(!COMMIT.is_empty() && BUILD_DATE.len() == 10, "{COMMIT} {BUILD_DATE}");
+        assert!(!COMMIT.is_empty() && BUILD_DATE.len() == 10 && BUILD_TIME.len() == 5, "{COMMIT} {BUILD_DATE} {BUILD_TIME}");
         assert!(ATTRIBUTION.contains("ATTRIBUTION") || ATTRIBUTION.contains("Attribution"));
         let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let d = diagnostics(&app);

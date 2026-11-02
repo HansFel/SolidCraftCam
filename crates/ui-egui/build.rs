@@ -1,5 +1,5 @@
-//! Build information for Help › About: the git commit and the build date (UTC). Both fall back to
-//! "unknown" when git is missing (a source tarball). Also one test per UI scenario file
+//! Build information for Help › About: the git commit and the build date and time (UTC). Without
+//! git (a source tarball) the commit comes from `SOLIDCRAFT_GIT_COMMIT`, else "unknown". Also one test per UI scenario file
 //! (`tests/scenarios/*.json`), so adding a scenario needs no Rust edit.
 
 use std::process::Command;
@@ -24,12 +24,17 @@ fn civil(days: i64) -> (i64, i64, i64) {
 }
 
 fn main() {
-    let commit = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let commit = git(&["rev-parse", "--short", "HEAD"])
+        .or_else(|| std::env::var("SOLIDCRAFT_GIT_COMMIT").ok().filter(|c| !c.trim().is_empty()).map(|c| c.trim().to_string()))
+        .unwrap_or_else(|| "unknown".into());
     let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some();
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let (y, m, d) = civil(secs.div_euclid(86_400));
     println!("cargo:rustc-env=SOLIDCRAFT_COMMIT={commit}{}", if dirty { "+" } else { "" });
     println!("cargo:rustc-env=SOLIDCRAFT_BUILD_DATE={y:04}-{m:02}-{d:02}");
+    let day = secs.rem_euclid(86_400);
+    println!("cargo:rustc-env=SOLIDCRAFT_BUILD_TIME={:02}:{:02}", day / 3600, day % 3600 / 60);
+    println!("cargo:rerun-if-env-changed=SOLIDCRAFT_GIT_COMMIT");
     // A new commit in this checkout (or worktree) restamps the build.
     if let Some(dir) = git(&["rev-parse", "--git-dir"]) {
         println!("cargo:rerun-if-changed={dir}/logs/HEAD");
