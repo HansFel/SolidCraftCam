@@ -98,6 +98,11 @@ pub struct Post {
     /// How a dwell is written: `{seconds}` or `{milliseconds}` (a whole number) stands for its length.
     #[serde(default = "default_dwell")]
     pub dwell: String,
+    /// Whether each drilled hole is written as one canned cycle (`G81`, `G82` with a dwell,
+    /// `G83` with pecks, in `G98` and cancelled by `G80`); otherwise move by move. A pecked hole
+    /// with a dwell is always written move by move, as `G83` has no dwell.
+    #[serde(default)]
+    pub canned_cycles: bool,
 }
 
 fn yes() -> bool {
@@ -138,6 +143,7 @@ impl Post {
             trailing_decimal: false,
             two_digit_codes: false,
             dwell: default_dwell(),
+            canned_cycles: false,
         }
     }
 
@@ -181,6 +187,7 @@ impl Post {
             trailing_decimal: false,
             two_digit_codes: false,
             dwell: default_dwell(),
+            canned_cycles: false,
         }
     }
 

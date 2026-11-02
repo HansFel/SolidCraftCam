@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::{Vec2, Vec3};
 
-use crate::path::{Move, Toolpath, arc_sweep};
+use crate::path::{DrillCycle, Move, Toolpath, arc_sweep};
 use crate::post::{CommentStyle, Post, Values, fill};
 use crate::tool::Tool;
 use crate::{CamError, Result, invalid};
@@ -225,6 +225,70 @@ impl Writer<'_> {
         self.block(&words);
         Ok(())
     }
+
+    /// Hole `c` as one canned cycle from height `z0`, which `G98` returns to.
+    fn cycle(&mut self, c: &DrillCycle, z0: f64) -> Result<()> {
+        let f = self.value(c.feed / self.post.units.mm(), self.post.feed_decimals);
+        if number(c.feed / self.post.units.mm(), self.post.feed_decimals) == "0" {
+            return Err(CamError::Unsafe("a drilling feed is not above 0 at the post's precision".into()));
+        }
+        let (nx, ny) = (self.coord(c.at.x), self.coord(c.at.y));
+        let mut words = format!(
+            "G98 G8{} X{nx} Y{ny} Z{} R{}",
+            match (c.peck, c.dwell > 0.0) {
+                (Some(_), _) => 3,
+                (None, true) => 2,
+                (None, false) => 1,
+            },
+            self.coord(c.bottom),
+            self.coord(c.retract)
+        );
+        if let Some(q) = c.peck {
+            words.push_str(&format!(" Q{}", self.coord(q)));
+        }
+        if c.dwell > 0.0 {
+            // In the unit the post's own dwell uses.
+            let p = if self.post.dwell.contains("{milliseconds}") { number(c.dwell * 1000.0, 0) } else { self.value(c.dwell, 3) };
+            words.push_str(&format!(" P{p}"));
+        }
+        words.push_str(&format!(" F{f}"));
+        self.block(&words);
+        self.block("G80");
+        (self.x, self.y, self.z, self.feed) = (Some(nx), Some(ny), Some(self.coord(z0)), Some(f));
+        self.pos = Some(c.at.extend(z0));
+        Ok(())
+    }
+}
+
+/// The height a drill cycle starts and ends at, when `moves[c.start..c.end]` drill exactly the
+/// hole `c` describes from `from` (where the tool is before them); `None` when they do not, so the
+/// moves are written as they are.
+fn cycle_start(c: &DrillCycle, moves: &[Move], from: Option<Vec3>) -> Option<f64> {
+    let from = from?;
+    let run = moves.get(c.start..c.end).filter(|run| !run.is_empty())?;
+    let fine = |v: f64| v.is_finite() && v.abs() <= crate::ops::MAX_COORD;
+    let peck_ok = c.peck.is_none_or(|q| q > 0.0 && q.is_finite());
+    if !(fine(c.at.x) && fine(c.at.y) && fine(c.retract) && fine(c.bottom) && c.retract > c.bottom && peck_ok) {
+        return None;
+    }
+    if !(c.feed > 0.0 && c.feed.is_finite() && c.dwell >= 0.0 && c.dwell <= 3600.0) || (c.peck.is_some() && c.dwell > 0.0) {
+        return None;
+    }
+    let at = |p: Vec3| Vec2::new(p.x, p.y).dist(c.at) <= 1e-9;
+    let z0 = from.z;
+    if !at(from) || z0 < c.retract {
+        return None;
+    }
+    let mut lowest = z0;
+    for m in run {
+        match *m {
+            Move::Rapid { to } | Move::Feed { to, .. } if at(to) && to.z <= z0 + 1e-9 && to.z >= c.bottom - 1e-9 => lowest = lowest.min(to.z),
+            Move::Dwell { .. } => {}
+            _ => return None,
+        }
+    }
+    let last = run.last().and_then(Move::target)?;
+    ((lowest - c.bottom).abs() <= 1e-9 && (last.z - z0).abs() <= 1e-9).then_some(z0)
 }
 
 /// Writes `program` for the controller `post` describes.
@@ -287,7 +351,20 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
             coolant = op.coolant;
         }
         w.reset();
-        for m in &op.path.moves {
+        let mut cycles = op.path.cycles.iter().filter(|_| post.canned_cycles).peekable();
+        let mut skip_to = 0usize;
+        for (index, m) in op.path.moves.iter().enumerate() {
+            if index < skip_to {
+                continue;
+            }
+            while cycles.next_if(|c| c.start < index).is_some() {}
+            if let Some(c) = cycles.next_if(|c| c.start == index)
+                && let Some(z0) = cycle_start(c, &op.path.moves, w.pos)
+            {
+                w.cycle(c, z0)?;
+                skip_to = c.end;
+                continue;
+            }
             if m.target().is_some_and(|to| !to.is_finite()) {
                 return Err(CamError::Unsafe(format!("operation `{}` has a coordinate that is not a finite number", plain(&op.name))));
             }
@@ -366,6 +443,9 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
     let mut units = 1.0;
     let mut mode: Option<u8> = None;
     let mut feed: Option<f64> = None;
+    // Canned cycles: back to the initial height (`G98`) or to R (`G99`), and the modal R and Q.
+    let mut to_initial = true;
+    let (mut r_plane, mut q_peck, mut cycle_z): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     let (mut x, mut y, mut z): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     let mut pos: Option<Vec3> = None;
     let mut moves = Vec::new();
@@ -388,7 +468,13 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
                 40 => dwell = true,
                 200 => units = 25.4,
                 210 => units = 1.0,
+                800 => mode = None,
+                810 => mode = Some(81),
+                820 => mode = Some(82),
+                830 => mode = Some(83),
                 910 => return Err(CamError::Parse(n, "not supported yet: incremental coordinates (G91)".into())),
+                980 => to_initial = true,
+                990 => to_initial = false,
                 _ => {}
             }
         }
@@ -406,6 +492,32 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
             continue;
         }
         let Some(mode) = mode else { return Err(CamError::Parse(n, "coordinates before any G0, G1, G2 or G3".into())) };
+        if mode >= 81 {
+            r_plane = word('R').map(|v| v * units).or(r_plane);
+            q_peck = word('Q').map(|v| v * units).or(q_peck);
+            let (Some(px), Some(py), Some(z0)) = (tx.map(|v| v * units).or(x), ty.map(|v| v * units).or(y), pos.map(|p| p.z)) else {
+                return Err(CamError::Parse(n, "a drilling cycle before the position is known".into()));
+            };
+            let (Some(bottom), Some(r)) = (tz.map(|v| v * units).or(cycle_z), r_plane) else {
+                return Err(CamError::Parse(n, "a drilling cycle without Z or R".into()));
+            };
+            let Some(feed) = feed.filter(|f| *f > 0.0) else { return Err(CamError::Parse(n, "a drilling cycle without a feed rate".into())) };
+            let peck = if mode == 83 {
+                Some(q_peck.filter(|q| *q > 0.0).ok_or_else(|| CamError::Parse(n, "G83 without a peck depth Q above 0".into()))?)
+            } else {
+                None
+            };
+            let dwell = if mode == 82 { word('P').unwrap_or(0.0).max(0.0) } else { 0.0 };
+            drill_cycle(&mut moves, n, Vec3::new(px, py, z0), r, bottom, peck, dwell, feed, to_initial)?;
+            if moves.len() > crate::path::MAX_MOVES {
+                return Err(CamError::TooLarge("the drilling cycles make too many moves".into()));
+            }
+            // `bottom` stays the cycle's modal Z; the tool itself ends at the return height.
+            pos = moves.last().and_then(|(_, m)| m.target()).or(pos);
+            (x, y, z) = (Some(px), Some(py), pos.map(|p| p.z));
+            cycle_z = Some(bottom);
+            continue;
+        }
         x = tx.map(|v| v * units).or(x);
         y = ty.map(|v| v * units).or(y);
         z = tz.map(|v| v * units).or(z);
@@ -430,4 +542,61 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
         pos = Some(to);
     }
     Ok(moves)
+}
+
+/// How far `G83` stops above the bottom of the previous peck before feeding on (mm), as the
+/// RS-274/NGC interpreter does (0.010 in).
+const PECK_CLEARANCE: f64 = 0.254;
+
+/// The moves of one canned drilling cycle (`G81`, `G82`, `G83`) at `start` (its XY and the
+/// initial height) down to `bottom`, as the RS-274/NGC description has them.
+#[allow(clippy::too_many_arguments)]
+fn drill_cycle(
+    moves: &mut Vec<(usize, Move)>,
+    n: usize,
+    start: Vec3,
+    r: f64,
+    bottom: f64,
+    peck: Option<f64>,
+    dwell: f64,
+    feed: f64,
+    to_initial: bool,
+) -> Result<()> {
+    if bottom > r {
+        return Err(CamError::Parse(n, "a drilling cycle whose Z is above its R".into()));
+    }
+    let at = |z: f64| Vec3::new(start.x, start.y, z);
+    // Below R the cycle first goes up to R and treats that as its initial height.
+    let initial = start.z.max(r);
+    moves.push((n, Move::Rapid { to: at(initial) }));
+    moves.push((n, Move::Rapid { to: at(r) }));
+    match peck {
+        Some(q) => {
+            if (r - bottom) / q > 1.0e5 {
+                return Err(CamError::TooLarge(format!("line {n}: a G83 with too many pecks")));
+            }
+            let mut depth = r;
+            loop {
+                let next = (depth - q).max(bottom);
+                moves.push((n, Move::Feed { to: at(next), feed }));
+                moves.push((n, Move::Rapid { to: at(r) }));
+                if next <= bottom {
+                    break;
+                }
+                moves.push((n, Move::Rapid { to: at((next + PECK_CLEARANCE).min(r)) }));
+                depth = next;
+            }
+        }
+        None => {
+            moves.push((n, Move::Feed { to: at(bottom), feed }));
+            if dwell > 0.0 {
+                moves.push((n, Move::Dwell { seconds: dwell }));
+            }
+            moves.push((n, Move::Rapid { to: at(r) }));
+        }
+    }
+    if to_initial && initial > r {
+        moves.push((n, Move::Rapid { to: at(initial) }));
+    }
+    Ok(())
 }

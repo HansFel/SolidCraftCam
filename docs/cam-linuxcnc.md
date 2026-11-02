@@ -259,6 +259,15 @@ written: `{program}`, `{units}`, `{work_offset}`, `{tool}`, `{diameter}`, `{rpm}
 `{seconds}`, `{milliseconds}`; a post with an unknown word, or a built-in post's name, is
 refused when you save it.
 
+**Drilling as canned cycles** writes each drilled hole as one block instead of move by move:
+`G81` for a hole drilled in one go, `G82` with a dwell (`P` in the unit of the post's dwell),
+`G83` with pecks (`Q` is the step-down), each with `G98` so the tool comes back up to the
+clearance height, and `G80` after it. The controller's `G83` measures its pecks from the
+retract height `R`, so the first peck may end a little higher than in the preview; the hole's
+depth is the same. A pecked hole with a dwell stays move by move, as `G83` has no dwell. The
+built-in posts leave this off; the check that reads the program back understands the cycles.
+Turn it on only for a controller that has these cycles (GRBL has none).
+
 Like machines, your posts are kept in the preferences and shared by every design. A machine
 can name one as its post-processor; a setup on that machine copies the post into the design
 with the machine, so a design sent to someone else still writes the same program. A post a

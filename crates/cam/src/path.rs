@@ -56,6 +56,34 @@ pub fn arc_sweep(from: Vec3, to: Vec3, center: Vec2, ccw: bool) -> f64 {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Toolpath {
     pub moves: Vec<Move>,
+    /// Runs of `moves` that drill one hole, so a post may write each as a canned cycle. The
+    /// moves stay the truth: a post without canned cycles writes them as they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cycles: Vec<DrillCycle>,
+}
+
+impl Toolpath {
+    /// A toolpath of plain moves.
+    pub fn new(moves: Vec<Move>) -> Toolpath {
+        Toolpath { moves, cycles: Vec::new() }
+    }
+}
+
+/// One hole drilled by `moves[start..end]`: from the initial height above `at` down to the
+/// retract height at rapid, to `bottom` at `feed` (in pecks of `peck`), and back up at rapid to
+/// the initial height, as a canned cycle with `G98` does.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DrillCycle {
+    pub start: usize,
+    pub end: usize,
+    pub at: Vec2,
+    pub retract: f64,
+    pub bottom: f64,
+    /// Depth of each peck (mm); `None`: one feed to the bottom.
+    pub peck: Option<f64>,
+    /// Pause at the bottom (seconds).
+    pub dwell: f64,
+    pub feed: f64,
 }
 
 /// Lengths and time of a toolpath.

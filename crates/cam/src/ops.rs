@@ -10,7 +10,7 @@ use crate::check::verify;
 use crate::lead::{Leads, lead_in, lead_out};
 use crate::offset::{Shape, reversed};
 use crate::open::{OpenContourParams, OpenPath, side_normal};
-use crate::path::{MAX_MOVES, Move, Toolpath};
+use crate::path::{DrillCycle, MAX_MOVES, Move, Toolpath};
 use crate::piece::Piece;
 use crate::tabs::Tabs;
 use crate::tool::{Tool, ToolKind};
@@ -26,7 +26,8 @@ const MAX_RAMP_LAPS: f64 = 2000.0;
 pub(crate) const MAX_COORD: f64 = 1.0e6;
 
 /// Peck drilling in work XY. Every peck feeds from retract height and fully retracts for
-/// chip clearance. `stepdown` is the maximum peck depth; no canned cycle state is required.
+/// chip clearance. `stepdown` is the maximum peck depth. Each hole is also recorded as a
+/// [`DrillCycle`], so a post with canned cycles can write it as one block.
 pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Toolpath> {
     tool.validate()?;
     cut.validate()?;
@@ -50,8 +51,10 @@ pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Tool
         return Err(CamError::TooLarge("too many drilling moves".into()));
     }
     let mut b = Builder::new(cut);
+    let mut cycles = Vec::with_capacity(points.len());
     for point in points {
         b.travel_to(*point)?;
+        let start = b.moves.len();
         for (index, z) in levels.iter().enumerate() {
             b.plunge_to(*z)?;
             if index + 1 == levels.len() && dwell > 0.0 {
@@ -60,8 +63,18 @@ pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Tool
             b.push(Move::Rapid { to: point.extend(cut.heights.retract) })?;
         }
         b.push(Move::Rapid { to: point.extend(cut.heights.clearance) })?;
+        cycles.push(DrillCycle {
+            start,
+            end: b.moves.len(),
+            at: *point,
+            retract: cut.heights.retract,
+            bottom: cut.heights.bottom,
+            peck: (levels.len() > 1).then_some(cut.stepdown),
+            dwell,
+            feed: cut.feeds.plunge,
+        });
     }
-    let path = Toolpath { moves: b.moves };
+    let path = Toolpath { moves: b.moves, cycles };
     verify(&path, &cut.heights)?;
     Ok(path)
 }
@@ -324,7 +337,7 @@ impl Builder {
 
     pub(crate) fn finish(mut self) -> Result<Toolpath> {
         self.retract()?;
-        let path = Toolpath { moves: self.moves };
+        let path = Toolpath::new(self.moves);
         verify(&path, &self.h)?;
         Ok(path)
     }

@@ -57,8 +57,8 @@ pub fn readback(text: &str, program: &Program, post: &Post) -> Result<Readback> 
     if moves > crate::path::MAX_MOVES {
         return Err(CamError::TooLarge("program has too many moves to check".into()));
     }
-    let written = Toolpath { moves: parse(text)? };
-    let planned = Toolpath { moves: program.operations.iter().flat_map(|op| op.path.moves.iter().copied()).collect() };
+    let written = Toolpath::new(parse(text)?);
+    let planned = Toolpath::new(program.operations.iter().flat_map(|op| op.path.moves.iter().copied()).collect());
     let allowed = allowed_deviation(post);
     let reach = (allowed * 10.0).max(1.0);
     let tol = post.arc_tolerance;

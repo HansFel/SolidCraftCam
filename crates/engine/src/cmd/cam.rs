@@ -53,7 +53,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              else linuxcnc); then any of extension, units (mm|inch), decimals (0…6), feed_decimals (0…4), line_numbers (bool), \
              line_start, line_step, comments (parentheses|semicolon|none), header, tool_change, spindle_on, spindle_off, coolant_on, \
              coolant_off, footer (lists of lines with {placeholders}), tool_change_first, arcs, arc_tolerance (mm), helical_arcs, \
-             trailing_decimal, two_digit_codes, dwell. Adds or replaces the design's post of that name.",
+             trailing_decimal, two_digit_codes, dwell, canned_cycles (each drilled hole as G81/G82/G83). Adds or replaces the design's post of that name.",
         ),
     CommandSpec::new("cam.post.remove", "Remove Post", crate::checked!("cam.post.remove", post_remove))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::PostRemoveParams>::new())
@@ -433,6 +433,7 @@ pub fn post_from(cam: &CamSettings, p: &crate::schema::cam::PostDefineParams) ->
         (&mut post.helical_arcs, p.helical_arcs),
         (&mut post.trailing_decimal, p.trailing_decimal),
         (&mut post.two_digit_codes, p.two_digit_codes),
+        (&mut post.canned_cycles, p.canned_cycles),
     ];
     for (flag, given) in flags {
         if let Some(v) = given {
@@ -2379,7 +2380,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             if moves.is_empty() {
                 return Err("there is nothing to contour".into());
             }
-            let path = solidcraft_cam::Toolpath { moves };
+            let path = solidcraft_cam::Toolpath::new(moves);
             solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
             Ok(path)
         }
@@ -3387,6 +3388,18 @@ mod tests {
         let again = run(&mut s, "cam.post.define", json!({"name": "Werkstatt", "line_numbers": false}));
         assert_eq!((again["post"]["comments"].as_str(), again["post"]["line_numbers"].is_null()), (Some("semicolon"), true));
         assert_eq!(s.doc.cam.posts.len(), 1);
+        // With canned cycles each drilled hole is one block, and the program still reads back.
+        run(&mut s, "cam.tool.define", json!({"number": 2, "kind": "drill", "diameter": 5, "flute_length": 30}));
+        run(&mut s, "cam.setup", json!({"name": "Holes"}));
+        run(&mut s, "cam.op.drill", json!({"setup": "Holes", "name": "H", "tool": 2, "points": [[5, 5], [35, 25]], "bottom": -6, "stepdown": 2}));
+        run(&mut s, "cam.post.define", json!({"name": "Zyklen", "base": "linuxcnc", "canned_cycles": true}));
+        let out = run(&mut s, "cam.post", json!({"setup": "Holes", "post": "Zyklen"}));
+        let gcode = out["gcode"].as_str().unwrap_or_default();
+        assert_eq!(gcode.matches(" G83 ").count(), 2, "{gcode}");
+        assert!(gcode.contains("G98 G83 X5 Y5 Z-6 R") && gcode.contains(" Q2 "), "{gcode}");
+        let plain = run(&mut s, "cam.post", json!({"setup": "Holes", "post": "linuxcnc"}));
+        assert!(!plain["gcode"].as_str().unwrap_or_default().contains("G83"));
+        run(&mut s, "cam.post.remove", json!({"name": "Zyklen"}));
         // A machine names it; then it stays until the machine lets go.
         let mill = json!({"name": "Fräse", "x": [0, 300], "y": [0, 200], "z": [-100, 0],
             "spindle_min": 2000, "spindle_max": 8000, "max_feed": 2000, "post": "Werkstatt"});

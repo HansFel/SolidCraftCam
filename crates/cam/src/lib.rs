@@ -40,7 +40,7 @@ pub use ops::{
     ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, contour_with_tabs, drill,
     face, pocket,
 };
-pub use path::{Move, PathStats, Toolpath, arc_sweep};
+pub use path::{DrillCycle, Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
 pub use slot::{SlotParams, slot};

@@ -179,7 +179,7 @@ Project
 | Marlin: only for pen, laser and light routers driven by 3D-printer firmware | Planned, low priority |
 | G-code preview in the panel, with the selected line's move drawn on the model | Done (picking a move in the viewport to find its line: planned) |
 | G-code editor (view, search, edit before export; edits are not read back) | Planned |
-| Post settings in the UI: comments, line numbers, decimals, arcs, canned cycles, tool change, safe start | Partial: your own posts (Posts tab, `cam.post.define`) with every setting the `Post` struct has; canned cycles are not a post setting yet (drilling is always written peck by peck) |
+| Post settings in the UI: comments, line numbers, decimals, arcs, canned cycles, tool change, safe start | Done: your own posts (Posts tab, `cam.post.define`), canned drilling cycles `G81`/`G82`/`G83` as a setting, read back by the check |
 
 All posts are written from the controllers' public programming manuals.
 

@@ -113,6 +113,8 @@ pub struct PostDefineParams {
     pub two_digit_codes: Option<bool>,
     /// How a dwell is written: `{seconds}` or `{milliseconds}` stands for its length.
     pub dwell: Option<String>,
+    /// Whether each drilled hole is written as one canned cycle (`G81`, `G82`, `G83`).
+    pub canned_cycles: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

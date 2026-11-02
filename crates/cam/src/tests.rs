@@ -41,6 +41,149 @@ fn peck_drilling_reaches_depth_retracts_and_reads_back_for_linuxcnc() {
 }
 
 #[test]
+fn canned_cycles_write_each_hole_as_one_block_and_read_back() {
+    let tool = Tool::new(3, ToolKind::Drill, 4.0, 20.0);
+    let holes = [v(10.0, 15.0), v(25.0, 15.0)];
+    let program = |cut: &Cut, dwell: f64| {
+        let path = drill(&holes, &tool, cut, dwell).unwrap();
+        assert_eq!(path.cycles.len(), 2);
+        Program {
+            name: "Cycles".into(),
+            operations: vec![Operation { name: "Holes".into(), tool: tool.clone(), spindle_rpm: 2400.0, coolant: false, path }],
+            work_offset: None,
+        }
+    };
+    let mut post = Post::linuxcnc();
+    post.canned_cycles = true;
+    let cases = [
+        (cut(0.0, -5.0, 2.0), 0.0, "G98 G83 X10 Y15 Z-5 R2 Q2 F200"),
+        (cut(0.0, -5.0, 10.0), 0.0, "G98 G81 X10 Y15 Z-5 R2 F200"),
+        (cut(0.0, -5.0, 10.0), 0.5, "G98 G82 X10 Y15 Z-5 R2 P0.5 F200"),
+    ];
+    for (cut, dwell, block) in cases {
+        let program = program(&cut, dwell);
+        let text = emit(&program, &post).unwrap();
+        assert!(text.contains(block), "{text}");
+        assert_eq!(
+            text.matches(
+                "G80
+"
+            )
+            .count(),
+            2,
+            "{text}"
+        );
+        assert!(
+            !text.lines().any(|l| l.starts_with("G1 ")),
+            "every hole is a cycle:
+{text}"
+        );
+        let back = readback(&text, &program, &post).unwrap();
+        assert!(back.within(), "{back:?}");
+        // The cycle returns to the initial height (G98): the next hole is reached up there.
+        let moves = parse(&text).unwrap();
+        assert_eq!(moves.iter().filter_map(Move::target).map(|p| p.z).fold(f64::INFINITY, f64::min), -5.0);
+        assert!(moves.windows(2).all(|w| match (w[0].target(), w[1].target()) {
+            (Some(a), Some(b)) if Vec2::new(a.x, a.y).dist(Vec2::new(b.x, b.y)) > 1e-9 => a.z >= 10.0 - 1e-9 && b.z >= 10.0 - 1e-9,
+            _ => true,
+        }));
+        // Without canned cycles the same program is written move by move, as before.
+        let plain = emit(&program, &Post::linuxcnc()).unwrap();
+        assert!(!plain.contains("G98") && plain.contains("G1 "), "{plain}");
+    }
+    // G83 has no dwell: a pecked hole with a dwell stays move by move.
+    let text = emit(&program(&cut(0.0, -5.0, 2.0), 0.25), &post).unwrap();
+    assert!(!text.contains("G83") && text.contains("G4 P0.25"), "{text}");
+    // A post that counts dwells in milliseconds gets P in milliseconds.
+    let mut ms = post.clone();
+    ms.dwell = "G4 P{milliseconds}".into();
+    assert!(emit(&program(&cut(0.0, -5.0, 10.0), 0.5), &ms).unwrap().contains("G82 X10 Y15 Z-5 R2 P500 F200"));
+}
+
+#[test]
+fn g83_reads_back_as_pecks_from_r_with_full_retracts() {
+    let moves = parse(
+        "G21 G90
+G0 Z10
+G0 X5 Y5
+G98 G83 X5 Y5 Z-5 R2 Q3 F100
+G80
+G0 X20
+",
+    )
+    .unwrap();
+    let zs: Vec<(f64, bool)> = moves.iter().filter_map(|m| m.target().map(|p| (p.z, m.feed().is_some()))).collect();
+    let feeds: Vec<f64> = zs.iter().filter(|(_, f)| *f).map(|(z, _)| *z).collect();
+    assert_eq!(feeds, vec![-1.0, -4.0, -5.0]);
+    // Back to R after each peck, down to just above the last bottom, home to Z10 at the end.
+    assert!(zs.contains(&(-1.0 + 0.254, false)) && zs.contains(&(-4.0 + 0.254, false)));
+    assert_eq!(zs.iter().filter(|(z, f)| *z == 2.0 && !*f).count(), 4);
+    assert_eq!(moves.last().and_then(Move::target), Some(Vec3::new(20.0, 5.0, 10.0)));
+    // G99 stays at R; G81 and G82 feed once.
+    let moves = parse(
+        "G0 X0 Y0 Z10
+G99 G82 Z-3 R1 P0.5 F50
+G80
+",
+    )
+    .unwrap();
+    assert!(moves.iter().any(|m| matches!(m, Move::Dwell { seconds } if *seconds == 0.5)));
+    assert_eq!(moves.last().and_then(Move::target).map(|p| p.z), Some(1.0));
+    for bad in [
+        "G0 X0 Y0 Z10
+G83 Z-3 R1 F50
+",
+        "G0 X0 Y0 Z10
+G81 Z-3 F50
+",
+        "G81 X0 Y0 Z-3 R1 F50
+",
+        "G0 X0 Y0 Z10
+G81 Z3 R1 F50
+",
+        "G0 X0 Y0 Z10
+G83 Z-1000000 R1 Q0.001 F50
+",
+    ] {
+        assert!(parse(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn drill_cycles_that_do_not_match_their_moves_are_written_move_by_move() {
+    let tool = Tool::new(3, ToolKind::Drill, 4.0, 20.0);
+    let mut post = Post::linuxcnc();
+    post.canned_cycles = true;
+    let good = drill(&[v(10.0, 15.0)], &tool, &cut(0.0, -5.0, 2.0), 0.0).unwrap();
+    let c = good.cycles[0];
+    let bad = [
+        DrillCycle { end: 10_000, ..c },
+        DrillCycle { start: c.end, end: c.start, ..c },
+        DrillCycle { at: v(11.0, 15.0), ..c },
+        DrillCycle { bottom: -6.0, ..c },
+        DrillCycle { retract: f64::NAN, ..c },
+        DrillCycle { feed: 0.0, ..c },
+        DrillCycle { peck: Some(-1.0), ..c },
+        DrillCycle { start: 0, ..c },
+    ];
+    for cycle in bad {
+        let path = Toolpath { moves: good.moves.clone(), cycles: vec![cycle, cycle] };
+        let program = Program {
+            name: "x".into(),
+            operations: vec![Operation { name: "o".into(), tool: tool.clone(), spindle_rpm: 2000.0, coolant: false, path }],
+            work_offset: None,
+        };
+        let text = emit(&program, &post).unwrap();
+        assert!(
+            !text.contains("G98"),
+            "{cycle:?}
+{text}"
+        );
+        assert!(readback(&text, &program, &post).unwrap().within());
+    }
+}
+
+#[test]
 fn drilling_rejects_invalid_tools_depths_and_unbounded_work() {
     let drill_tool = Tool::new(1, ToolKind::Drill, 3.0, 10.0);
     assert!(drill(&[], &drill_tool, &cut(0.0, -5.0, 1.0), 0.0).is_err());
@@ -53,12 +196,10 @@ fn drilling_rejects_invalid_tools_depths_and_unbounded_work() {
 
 #[test]
 fn arc_preview_is_bounded_before_allocation() {
-    let path = Toolpath {
-        moves: vec![
-            Move::Rapid { to: Vec3::new(100.0, 0.0, 0.0) },
-            Move::Arc { to: Vec3::new(-100.0, 0.0, 0.0), center: v(0.0, 0.0), ccw: true, feed: 100.0 },
-        ],
-    };
+    let path = Toolpath::new(vec![
+        Move::Rapid { to: Vec3::new(100.0, 0.0, 0.0) },
+        Move::Arc { to: Vec3::new(-100.0, 0.0, 0.0), center: v(0.0, 0.0), ccw: true, feed: 100.0 },
+    ]);
     assert!(path.checked_points(0.001, 10).is_err());
     assert_eq!(path.checked_points(0.1, 1000).unwrap(), path.points(0.1));
 }
@@ -426,7 +567,7 @@ fn drill_program() -> Program {
         ]);
     }
     moves.push(Move::Rapid { to: at(30.5, 10.0) });
-    let path = Toolpath { moves };
+    let path = Toolpath::new(moves);
     verify(&path, &cut(0.0, -10.0, 1.0).heights).unwrap();
     Program {
         work_offset: None,
@@ -454,7 +595,7 @@ fn post_switches_change_how_numbers_and_codes_are_written() {
     for line in ["G00 X10. Y10.", "G00 Z2.", "G01 Z-10. F200.", "G04 X0.25", "G00 X30.5"] {
         assert!(text.lines().any(|l| l == line), "no `{line}` in\n{text}");
     }
-    let back = Toolpath { moves: parse(&text).unwrap() };
+    let back = Toolpath::new(parse(&text).unwrap());
     assert_eq!(back.stats(), drill_program().operations[0].path.stats());
 }
 
@@ -508,7 +649,7 @@ fn written_program_reads_back_as_the_same_path() {
         post.arcs = arcs;
         let text = emit(&program, &post).unwrap();
         assert_eq!(text.contains("G2 ") || text.contains("G3 "), arcs);
-        let back = Toolpath { moves: parse(&text).unwrap() };
+        let back = Toolpath::new(parse(&text).unwrap());
         verify(&back, &cut(0.0, -4.0, 2.0).heights).unwrap();
         let (a, b) = (path.stats(), back.stats());
         // Coordinates are written to 0.0001 mm.
@@ -569,10 +710,7 @@ fn every_post_writes_within_its_own_precision() {
     let empty = Program {
         work_offset: None,
         name: "e".into(),
-        operations: vec![Operation {
-            path: Toolpath { moves: vec![Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }] },
-            ..program.operations[0].clone()
-        }],
+        operations: vec![Operation { path: Toolpath::new(vec![Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }]), ..program.operations[0].clone() }],
     };
     let r = readback(&text, &empty, &Post::rs274()).unwrap();
     assert_eq!(r.max_deviation, r.reach);
@@ -589,7 +727,7 @@ fn arc_too_short_to_write_is_never_a_full_circle() {
     let program = Program {
         work_offset: None,
         name: "p".into(),
-        operations: vec![Operation { name: "o".into(), tool: tool(6.0), spindle_rpm: 1000.0, coolant: false, path: Toolpath { moves } }],
+        operations: vec![Operation { name: "o".into(), tool: tool(6.0), spindle_rpm: 1000.0, coolant: false, path: Toolpath::new(moves) }],
     };
     let text = emit(&program, &Post::rs274()).unwrap();
     assert!(!text.contains("G2 ") && !text.contains("G3 "), "{text}");
@@ -618,7 +756,7 @@ fn verify_refuses_unsafe_paths() {
         vec![Move::Rapid { to: at(5.0, 10.0) }, Move::Arc { to: at(-7.0, 10.0), center: v(0.0, 0.0), ccw: true, feed: 100.0 }],
     ];
     for moves in unsafe_paths {
-        assert!(matches!(verify(&Toolpath { moves: moves.clone() }, &h), Err(CamError::Unsafe(_))), "{moves:?}");
+        assert!(matches!(verify(&Toolpath::new(moves.clone()), &h), Err(CamError::Unsafe(_))), "{moves:?}");
     }
     // A drill returning into its own hole is fine.
     let ok = vec![
@@ -628,7 +766,7 @@ fn verify_refuses_unsafe_paths() {
         Move::Rapid { to: at(0.0, -2.5) },
         Move::Feed { to: at(0.0, -5.0), feed: 100.0 },
     ];
-    verify(&Toolpath { moves: ok }, &h).unwrap();
+    verify(&Toolpath::new(ok), &h).unwrap();
 }
 
 #[test]
@@ -665,7 +803,7 @@ fn hostile_values_are_errors_never_panics() {
             Move::Arc { to: Vec3::new(b, 0.0, b), center: v(b, b), ccw: true, feed: b },
             Move::Dwell { seconds: b },
         ];
-        let path = Toolpath { moves };
+        let path = Toolpath::new(moves);
         let _ = path.stats();
         let _ = path.points(b);
         let _ = verify(&path, &good_cut.heights);
@@ -992,7 +1130,7 @@ fn machine_limits_hold_speeds_and_refuse_programs_beyond_them() {
     let slow = m.hold(Speeds { spindle_rpm: 500.0, feed: 4000.0, plunge_feed: 100.0, ..s });
     assert_eq!((slow.spindle_rpm, slow.feed, slow.plunge_feed), (1000.0, 5000.0, 200.0));
     // A program is checked by its speed, its feeds and how far it reaches.
-    let path = Toolpath { moves: vec![Move::Rapid { to: Vec3::new(0.0, 0.0, 5.0) }, Move::Feed { to: Vec3::new(250.0, 10.0, -2.0), feed: 800.0 }] };
+    let path = Toolpath::new(vec![Move::Rapid { to: Vec3::new(0.0, 0.0, 5.0) }, Move::Feed { to: Vec3::new(250.0, 10.0, -2.0), feed: 800.0 }]);
     m.check_operation(12000.0, &path).unwrap();
     assert!(m.check_operation(800.0, &path).is_err() && m.check_operation(30000.0, &path).is_err());
     m.max_feed = 600.0;

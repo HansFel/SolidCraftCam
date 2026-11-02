@@ -466,6 +466,7 @@ struct PostEdit {
     helical_arcs: bool,
     trailing_decimal: bool,
     two_digit_codes: bool,
+    canned_cycles: bool,
     tool_change_first: bool,
     dwell: String,
     /// Program start, tool change, spindle on, spindle off, coolant on, coolant off, program end.
@@ -506,6 +507,7 @@ impl PostEdit {
             helical_arcs: p.helical_arcs,
             trailing_decimal: p.trailing_decimal,
             two_digit_codes: p.two_digit_codes,
+            canned_cycles: p.canned_cycles,
             tool_change_first: p.tool_change_first,
             dwell: p.dwell.clone(),
             blocks: [
@@ -550,6 +552,7 @@ impl PostEdit {
             helical_arcs: self.helical_arcs,
             trailing_decimal: self.trailing_decimal,
             two_digit_codes: self.two_digit_codes,
+            canned_cycles: self.canned_cycles,
             dwell: self.dwell.trim().to_string(),
         };
         post.validate().map_err(|e| e.to_string())?;
@@ -1280,6 +1283,7 @@ fn posts_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     ui_kit::text_row(ui, tr("ui.cam.post_arc_tolerance"), &mut edit.arc_tolerance, "");
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_trailing_decimal"), &mut edit.trailing_decimal));
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_two_digit"), &mut edit.two_digit_codes));
+    ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_canned_cycles"), &mut edit.canned_cycles));
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_tool_change_first"), &mut edit.tool_change_first));
     ui_kit::text_row(ui, tr("ui.cam.post_dwell"), &mut edit.dwell, "G4 P{seconds}");
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.post_hint")).color(t.text_dim)).wrap());
