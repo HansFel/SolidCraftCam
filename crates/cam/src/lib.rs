@@ -25,6 +25,7 @@ mod path;
 mod piece;
 mod post;
 mod readback;
+mod sim;
 mod slot;
 mod tabs;
 mod tool;
@@ -43,6 +44,7 @@ pub use ops::{
 pub use path::{DrillCycle, Move, PathStats, Toolpath, arc_sweep};
 pub use post::{CommentStyle, LineNumbers, Post, Units};
 pub use readback::{Readback, allowed_deviation, readback};
+pub use sim::{RestMap, SimReport, StockMap};
 pub use slot::{SlotParams, slot};
 pub use tabs::Tabs;
 pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, Tool, ToolKind, ToolLibraryFile};

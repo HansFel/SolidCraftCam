@@ -1513,3 +1513,232 @@ fn tabs_that_do_not_fit_are_refused() {
     assert!(Tabs { count: 0, spacing: 0.0, width: 2.0, height: 2.0 }.is_empty());
     assert!(!Tabs { count: 0, spacing: 20.0, width: 2.0, height: 2.0 }.is_empty());
 }
+
+mod sim_tests {
+    use super::*;
+
+    /// The stock top of the cell nearest to (x, y).
+    fn at(stock: &StockMap, x: f64, y: f64) -> f64 {
+        let (nx, ny) = stock.size();
+        let i = (((x - stock.origin().x) / stock.cell()).floor() as isize).clamp(0, nx as isize - 1) as usize;
+        let j = (((y - stock.origin().y) / stock.cell()).floor() as isize).clamp(0, ny as isize - 1) as usize;
+        stock.height(i, j).unwrap_or(f64::NAN)
+    }
+
+    /// The centre of the cell nearest to (x, y).
+    fn centre(stock: &StockMap, x: f64, y: f64) -> Vec2 {
+        let (nx, ny) = stock.size();
+        let i = (((x - stock.origin().x) / stock.cell()).floor() as isize).clamp(0, nx as isize - 1) as usize;
+        let j = (((y - stock.origin().y) / stock.cell()).floor() as isize).clamp(0, ny as isize - 1) as usize;
+        Vec2::new(stock.origin().x + (i as f64 + 0.5) * stock.cell(), stock.origin().y + (j as f64 + 0.5) * stock.cell())
+    }
+
+    #[test]
+    fn a_pocket_leaves_its_floor_and_the_stock_outside() {
+        let cutter = tool(6.0);
+        let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+        let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+        let c = cut(0.0, -5.0, 2.5);
+        let path = pocket(&regions, &cutter, &params, &c).unwrap();
+        let mut stock = StockMap::new_box(Vec3::new(-5.0, -5.0, -5.0), Vec3::new(45.0, 35.0, 0.0), 0.5).unwrap();
+        let report = stock.cut(&cutter, &path, Vec3::new(20.0, 15.0, 10.0)).unwrap();
+        assert!(report.rapid_hits.is_empty(), "{:?}", report.rapid_hits);
+        assert!(report.removed > 0.0);
+        close(at(&stock, 20.0, 15.0), -5.0, 1e-5);
+        // Well outside the pocket the stock keeps its top.
+        close(at(&stock, 44.0, 34.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn a_contour_around_a_box_leaves_the_walls_standing() {
+        let cutter = tool(6.0);
+        let regions = [rect(5.0, 5.0, 35.0, 25.0)];
+        let params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+        let c = cut(0.0, -5.0, 2.5);
+        let path = contour(&regions, &cutter, &params, &c).unwrap();
+        let mut stock = StockMap::new_box(Vec3::new(-5.0, -5.0, -5.0), Vec3::new(45.0, 35.0, 0.0), 0.5).unwrap();
+        stock.cut(&cutter, &path, Vec3::new(2.0, 15.0, 10.0)).unwrap();
+        // Under the pass outside the part the stock is cut down.
+        close(at(&stock, 2.0, 15.0), -5.0, 1e-5);
+        // The part itself and the stock far outside keep their top.
+        close(at(&stock, 20.0, 15.0), 0.0, 1e-6);
+        close(at(&stock, 44.0, 15.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn a_drill_leaves_a_cone_tip() {
+        let bit = Tool::new(2, ToolKind::Drill, 6.0, 20.0);
+        let c = cut(0.0, -6.0, 3.0);
+        let path = drill(&[v(20.0, 20.0)], &bit, &c, 0.0).unwrap();
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -20.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+        stock.cut(&bit, &path, Vec3::new(20.0, 20.0, 10.0)).unwrap();
+        let cot = 1.664_279_482_350_9;
+        let near = centre(&stock, 20.0, 20.0);
+        let d = near.dist(v(20.0, 20.0));
+        assert!(d < 0.25, "{d}");
+        close(at(&stock, 20.0, 20.0), -6.0 + d / cot, 1e-4);
+        let side = centre(&stock, 21.5, 20.0);
+        let d = side.dist(v(20.0, 20.0));
+        assert!(d > 1.0 && d < 3.0, "{d}");
+        close(at(&stock, 21.5, 20.0), -6.0 + d / cot, 1e-4);
+        // Beyond the drill's radius the stock is untouched.
+        close(at(&stock, 24.0, 20.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn a_ball_end_mill_leaves_a_round_groove() {
+        let ball = Tool::new(3, ToolKind::BallEndmill, 6.0, 20.0);
+        let path = Toolpath::new(vec![
+            Move::Rapid { to: Vec3::new(5.0, 20.0, 10.0) },
+            Move::Feed { to: Vec3::new(5.0, 20.0, -1.0), feed: 600.0 },
+            Move::Feed { to: Vec3::new(35.0, 20.0, -1.0), feed: 600.0 },
+            Move::Rapid { to: Vec3::new(35.0, 20.0, 10.0) },
+        ]);
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -10.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+        let report = stock.cut(&ball, &path, Vec3::new(5.0, 20.0, 10.0)).unwrap();
+        assert!(report.rapid_hits.is_empty(), "{:?}", report.rapid_hits);
+        let r = 3.0;
+        for (x, y) in [(20.0, 20.0), (20.0, 21.5), (20.0, 21.75)] {
+            let p = centre(&stock, x, y);
+            let d = (p.y - 20.0).abs();
+            let want = -1.0 + r - (r * r - d * d).max(0.0).sqrt();
+            close(at(&stock, x, y), want, 1e-4);
+        }
+        // Where the ball's surface sits above the stock's top, nothing is cut: the groove is
+        // 2.236 mm wide at the top and the stock beyond it keeps its height.
+        close(at(&stock, 20.0, 22.5), 0.0, 1e-6);
+        close(at(&stock, 20.0, 24.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn a_rapid_through_stock_is_reported_and_removes_nothing() {
+        let cutter = tool(4.0);
+        let path = Toolpath::new(vec![Move::Rapid { to: Vec3::new(15.0, 10.0, 2.0) }]);
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 20.0, 5.0), 0.5).unwrap();
+        let report = stock.cut(&cutter, &path, Vec3::new(5.0, 10.0, 8.0)).unwrap();
+        assert_eq!(report.rapid_hits, vec![0]);
+        assert_eq!(report.removed, 0.0);
+        close(at(&stock, 10.0, 10.0), 5.0, 1e-6);
+    }
+
+    #[test]
+    fn a_cut_deeper_than_the_flutes_is_reported() {
+        let short = Tool::new(1, ToolKind::FlatEndmill, 6.0, 5.0);
+        let path = Toolpath::new(vec![Move::Rapid { to: Vec3::new(10.0, 10.0, 2.0) }, Move::Feed { to: Vec3::new(10.0, 10.0, -8.0), feed: 200.0 }]);
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -20.0), Vec3::new(20.0, 20.0, 0.0), 0.25).unwrap();
+        let report = stock.cut(&short, &path, Vec3::new(10.0, 10.0, 2.0)).unwrap();
+        assert_eq!(report.too_deep, vec![1]);
+        close(at(&stock, 10.0, 10.0), -8.0, 1e-5);
+    }
+
+    #[test]
+    fn the_removed_volume_of_a_faced_stock_is_within_two_percent() {
+        let cutter = tool(6.0);
+        let params = FaceParams { stepover: 6.0, overrun: 0.0 };
+        let c = cut(0.0, -4.0, 2.0);
+        let path = face(v(0.0, 0.0), v(40.0, 30.0), &cutter, &params, &c).unwrap();
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -4.0), Vec3::new(40.0, 30.0, 0.0), 0.5).unwrap();
+        let report = stock.cut(&cutter, &path, Vec3::new(-3.0, 3.0, 10.0)).unwrap();
+        assert!(report.rapid_hits.is_empty(), "{:?}", report.rapid_hits);
+        let expected = 40.0 * 30.0 * 4.0;
+        assert!((report.removed - expected).abs() <= expected * 0.02, "{} is not within 2 % of {expected}", report.removed);
+        close(at(&stock, 20.0, 15.0), -4.0, 1e-5);
+    }
+
+    #[test]
+    fn the_mesh_never_exceeds_its_triangle_budget() {
+        let stock = StockMap::new_box(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 20.0, 5.0), 0.5).unwrap();
+        for budget in [0usize, 8, 10, 50, 1000, 100_000] {
+            let (positions, normals, indices) = stock.mesh(budget);
+            assert!(indices.len() / 3 <= budget, "budget {budget}: {} triangles", indices.len() / 3);
+            if budget < 10 {
+                assert!(indices.is_empty(), "budget {budget}");
+            } else {
+                assert!(!indices.is_empty(), "budget {budget}");
+            }
+            assert_eq!(positions.len(), normals.len());
+            for p in &positions {
+                assert!(p.iter().all(|v| v.is_finite()));
+                assert!((-1e-3..=20.001).contains(&p[0]) && (-1e-3..=20.001).contains(&p[1]), "{p:?}");
+            }
+            for n in &normals {
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                close(len as f64, 1.0, 1e-5);
+            }
+            for i in &indices {
+                assert!((*i as usize) < positions.len());
+            }
+        }
+    }
+
+    #[test]
+    fn rest_material_is_what_stands_above_the_target() {
+        let cutter = tool(4.0);
+        let path = Toolpath::new(vec![
+            Move::Rapid { to: Vec3::new(5.0, 5.0, 5.0) },
+            Move::Feed { to: Vec3::new(5.0, 5.0, 3.0), feed: 100.0 },
+            Move::Rapid { to: Vec3::new(5.0, 5.0, 8.0) },
+        ]);
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 5.0), 1.0).unwrap();
+        stock.cut(&cutter, &path, Vec3::new(5.0, 5.0, 5.0)).unwrap();
+        let rest = stock.rest(&|_| Some(4.0));
+        assert_eq!(rest.rest.len(), 100);
+        assert!(rest.max_at.is_some());
+        close(rest.max, 1.0, 1e-6);
+        let none = stock.rest(&|_| None);
+        assert_eq!(none.max, 0.0);
+        assert!(none.max_at.is_none());
+    }
+
+    #[test]
+    fn a_round_bar_has_no_stock_outside_its_circle() {
+        let stock = StockMap::new_round(v(0.0, 0.0), 10.0, 0.0, 5.0, 1.0).unwrap();
+        assert_eq!(stock.size(), (20, 20));
+        close(at(&stock, 0.0, 0.0), 5.0, 1e-6);
+        close(at(&stock, 9.0, 9.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn hostile_stock_and_moves_are_refused_never_panic() {
+        let good = Vec3::new(0.0, 0.0, 0.0);
+        let top = Vec3::new(10.0, 10.0, 5.0);
+        for &b in &[f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300, -1e300] {
+            assert!(StockMap::new_box(Vec3::new(b, 0.0, 0.0), top, 1.0).is_err());
+            assert!(StockMap::new_box(good, Vec3::new(10.0, 10.0, b), 1.0).is_err());
+            assert!(StockMap::new_round(v(0.0, 0.0), b, 0.0, 5.0, 1.0).is_err());
+            assert!(StockMap::new_round(v(0.0, 0.0), 5.0, b, 5.0, 1.0).is_err());
+            assert!(StockMap::new_round(v(b, 0.0), 5.0, 0.0, 5.0, 1.0).is_err());
+        }
+        for &b in &[f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0, 1e-300] {
+            assert!(StockMap::new_box(good, top, b).is_err());
+        }
+        // Empty boxes and a zero radius.
+        assert!(StockMap::new_box(good, Vec3::new(0.0, 10.0, 5.0), 1.0).is_err());
+        assert!(StockMap::new_box(good, Vec3::new(10.0, 10.0, 0.0), 1.0).is_err());
+        assert!(StockMap::new_round(v(0.0, 0.0), 0.0, 0.0, 5.0, 1.0).is_err());
+        assert!(StockMap::new_round(v(0.0, 0.0), 5.0, 5.0, 5.0, 1.0).is_err());
+        // Too fine a grid.
+        let err = StockMap::new_box(good, Vec3::new(1e6, 1e6, 5.0), 0.01).unwrap_err();
+        assert!(format!("{err}").contains("too fine"), "{err}");
+
+        let cutter = tool(2.0);
+        let mut stock = StockMap::new_box(good, top, 1.0).unwrap();
+        for &b in &[f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
+            let path = Toolpath::new(vec![
+                Move::Feed { to: Vec3::new(b, 0.0, -1.0), feed: 100.0 },
+                Move::Arc { to: Vec3::new(1.0, 1.0, 0.0), center: v(b, b), ccw: true, feed: 100.0 },
+            ]);
+            let _ = stock.cut(&cutter, &path, Vec3::new(0.0, 0.0, 1.0));
+            let _ = stock.cut(&cutter, &Toolpath::new(vec![Move::Rapid { to: Vec3::new(1.0, 1.0, 1.0) }]), Vec3::new(b, 0.0, 0.0));
+        }
+        // A zero-radius arc is refused, not divided by zero.
+        let err = stock
+            .cut(
+                &cutter,
+                &Toolpath::new(vec![Move::Arc { to: Vec3::new(1.0, 1.0, 0.0), center: v(0.0, 0.0), ccw: true, feed: 100.0 }]),
+                Vec3::new(0.0, 0.0, 0.0),
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("no radius"), "{err}");
+    }
+}
