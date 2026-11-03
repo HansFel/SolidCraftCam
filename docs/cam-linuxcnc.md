@@ -211,7 +211,10 @@ per step, how many rapid moves go through the stock (a crash on the machine) and
 have material above the tool's flute length (the shank or holder would rub). The stock is a
 height field over the work plane, a grid of about a million cells: it sees floors, walls and
 drill points, not undercuts, the tool's side, the holder or fixtures. While shown it is made
-again whenever the design changes; **Hide simulation** takes it away.
+again whenever the design changes; **Hide simulation** takes it away. The stock is drawn in the
+colour of a body still to be made, apart from the model. When it is no larger than the model
+in X and Y (the default **Model box** without allowance) the panel says so, since cuts round the
+part then remove nothing: give the setup's stock an allowance under **Stock › Sides (mm)**.
 
 Under the summary the panel shows the estimated **run time**, split into cutting, rapids and tool
 changes. Each move accelerates and brakes (500 mm/s² per axis); moves that join almost straight

@@ -2148,6 +2148,9 @@ impl Session {
             Some(b) => (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2])),
             None => stock_extent(self, found, &frame)?,
         };
+        // No more than a tenth of a millimetre beyond the model on any side in XY: no allowance.
+        let fits_model = model_extent(self, &found.model_bodies, &frame)
+            .is_ok_and(|(mlo, mhi)| [lo.x - mlo.x, lo.y - mlo.y, mhi.x - hi.x, mhi.y - hi.y].iter().all(|d| *d >= -0.1));
         let round = found.stock.is_none()
             && matches!(found.stock_spec, CamStock::Cylinder { .. } | CamStock::RelativeCylinder { .. } | CamStock::Tube { .. });
         let cell = match cell {
@@ -2181,6 +2184,7 @@ impl Session {
             positions: positions.iter().map(model).collect(),
             normals: normals.iter().map(normal).collect(),
             indices,
+            fits_model,
         })
     }
 }
@@ -2196,6 +2200,8 @@ pub struct CamSimulation {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub indices: Vec<u32>,
+    /// The stock is no larger than the model's box, so nothing around the part is cut.
+    pub fits_model: bool,
 }
 
 /// What one step did to the stock.
@@ -2215,6 +2221,9 @@ impl CamSimulation {
             if !o.report.too_deep.is_empty() {
                 out.push(format!("operation `{}`: {} move(s) cut above the tool's flute length", o.name, o.report.too_deep.len()));
             }
+        }
+        if self.fits_model {
+            out.push("the stock is the size of the model, so cuts around it remove nothing: give the setup's stock an allowance".into());
         }
         out
     }
@@ -3386,6 +3395,13 @@ mod tests {
         let outline = s.cam_setup_outline("Top").unwrap();
         let corners = outline.stock.unwrap();
         assert!(corners.iter().any(|c| c.dist(Vec3::new(42.0, 32.0, 0.0)) < 1e-6), "{corners:?}");
+        // The simulation says when the stock has no allowance round the part to cut away.
+        assert!(!s.cam_simulate("Top", None).unwrap().fits_model);
+        let flush = json!({"kind": "relative_box", "mode": "no_additional", "side_offset": 0, "top_offset": 0, "bottom_offset": 0, "round_up": 0});
+        run(&mut s, "cam.setup", json!({"name": "Top", "stock_spec": flush}));
+        let sim = s.cam_simulate("Top", None).unwrap();
+        assert!(sim.fits_model && sim.warnings().iter().any(|w| w.contains("allowance")), "{:?}", sim.warnings());
+        run(&mut s, "cam.setup", json!({"name": "Top", "stock_spec": stock, "wcs_origin_mode": "stock_box_point"}));
         // Turned on its side: +Z out of the face at x = 0, X derived, zero again at a box corner.
         run(
             &mut s,

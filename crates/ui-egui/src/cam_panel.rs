@@ -1174,6 +1174,9 @@ fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulatio
     if !warned {
         ui.add(egui::Label::new(tr("ui.cam.sim_ok")).wrap());
     }
+    if sim.fits_model {
+        ui.add(egui::Label::new(RichText::new(tr("ui.cam.sim_fits_model")).color(t.warning)).wrap());
+    }
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.sim_hint")).color(t.text_dim)).wrap());
 }
 
@@ -1725,7 +1728,8 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
     let Some((_, paths)) = &window.paths else { return };
     let t = Tokens::get();
     if let Some(Some(Ok(sim))) = window.gcode.as_ref().map(|g| &g.sim) {
-        draw_stock(painter, proj, sim, t.body, t.body_edge);
+        // The stock in the colour of a body still to be made, apart from the finished model.
+        draw_stock(painter, proj, sim, t.preview_new, t.body_edge);
     }
     let selected = window.gcode.as_ref().and_then(GcodeView::selected_move);
     // Going through a setup's G-code shows that setup's toolpaths only.
