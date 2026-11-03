@@ -341,6 +341,8 @@ pub struct PostResult {
     pub operations: usize,
     pub work_offset: u8,
     pub readback: serde_json::Value,
+    /// Estimated run time in seconds (accelerations, rapids, tool changes), or null.
+    pub time: serde_json::Value,
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SimulateResult {

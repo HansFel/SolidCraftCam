@@ -6,8 +6,8 @@
 use serde_json::{Value, json};
 use solidcraft_cam::{
     CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, Move, OpenContourParams, OpenPath, OpenSide,
-    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, Tool, ToolKind, Units, contour_open, contour_with_tabs, drill, emit, face,
-    pocket, readback, slot,
+    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_open, contour_with_tabs,
+    drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
@@ -111,7 +111,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
     CommandSpec::new("cam.post", "Post Process", crate::checked!("cam.post", post_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::PostParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::PostResult>).icon("export").noundo().params(
         "setup; post?: a built-in post or the name of a saved post (default: the setup's post, else its machine's, else rs274); program?: name (default the setup's) → \
-         {gcode, extension, post, operations, readback}. G-code is always read back and checked against the toolpaths, \
+         {gcode, extension, post, operations, readback, time: {cutting, rapid, dwell, tool_changes, total, per_operation, operations} in seconds or null}. G-code is always read back and checked against the toolpaths, \
          and against the setup's machine (spindle range, fastest feed, travel) when it names one.",
     ),
     CommandSpec::new("cam.simulate", "Simulate Material Removal", crate::checked!("cam.simulate", simulate_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SimulateParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SimulateResult>).icon("cut").noundo().params(
@@ -1288,7 +1288,24 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
         "cut_minutes": rb.cut_minutes,
         "within": rb.within(),
     });
+    // The run time is a guide only: a program is posted even when it cannot be estimated.
+    out["time"] = estimate(&program, &time_model(machine.as_ref())).map_or(Value::Null, |time| {
+        let mut v = serde_json::to_value(&time).unwrap_or(Value::Null);
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("operations".into(), program.operations.iter().map(|o| Value::from(o.name.as_str())).collect());
+        }
+        v
+    });
     Ok(out)
+}
+
+/// What the run time is estimated with: the machine's fastest feed for rapids and every axis
+/// when the setup names a machine, else [`TimeModel::default`].
+fn time_model(machine: Option<&Machine>) -> TimeModel {
+    match machine {
+        Some(m) => TimeModel { rapid_feed: m.max_feed, max_feed: [m.max_feed; 3], ..TimeModel::default() },
+        None => TimeModel::default(),
+    }
 }
 
 /// The post a setup's programs are written with when the caller names none: the setup's own,
@@ -2096,7 +2113,8 @@ impl Session {
             }
             at = Some(to);
         }
-        Ok(CamProgram { gcode, extension, moves, axis: frame.z })
+        let time = out.get("time").cloned().and_then(|v| serde_json::from_value(v).ok());
+        Ok(CamProgram { gcode, extension, moves, axis: frame.z, time })
     }
 }
 
@@ -2228,6 +2246,8 @@ pub struct CamProgram {
     pub moves: Vec<CamProgramMove>,
     /// The tool axis (the work Z direction) in model coordinates, a unit vector.
     pub axis: Vec3,
+    /// How long the program runs, when it could be estimated.
+    pub time: Option<TimeEstimate>,
 }
 
 /// One line's move: the line number (from 1), the tool's way in model coordinates, and whether
@@ -2744,6 +2764,15 @@ mod tests {
         assert!(gcode.contains("M30"));
         assert!(posted["readback"]["within"].as_bool().unwrap());
         assert_eq!(posted["operations"], 2);
+        // The run time comes with it: one figure per step, adding up, and longer than cutting
+        // at the feed alone because the tool accelerates and stops at corners.
+        let time = &posted["time"];
+        let total = time["total"].as_f64().unwrap();
+        let per: f64 = time["per_operation"].as_array().unwrap().iter().filter_map(Value::as_f64).sum();
+        assert!((per - total).abs() < 1e-6, "{time}");
+        assert_eq!(time["operations"].as_array().map(Vec::len), Some(2), "{time}");
+        assert!(time["cutting"].as_f64().unwrap() > posted["readback"]["cut_minutes"].as_f64().unwrap() * 60.0, "{posted}");
+        assert!(s.cam_program("Top").unwrap().time.is_some_and(|t| (t.total - total).abs() < 1e-9));
         // The tool these steps mill with cannot become a drill; another number can.
         let refused = s.execute("cam.tool.define", &json!({"number": 1, "kind": "drill", "diameter": 5, "flute_length": 30})).unwrap_err();
         assert!(refused.to_string().contains("operation `Outside`"), "{refused}");

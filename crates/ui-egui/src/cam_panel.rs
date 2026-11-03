@@ -689,6 +689,7 @@ pub(crate) struct GcodeProgram {
     /// The travel at the end of each move (mm), rising.
     ends: Vec<f64>,
     axis: Vec3,
+    time: Option<solidcraft_engine::cam::TimeEstimate>,
 }
 
 impl GcodeProgram {
@@ -732,6 +733,7 @@ impl GcodeView {
                 moves: p.moves,
                 ends,
                 axis: p.axis,
+                time: p.time,
             }
         });
         GcodeView {
@@ -1046,6 +1048,18 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
             ui.ctx().copy_text(program.text.clone());
         }
     });
+    if let Some(time) = &program.time {
+        let text = crate::i18n::format(
+            "ui.cam.run_time",
+            &[
+                ("total", &clock(time.total)),
+                ("cutting", &clock(time.cutting)),
+                ("rapid", &clock(time.rapid)),
+                ("changes", &clock(time.tool_changes)),
+            ],
+        );
+        ui.add(egui::Label::new(text).wrap()).on_hover_text(tr("ui.cam.run_time_hint"));
+    }
     let mut simulate = false;
     ui.horizontal_wrapped(|ui| {
         simulate = ui_kit::button(ui, tr(if view.sim.is_some() { "ui.cam.sim_hide" } else { "ui.cam.simulate" }), ui_kit::Button::Normal).clicked();
@@ -1128,6 +1142,13 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
 
 /// What the simulation found: the material removed, then a line per step with a rapid through
 /// stock or material above its flutes, and what the height field cannot see.
+/// Seconds as `m:ss`, or `h:mm:ss` from an hour on.
+pub(crate) fn clock(seconds: f64) -> String {
+    let total = if seconds.is_finite() { seconds.max(0.0).round() as u64 } else { 0 };
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
 fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulation, String>) {
     let t = Tokens::get();
     let sim = match sim {

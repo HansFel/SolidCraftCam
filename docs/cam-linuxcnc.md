@@ -213,6 +213,15 @@ height field over the work plane, a grid of about a million cells: it sees floor
 drill points, not undercuts, the tool's side, the holder or fixtures. While shown it is made
 again whenever the design changes; **Hide simulation** takes it away.
 
+Under the summary the panel shows the estimated **run time**, split into cutting, rapids and tool
+changes. Each move accelerates and brakes (500 mm/s² per axis); moves that join almost straight
+(under 10°) at the same feed run on, while corners, feed changes and rapids stop the tool; tight
+arcs are slowed so the bend stays within the acceleration. Rapids and every axis are held to the
+machine's fastest feed (5000 mm/min without a machine), and a tool change counts 10 s. It is a
+guide for planning, not the controller's own figure. `cam.post` returns the same estimate as
+`time` (seconds: `cutting`, `rapid`, `dwell`, `tool_changes`, `total`, `per_operation` with the
+step names in `operations`).
+
 The tool library is kept in the preferences, for every design. **Export library…** writes it
 to a file (desktop app; `{"format": "solidcraft-tools", "version": 1, "tools": [...]}`), for
 another computer or a colleague. **Import library…** reads such a file and says how many of

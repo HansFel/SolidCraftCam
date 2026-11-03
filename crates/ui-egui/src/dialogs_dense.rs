@@ -1348,6 +1348,19 @@ mod tests {
         h.frames(3);
         let summary = format!("{} lines, post GRBL", lines.len());
         assert!(h.widget(&summary).is_some(), "{summary}");
+        // The estimated run time is shown under it.
+        let time = program.time.as_ref().unwrap();
+        assert!(time.total > 0.0 && time.tool_changes == 0.0, "{time:?}");
+        let clock = crate::cam_panel::clock;
+        let shown = format!(
+            "Run time about {} (cutting {}, rapids {}, tool changes {}).",
+            clock(time.total),
+            clock(time.cutting),
+            clock(time.rapid),
+            clock(time.tool_changes)
+        );
+        assert!(h.widget(&shown).is_some(), "{shown}");
+        assert_eq!((clock(59.6), clock(61.0), clock(3725.0), clock(f64::NAN)), ("1:00".into(), "1:01".into(), "1:02:05".into(), "0:00".into()));
         // Stepping through the moves selects their lines; the cuts run round the outline.
         fn view(h: &Harness) -> Option<&crate::cam_panel::GcodeView> {
             h.app.cam_window.as_ref().and_then(|w| w.gcode.as_ref())
