@@ -28,6 +28,7 @@ mod readback;
 mod sim;
 mod slot;
 mod tabs;
+mod time;
 mod tool;
 
 pub use check::verify;
@@ -47,6 +48,7 @@ pub use readback::{Readback, allowed_deviation, readback};
 pub use sim::{RestMap, SimReport, StockMap};
 pub use slot::{SlotParams, slot};
 pub use tabs::Tabs;
+pub use time::{BLEND_ANGLE, MoveTime, TimeEstimate, TimeModel, estimate, move_times};
 pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, Tool, ToolKind, ToolLibraryFile};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

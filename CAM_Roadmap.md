@@ -195,7 +195,7 @@ All posts are written from the controllers' public programming manuals.
 | Material removal (dexel or voxel stock, shown in the viewport) | Partial: height-field stock for box and round bar, flat, ball and drill tools; `cam.simulate` and **Simulate material removal** in the G-code panel draw the stock left and report rapids through stock and cuts above the flutes; no undercuts, not yet along the playback |
 | Collision of tool, holder and fixtures with stock and model | Planned |
 | Machine kinematics (axes, travels) | Partial: travels checked by reach on export |
-| Machining time with accelerations, rapids and tool changes | Partial: cutting time only |
+| Machining time with accelerations, rapids and tool changes | Partial: `estimate`/`move_times` in `crates/cam/src/time.rs` (trapezoid per run, axis limits, stops at corners over 10°, arcs held to their bend, tool changes); not yet in the G-code panel or a command |
 
 ### 8. Collision and rest-material analysis
 

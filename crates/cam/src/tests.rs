@@ -1742,3 +1742,140 @@ mod sim_tests {
         assert!(format!("{err}").contains("no radius"), "{err}");
     }
 }
+
+mod time_tests {
+    use super::*;
+
+    fn model() -> TimeModel {
+        TimeModel { rapid_feed: 3000.0, max_feed: [10_000.0; 3], accel: [500.0; 3], tool_change: 8.0 }
+    }
+
+    fn feed(x: f64, y: f64, f: f64) -> Move {
+        Move::Feed { to: Vec3::new(x, y, 0.0), feed: f }
+    }
+
+    fn op(number: u32, moves: Vec<Move>) -> Operation {
+        Operation {
+            name: format!("T{number}"),
+            tool: Tool::new(number, ToolKind::FlatEndmill, 6.0, 20.0),
+            spindle_rpm: 10_000.0,
+            coolant: false,
+            path: Toolpath::new(moves),
+        }
+    }
+
+    fn program(ops: Vec<Operation>) -> Program {
+        Program { name: "t".into(), operations: ops, work_offset: None }
+    }
+
+    #[test]
+    fn a_long_line_takes_its_length_over_the_feed_plus_one_ramp() {
+        // 1000 mm at 10 mm/s with 500 mm/s²: t = d/v + v/a.
+        let est = estimate(&program(vec![op(1, vec![feed(0.0, 0.0, 600.0), feed(1000.0, 0.0, 600.0)])]), &model()).unwrap();
+        close(est.cutting, 100.0 + 10.0 / 500.0, 1e-9);
+        close(est.total, est.cutting, 1e-12);
+        assert_eq!(est.tool_changes, 0.0);
+    }
+
+    #[test]
+    fn rapids_run_at_the_rapid_feed_and_short_moves_never_reach_it() {
+        // Trapezoid: 100 mm at 50 mm/s.
+        let rapid = |x: f64| Move::Rapid { to: Vec3::new(x, 0.0, 0.0) };
+        let est = estimate(&program(vec![op(1, vec![rapid(0.0), rapid(100.0)])]), &model()).unwrap();
+        close(est.rapid, 100.0 / 50.0 + 50.0 / 500.0, 1e-9);
+        assert_eq!(est.cutting, 0.0);
+        // Triangle: 1 mm wanting 100 mm/s peaks at sqrt(a·d) after 2·sqrt(d/a).
+        let times = move_times(&[feed(1.0, 0.0, 6000.0)], Vec3::default(), &model()).unwrap();
+        close(times[0].seconds, 2.0 * (1.0f64 / 500.0).sqrt(), 1e-9);
+        close(times[0].peak, 500.0f64.sqrt() * 60.0, 1e-6);
+        close(times[0].length, 1.0, 1e-12);
+        // Nothing to go: no time.
+        let none = move_times(&[feed(0.0, 0.0, 600.0)], Vec3::default(), &model()).unwrap();
+        assert_eq!(none[0], MoveTime::default());
+    }
+
+    #[test]
+    fn corners_stop_the_tool_but_straight_pieces_run_on() {
+        let f = 3000.0;
+        // 100 short pieces of 1 mm, all along X: one run, close to one long line.
+        let straight: Vec<Move> = (0..=100).map(|i| feed(f64::from(i), 0.0, f)).collect();
+        let s: f64 = move_times(&straight, Vec3::default(), &model()).unwrap().iter().map(|t| t.seconds).sum();
+        close(s, 100.0 / 50.0 + 50.0 / 500.0, 1e-9);
+        // The same 100 mm as a staircase of 90° corners: the tool stops at every one.
+        let stairs: Vec<Move> = (0..=100).map(|i| feed(f64::from((i + 1) / 2), f64::from(i / 2), f)).collect();
+        let t: f64 = move_times(&stairs, Vec3::default(), &model()).unwrap().iter().map(|t| t.seconds).sum();
+        assert!(t > 2.5 * (100.0 / 50.0), "{t}");
+        close(t, 100.0 * 2.0 * (1.0f64 / 500.0).sqrt(), 1e-9);
+        // A feed change stops the tool too.
+        let changing = [feed(50.0, 0.0, f), feed(100.0, 0.0, f / 2.0)];
+        let c: f64 = move_times(&changing, Vec3::default(), &model()).unwrap().iter().map(|t| t.seconds).sum();
+        close(c, (50.0 / 50.0 + 50.0 / 500.0) + (50.0 / 25.0 + 25.0 / 500.0), 1e-9);
+    }
+
+    #[test]
+    fn axis_limits_clamp_the_feed_and_the_acceleration() {
+        let slow = TimeModel { max_feed: [1200.0, 10_000.0, 10_000.0], accel: [500.0, 100.0, 500.0], ..model() };
+        // Along X the feed is clamped to 20 mm/s.
+        let along = move_times(&[feed(100.0, 0.0, 6000.0)], Vec3::default(), &slow).unwrap();
+        close(along[0].seconds, 100.0 / 20.0 + 20.0 / 500.0, 1e-9);
+        close(along[0].peak, 1200.0, 1e-6);
+        // At 45° Y's 100 mm/s² holds the path to 100 / cos 45°.
+        let a = 100.0 / std::f64::consts::FRAC_1_SQRT_2;
+        let d = 2.0f64.sqrt();
+        let diagonal = move_times(&[feed(1.0, 1.0, 1000.0)], Vec3::default(), &slow).unwrap();
+        close(diagonal[0].seconds, 2.0 * (d / a).sqrt(), 1e-9);
+    }
+
+    #[test]
+    fn arcs_are_timed_by_their_length_and_held_to_their_bend() {
+        // A quarter circle of radius 10 at 10 mm/s.
+        let arc = Move::Arc { to: Vec3::new(0.0, 10.0, 0.0), center: Vec2::new(0.0, 0.0), ccw: true, feed: 600.0 };
+        let t = move_times(&[arc], Vec3::new(10.0, 0.0, 0.0), &model()).unwrap();
+        let length = 10.0 * std::f64::consts::FRAC_PI_2;
+        close(t[0].length, length, 1e-9);
+        close(t[0].seconds, length / 10.0 + 10.0 / 500.0, 1e-9);
+        // A line running on tangent to the arc's end does not stop the tool.
+        let on = move_times(&[arc, feed(-20.0, 10.0, 600.0)], Vec3::new(10.0, 0.0, 0.0), &model()).unwrap();
+        close(on[0].seconds + on[1].seconds, (length + 20.0) / 10.0 + 10.0 / 500.0, 1e-9);
+        // A tight arc at a high feed is slowed to sqrt(a·r).
+        let tight = Move::Arc { to: Vec3::new(-0.5, 0.0, 0.0), center: Vec2::new(0.0, 0.0), ccw: true, feed: 6000.0 };
+        let t = move_times(&[tight], Vec3::new(0.5, 0.0, 0.0), &model()).unwrap();
+        assert!(t[0].peak <= (500.0f64 * 0.5).sqrt() * 60.0 + 1e-6, "{}", t[0].peak);
+    }
+
+    #[test]
+    fn tool_changes_and_dwells_add_up_per_operation() {
+        let first = op(1, vec![feed(0.0, 0.0, 600.0), feed(100.0, 0.0, 600.0), Move::Dwell { seconds: 1.5 }]);
+        let same = op(1, vec![feed(0.0, 0.0, 600.0), feed(0.0, 100.0, 600.0)]);
+        let other = op(2, vec![feed(0.0, 0.0, 600.0), feed(100.0, 0.0, 600.0)]);
+        let est = estimate(&program(vec![first, same, other]), &model()).unwrap();
+        assert_eq!(est.tool_changes, 8.0);
+        assert_eq!(est.dwell, 1.5);
+        let line = 100.0 / 10.0 + 10.0 / 500.0;
+        assert_eq!(est.per_operation.len(), 3);
+        close(est.per_operation[0], line + 1.5, 1e-9);
+        close(est.per_operation[1], line, 1e-9);
+        close(est.per_operation[2], 8.0 + line, 1e-9);
+        close(est.per_operation.iter().sum::<f64>(), est.total, 1e-9);
+        close(est.total, est.cutting + est.rapid + est.dwell + est.tool_changes, 1e-12);
+    }
+
+    #[test]
+    fn hostile_time_values_are_refused() {
+        let good = program(vec![op(1, vec![feed(0.0, 0.0, 600.0), feed(10.0, 0.0, 600.0)])]);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
+            assert!(estimate(&good, &TimeModel { rapid_feed: bad, ..model() }).is_err(), "rapid {bad}");
+            assert!(estimate(&good, &TimeModel { max_feed: [600.0, bad, 600.0], ..model() }).is_err(), "feed {bad}");
+            assert!(estimate(&good, &TimeModel { accel: [500.0, 500.0, bad], ..model() }).is_err(), "accel {bad}");
+            if bad != 0.0 {
+                assert!(estimate(&good, &TimeModel { tool_change: bad, ..model() }).is_err(), "change {bad}");
+            }
+            let path = [feed(10.0, 0.0, bad)];
+            assert!(move_times(&path, Vec3::default(), &model()).is_err(), "move feed {bad}");
+            assert!(move_times(&[Move::Dwell { seconds: -bad.abs() - 1.0 }], Vec3::default(), &model()).is_err());
+            assert!(move_times(&[feed(f64::NAN, 0.0, 600.0)], Vec3::default(), &model()).is_err());
+            assert!(move_times(&[feed(1.0, 0.0, 600.0)], Vec3::new(f64::INFINITY, 0.0, 0.0), &model()).is_err());
+        }
+        assert!(estimate(&good, &TimeModel { tool_change: 0.0, ..model() }).is_ok());
+    }
+}
