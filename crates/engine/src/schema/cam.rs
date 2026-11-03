@@ -292,6 +292,14 @@ pub struct PostParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+pub struct SimulateParams {
+    pub setup: String,
+    /// Grid size in mm, at least 0.05.
+    pub cell: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ListParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -333,6 +341,13 @@ pub struct PostResult {
     pub operations: usize,
     pub work_offset: u8,
     pub readback: serde_json::Value,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SimulateResult {
+    pub removed: f64,
+    pub cell: f64,
+    pub operations: Vec<serde_json::Value>,
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListResult {

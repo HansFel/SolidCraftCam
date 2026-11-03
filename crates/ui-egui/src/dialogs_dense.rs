@@ -1408,6 +1408,26 @@ mod tests {
         assert_eq!(view(&h).and_then(|v| v.selected), last);
         let summary = format!("{} lines, post GRBL", h.app.session.cam_program("Top").unwrap().gcode.lines().count());
         assert!(h.widget(&summary).is_some(), "{summary}");
+        // The simulation cuts the stock, says what it removed and found, follows a changed
+        // design while shown, and goes again on Hide.
+        h.app.run("cam.setup", json!({"name": "Top", "stock": {"min": [-5, -5, -5], "max": [35, 15, 0]}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"widget": "Simulate material removal"})).unwrap();
+        h.frames(2);
+        let removed = |h: &Harness| match view(h).and_then(|v| v.sim.as_ref()) {
+            Some(Ok(sim)) => Ok((sim.removed, sim.indices.len())),
+            Some(Err(e)) => Err(e.clone()),
+            None => Err("not simulated".into()),
+        };
+        let (volume, triangles) = removed(&h).unwrap();
+        assert!(volume > 0.0 && triangles > 0);
+        assert!(h.widget("No rapid move goes through the stock and no cut reaches above the flutes.").is_some());
+        h.app.run("cam.op.contour", json!({"setup": "Top", "name": "C", "tool": 1, "outer": [[0,0],[30,0],[30,10],[0,10]], "bottom": -3})).unwrap();
+        h.frames(2);
+        assert!(removed(&h).is_ok_and(|(v, _)| v > volume));
+        h.step(&json!({"widget": "Hide simulation"})).unwrap();
+        h.frames(2);
+        assert!(view(&h).is_some_and(|v| v.sim.is_none()));
         // Only the small G-code panel is shown meanwhile; closing it brings the window back.
         assert!(h.widget("G-code: Top").is_some());
         assert!(h.widget("Show G-code").is_none());

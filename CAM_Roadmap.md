@@ -137,7 +137,7 @@ Project
 | Round stock and tube | Partial: round bar in the form; tube in the data model only |
 | Stock from a body in the design or an imported STEP/STL | Partial: `from_solid` in the data model |
 | Stock material group (aluminium, steel, stainless steel, brass/bronze, plastic, wood/MDF) | Done (on the setup) |
-| Stock shown in the viewport | Partial: as a box outline; not yet a transparent solid |
+| Stock shown in the viewport | Partial: as a box outline, and as a translucent solid after **Simulate material removal** |
 
 ### 5. 2.5D strategies
 
@@ -145,7 +145,7 @@ Project
 |---|---|
 | Contour | Done |
 | Pocket | Done |
-| Drill (peck, dwell), at picked round edges or every round hole of a picked face | Done |
+| Drill (peck, dwell), at picked round edges, every round hole of a picked face, sketch circles and sketch points | Done |
 | Facing of the stock in passes, with overrun past its edges | Done |
 | Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
 | Slot along picked edges (open or closed chains) or around contours, wider than the tool with side passes | Done |
@@ -192,7 +192,7 @@ All posts are written from the controllers' public programming manuals.
 | Every step's toolpath shown while the CAM window is open | Done |
 | Tool motion along the path (play, step, speed) | Done (in the G-code panel, along the program as written) |
 | Rapid moves shown apart from cutting moves | Done (preview) |
-| Material removal (dexel or voxel stock, shown in the viewport) | Planned |
+| Material removal (dexel or voxel stock, shown in the viewport) | Partial: height-field stock for box and round bar, flat, ball and drill tools; `cam.simulate` and **Simulate material removal** in the G-code panel draw the stock left and report rapids through stock and cuts above the flutes; no undercuts, not yet along the playback |
 | Collision of tool, holder and fixtures with stock and model | Planned |
 | Machine kinematics (axes, travels) | Partial: travels checked by reach on export |
 | Machining time with accelerations, rapids and tool changes | Partial: cutting time only |
@@ -204,10 +204,10 @@ Before each export:
 | Item | Status |
 |---|---|
 | Read-back of the program against the planned toolpaths | Done |
-| Rest material shown on the model | Planned |
+| Rest material shown on the model | Partial: rest against a target height (`RestMap`) in the CAM crate; not shown yet |
 | Areas no tool can reach marked | Planned |
 | Collisions marked | Planned |
-| A warning list per setup (shown in the panel, returned by `cam.post`) | Planned |
+| A warning list per setup (shown in the panel, returned by `cam.post`) | Partial: rapids through stock and cuts above the flutes, per step, from `cam.simulate` |
 
 ### 9. Machine library
 

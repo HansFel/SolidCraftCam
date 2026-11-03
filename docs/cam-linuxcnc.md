@@ -37,8 +37,8 @@ with M30. Drilling is expanded to G0/G1 moves and G4 dwell, without modal canned
 
 Every generated program is read back and its cutting geometry compared with the
 planned toolpaths before it can be exported. This checks numerical postprocessing;
-it is **not** a stock-removal, fixture, machine-limit or collision simulation. The
-preview is a tool-centre path, not a simulation. Inspect the program in LinuxCNC's
+it is **not** a fixture or collision check. The preview is a tool-centre path; the
+material-removal simulation (below) works on heights over the work plane only. Inspect the program in LinuxCNC's
 preview and verify tool table, work zero and clearance for the actual machine.
 
 ## Setups
@@ -203,8 +203,15 @@ the toolpaths, the tool is shown as a line up its axis with a ring at its tip, a
 is on is selected as it goes. **Pause** holds it, **To start** puts it back at the beginning,
 **Speed** sets how fast it travels (mm of tool travel per second, rapids alike), and the slider
 moves it to any point of the program. Clicking a row or stepping puts the tool at the end of
-that line's move. It shows the moves, it does not remove material, so it is not yet a
-simulation.
+that line's move. It shows the moves; it does not remove material.
+
+**Simulate material removal** cuts the setup's steps (not the skipped ones) from its stock and
+draws what is left over the model, translucent. The panel says how much material came off and,
+per step, how many rapid moves go through the stock (a crash on the machine) and how many cuts
+have material above the tool's flute length (the shank or holder would rub). The stock is a
+height field over the work plane, a grid of about a million cells: it sees floors, walls and
+drill points, not undercuts, the tool's side, the holder or fixtures. While shown it is made
+again whenever the design changes; **Hide simulation** takes it away.
 
 The tool library is kept in the preferences, for every design. **Export library…** writes it
 to a file (desktop app; `{"format": "solidcraft-tools", "version": 1, "tools": [...]}`), for
@@ -330,7 +337,7 @@ they use the virtual filesystem and the host's download handling.
 
 The lower-level commands `cam.tool.define`, `cam.setup`, `cam.op.contour`,
 `cam.op.pocket`, `cam.op.drill`, `cam.op.remove`, `cam.tool.remove`, `cam.machine.define`,
-`cam.machine.remove`, `cam.post.define`, `cam.post.remove`, `cam.list` and `cam.post` are also available through scripts, CLI and the control channel. Contour
+`cam.machine.remove`, `cam.post.define`, `cam.post.remove`, `cam.list`, `cam.post` and `cam.simulate` are also available through scripts, CLI and the control channel. Contour
 and pocket commands additionally accept sketch profiles, planar faces and polygon
 regions with islands, and expression-based depths and feeds. Use `cam.post` with
 `post: "linuxcnc"` for LinuxCNC output; its existing default remains `rs274`.
@@ -377,6 +384,10 @@ too. Machines:
 `post` is optional: a built-in post (`cam.list` returns them as `builtin_posts`) or one saved on
 the design. `cam.post` without `post` uses the setup's post, else its machine's, else `rs274`;
 the guided job and export fall back to `linuxcnc`.
+`cam.simulate {"setup": "Top", "cell": 0.2}` cuts the setup's steps from its stock (`cell`, the
+grid size in mm, is optional) and returns `removed` (mm³), the `cell` used, per step `removed`,
+`rapid_hits` and `too_deep` (move indices, the first 100) and `warnings` as text. A stock box
+given to `cam.setup` as `stock` is used as it is; otherwise the setup's stock around the model.
 `cam.machine.define` adds or replaces the design's machine of that name, `cam.machine.remove`
 removes one no setup names, and `cam.setup` takes `machine` as a name, a whole machine
 (copied into the design) or null; with a whole machine, `machine_post` copies the post it

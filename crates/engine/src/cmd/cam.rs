@@ -114,6 +114,9 @@ pub static COMMANDS: &[CommandSpec] = &[
          {gcode, extension, post, operations, readback}. G-code is always read back and checked against the toolpaths, \
          and against the setup's machine (spindle range, fastest feed, travel) when it names one.",
     ),
+    CommandSpec::new("cam.simulate", "Simulate Material Removal", crate::checked!("cam.simulate", simulate_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SimulateParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SimulateResult>).icon("cut").noundo().params(
+        "setup; cell?: grid size in mm (default chosen from the stock, at least 0.05) → {removed (mm³), cell, operations: [{name, removed, rapid_hits, too_deep}], warnings}.          Cuts the setup's steps (not the skipped ones) from its stock as a height field over work XY: a rapid through stock and material above a tool's flute length are warnings.",
+    ),
     CommandSpec::new("cam.op.move", "Move CAM Operation", crate::checked!("cam.op.move", move_op))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::MoveParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::OrderResult>)
@@ -2097,6 +2100,108 @@ impl Session {
     }
 }
 
+/// Most cells the simulation grid gets when the caller names no cell size.
+const SIM_CELLS: f64 = 1_000_000.0;
+/// Most triangles of the simulated stock's mesh for the viewport.
+const SIM_TRIANGLES: usize = 60_000;
+
+fn simulate_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.simulate";
+    let setup = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?;
+    let cell = num(p, "cell");
+    let sim = s.cam_simulate(setup, cell).map_err(|e| bad(cmd, e))?;
+    Ok(json!({
+        "removed": sim.removed,
+        "cell": sim.cell,
+        "operations": sim.operations.iter().map(|o| json!({"name": o.name, "removed": o.report.removed, "rapid_hits": o.report.rapid_hits, "too_deep": o.report.too_deep})).collect::<Vec<_>>(),
+        "warnings": sim.warnings(),
+    }))
+}
+
+impl Session {
+    /// Cuts setup `setup`'s steps (not the skipped ones) from its stock, in order, and returns the
+    /// stock left as a mesh in model coordinates with what each step did. `cell` is the grid
+    /// size (mm); None picks one from the stock's size.
+    pub fn cam_simulate(&self, setup: &str, cell: Option<f64>) -> std::result::Result<CamSimulation, String> {
+        let found = self.doc.cam.setup(setup).ok_or_else(|| format!("no setup `{setup}`"))?;
+        let frame = work_frame(found)?;
+        // A stock box given in work coordinates (scripts) wins over the one worked out from the model.
+        let (lo, hi) = match found.stock {
+            Some(b) => (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2])),
+            None => stock_extent(self, found, &frame)?,
+        };
+        let round = found.stock.is_none()
+            && matches!(found.stock_spec, CamStock::Cylinder { .. } | CamStock::RelativeCylinder { .. } | CamStock::Tube { .. });
+        let cell = match cell {
+            Some(c) if c.is_finite() && c >= 0.05 => c,
+            Some(c) => return Err(format!("the cell size must be at least 0.05 mm, not {c}")),
+            None => ((hi.x - lo.x) * (hi.y - lo.y) / SIM_CELLS).sqrt().max(0.05),
+        };
+        let mut stock = if round {
+            let c = Vec2::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+            solidcraft_cam::StockMap::new_round(c, (hi.x - lo.x) * 0.5, lo.z, hi.z, cell)
+        } else {
+            solidcraft_cam::StockMap::new_box(lo, hi, cell)
+        }
+        .map_err(|e| e.to_string())?;
+        let mut operations = Vec::new();
+        for op in found.operations.iter().filter(|op| !found.skipped.iter().any(|n| n == op.name())) {
+            let tool = self.doc.cam.tool(op.tool()).ok_or_else(|| format!("operation `{}` needs tool {}", op.name(), op.tool()))?;
+            let path = build_path(self, found, op).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
+            // The tool starts where the step's first move goes, so nothing is swept before it.
+            let Some(start) = path.moves.iter().find_map(|m| m.target()) else { continue };
+            let report = stock.cut(tool, &path, start).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
+            operations.push(CamSimStep { name: op.name().to_string(), report });
+        }
+        let (positions, normals, indices) = stock.mesh(SIM_TRIANGLES);
+        let model = |v: &[f32; 3]| frame.model(Vec3::new(f64::from(v[0]), f64::from(v[1]), f64::from(v[2])));
+        let normal = |v: &[f32; 3]| frame.x * f64::from(v[0]) + frame.y * f64::from(v[1]) + frame.z * f64::from(v[2]);
+        Ok(CamSimulation {
+            removed: operations.iter().map(|o| o.report.removed).sum(),
+            cell,
+            operations,
+            positions: positions.iter().map(model).collect(),
+            normals: normals.iter().map(normal).collect(),
+            indices,
+        })
+    }
+}
+
+/// A setup's simulated stock (see [`Session::cam_simulate`]).
+pub struct CamSimulation {
+    /// Material removed by every step (mm³).
+    pub removed: f64,
+    /// The grid's cell size (mm).
+    pub cell: f64,
+    pub operations: Vec<CamSimStep>,
+    /// The stock left as triangles in model coordinates, one normal per position.
+    pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub indices: Vec<u32>,
+}
+
+/// What one step did to the stock.
+pub struct CamSimStep {
+    pub name: String,
+    pub report: solidcraft_cam::SimReport,
+}
+
+impl CamSimulation {
+    /// One line per step with a rapid through stock or material above the flutes.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for o in &self.operations {
+            if !o.report.rapid_hits.is_empty() {
+                out.push(format!("operation `{}`: {} rapid move(s) through stock", o.name, o.report.rapid_hits.len()));
+            }
+            if !o.report.too_deep.is_empty() {
+                out.push(format!("operation `{}`: {} move(s) cut above the tool's flute length", o.name, o.report.too_deep.len()));
+            }
+        }
+        out
+    }
+}
+
 /// Points along an arc move (a helix when Z changes), about every 5 degrees.
 fn arc_points(from: Vec3, to: Vec3, center: Vec2, ccw: bool) -> Vec<Vec3> {
     let sweep = solidcraft_cam::arc_sweep(from, to, center, ccw);
@@ -2661,6 +2766,48 @@ mod tests {
 
         let forced = run(&mut Session::new(s.doc.as_ref().clone()), "cam.post", json!({"setup": "Top", "verify": false}));
         assert!(forced["readback"]["within"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn simulation_removes_the_pocket_and_reports_rapids_through_stock() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "spindle_rpm": 8000, "feed": 600, "plunge_feed": 200}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "stock": {"min": [0, 0, -10], "max": [40, 30, 0]}}));
+        run(
+            &mut s,
+            "cam.op.pocket",
+            json!({"setup": "Top", "name": "Pocket", "tool": 1, "outer": [[5,5],[35,5],[35,25],[5,25]], "stepover": 2.5, "bottom": -3, "stepdown": 3}),
+        );
+        let sim = run(&mut s, "cam.simulate", json!({"setup": "Top", "cell": 0.25}));
+        // A 30 x 20 pocket 3 deep with rounded corners: a little under 1800 mm³.
+        let removed = sim["removed"].as_f64().unwrap();
+        assert!((1700.0..=1810.0).contains(&removed), "{removed}");
+        assert_eq!(sim["operations"][0]["name"], "Pocket");
+        assert_eq!(sim["warnings"].as_array().map(Vec::len), Some(0), "{sim}");
+        let mesh = s.cam_simulate("Top", None).unwrap();
+        assert!(!mesh.indices.is_empty() && mesh.positions.len() == mesh.normals.len());
+        assert!(mesh.indices.iter().all(|i| (*i as usize) < mesh.positions.len()));
+        // A clearance height inside the stock sends the rapids through it (on stock the first
+        // pocket has not cleared).
+        run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Pocket", "skip": true}));
+        run(
+            &mut s,
+            "cam.op.pocket",
+            json!({"setup": "Top", "name": "Low", "tool": 1, "outer": [[5,5],[35,5],[35,25],[5,25]], "stepover": 2.5, "bottom": -6, "stepdown": 3, "clearance": -1, "retract": -1, "top": -3}),
+        );
+        let sim = run(&mut s, "cam.simulate", json!({"setup": "Top"}));
+        assert!(
+            sim["warnings"].as_array().is_some_and(|w| w.iter().any(|w| w.as_str().is_some_and(|w| w.contains("`Low`") && w.contains("rapid")))),
+            "{sim}"
+        );
+        // Skipped steps cut nothing; a bad cell size or setup is refused.
+        run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Low", "skip": true}));
+        run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Pocket", "skip": false}));
+        let skipped = run(&mut s, "cam.simulate", json!({"setup": "Top", "cell": 0.25}));
+        assert_eq!(skipped["operations"].as_array().map(Vec::len), Some(1));
+        assert!(s.execute("cam.simulate", &json!({"setup": "Top", "cell": 0.0})).is_err());
+        assert!(s.execute("cam.simulate", &json!({"setup": "Top", "cell": -1})).is_err());
+        assert!(s.execute("cam.simulate", &json!({"setup": "Nope"})).is_err());
     }
 
     #[test]

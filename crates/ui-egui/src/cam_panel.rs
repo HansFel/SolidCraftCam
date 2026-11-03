@@ -674,6 +674,8 @@ pub(crate) struct GcodeView {
     pub(crate) travelled: Option<f64>,
     pub(crate) playing: bool,
     pub(crate) speed: usize,
+    /// The setup's stock after its steps, drawn in the view while set ([`draw_paths`]).
+    pub(crate) sim: Option<Result<solidcraft_engine::cmd::CamSimulation, String>>,
 }
 
 /// Playback speeds (mm of tool travel per second).
@@ -741,7 +743,16 @@ impl GcodeView {
             travelled: None,
             playing: false,
             speed: 2,
+            sim: None,
         }
+    }
+
+    /// Simulates the material removal of the setup's steps, or hides a shown simulation.
+    pub(crate) fn toggle_sim(&mut self, app: &SolveApp) {
+        self.sim = match self.sim {
+            Some(_) => None,
+            None => Some(app.session.cam_simulate(&self.setup, None)),
+        };
     }
 
     /// Where the tool is in the playback: its move and the point, in model coordinates.
@@ -1004,9 +1015,12 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
 fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     let t = Tokens::get();
     if view.key != design_key(app) {
-        let (selected, travelled, speed) = (view.selected, view.travelled, view.speed);
+        let (selected, travelled, speed, sim) = (view.selected, view.travelled, view.speed, view.sim.is_some());
         *view = GcodeView::new(app, &view.setup);
         (view.selected, view.speed) = (selected, speed);
+        if sim {
+            view.toggle_sim(app);
+        }
         view.travelled = travelled.zip(view.program.as_ref().ok()).map(|(t, p)| t.min(p.total()));
     }
     view.advance(f64::from(ui.ctx().input(|i| i.stable_dt)));
@@ -1032,6 +1046,13 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
             ui.ctx().copy_text(program.text.clone());
         }
     });
+    let mut simulate = false;
+    ui.horizontal_wrapped(|ui| {
+        simulate = ui_kit::button(ui, tr(if view.sim.is_some() { "ui.cam.sim_hide" } else { "ui.cam.simulate" }), ui_kit::Button::Normal).clicked();
+    });
+    if let Some(sim) = &view.sim {
+        sim_rows(ui, sim);
+    }
     let (mut play, mut rewind, mut speed) = (false, false, view.speed);
     let mut travelled = view.travelled.unwrap_or(0.0);
     let total = program.total();
@@ -1047,14 +1068,16 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     ui_kit::choice_row(ui, tr("ui.cam.play_speed"), "cam-play-speed", &mut speed, &refs);
     let travel = format!("{travelled:.0} / {total:.0} mm");
-    let slid = total > 0.0 && ui.add(egui::Slider::new(&mut travelled, 0.0..=total).show_value(false).text(travel)).changed();
+    let slid = total > 0.0
+        && ui_kit::row(ui, &travel, |ui| ui_kit::slider(ui, &mut travelled, 0.0..=total, ui_kit::Slider { show_value: false, ..Default::default() }))
+            .changed();
     let count = program.lines.len().to_string();
     ui.add(
         egui::Label::new(RichText::new(crate::i18n::format("ui.cam.gcode_lines", &[("lines", &count), ("post", &program.post)])).color(t.text_dim))
             .wrap(),
     );
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.gcode_hint")).color(t.text_dim)).wrap());
-    let row = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
+    let row = ui_kit::row_height() + ui.spacing().item_spacing.y;
     let digits = program.lines.len().max(1).to_string().len();
     let mut area =
         egui::ScrollArea::both().id_salt(format!("cam-gcode-{}", view.setup)).max_height(ui.available_height()).auto_shrink([false, false]);
@@ -1066,11 +1089,12 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     let mut clicked = None;
     area.show_rows(ui, row, program.lines.len(), |ui, range| {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
         for i in range {
             let number = i + 1;
             let Some(text) = program.lines.get(i) else { continue };
-            let label = RichText::new(format!("{number:>digits$}  {text}")).monospace();
-            if ui.selectable_label(view.selected == Some(number), label).clicked() {
+            let label = format!("{number:>digits$}  {text}");
+            if ui_kit::list_picker(ui, &format!("cam-gcode-{number}"), &label, view.selected == Some(number)).clicked() {
                 clicked = Some(number);
             }
         }
@@ -1097,6 +1121,39 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     if play {
         view.play();
     }
+    if simulate {
+        view.toggle_sim(app);
+    }
+}
+
+/// What the simulation found: the material removed, then a line per step with a rapid through
+/// stock or material above its flutes, and what the height field cannot see.
+fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulation, String>) {
+    let t = Tokens::get();
+    let sim = match sim {
+        Ok(sim) => sim,
+        Err(e) => {
+            ui_kit::text(ui, e, ui_kit::Text::Error("cam_sim"));
+            return;
+        }
+    };
+    let volume = format!("{:.1}", sim.removed / 1000.0);
+    let cell = format!("{:.2}", sim.cell);
+    ui.add(egui::Label::new(crate::i18n::format("ui.cam.sim_removed", &[("volume", &volume), ("cell", &cell)])).wrap());
+    let mut warned = false;
+    for step in &sim.operations {
+        for (key, count) in [("ui.cam.sim_rapid_hits", step.report.rapid_hits.len()), ("ui.cam.sim_too_deep", step.report.too_deep.len())] {
+            if count > 0 {
+                warned = true;
+                let text = crate::i18n::format(key, &[("step", &step.name), ("count", &count.to_string())]);
+                ui.add(egui::Label::new(RichText::new(text).color(t.warning)).wrap());
+            }
+        }
+    }
+    if !warned {
+        ui.add(egui::Label::new(tr("ui.cam.sim_ok")).wrap());
+    }
+    ui.add(egui::Label::new(RichText::new(tr("ui.cam.sim_hint")).color(t.text_dim)).wrap());
 }
 
 fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut Vec<Action>) {
@@ -1594,6 +1651,45 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// The simulated stock, translucent over the model: the faces turned to the eye, far ones first,
+/// lit from the eye so walls and floors read apart.
+fn draw_stock(
+    painter: &egui::Painter,
+    proj: &crate::viewport::Proj,
+    sim: &solidcraft_engine::cmd::CamSimulation,
+    colour: egui::Color32,
+    shadow: egui::Color32,
+) {
+    let back = proj.cam.back();
+    let eye = proj.cam.eye();
+    let perspective = proj.cam.fov > 0.0;
+    let mut faces: Vec<(f64, [egui::Pos2; 3], f32)> = Vec::new();
+    for tri in sim.indices.as_chunks::<3>().0 {
+        let [a, b, c] = tri.map(|i| i as usize);
+        let (Some(pa), Some(pb), Some(pc)) = (sim.positions.get(a), sim.positions.get(b), sim.positions.get(c)) else { continue };
+        let Some(n) = sim.normals.get(a) else { continue };
+        let to_eye = if perspective { (eye - *pa).normalized().unwrap_or(back) } else { back };
+        let facing = n.dot(to_eye);
+        if facing <= 0.0 {
+            continue;
+        }
+        let (Some(sa), Some(sb), Some(sc)) = (proj.to_screen(*pa), proj.to_screen(*pb), proj.to_screen(*pc)) else { continue };
+        let depth = (*pa + *pb + *pc).dot(back) / 3.0;
+        faces.push((depth, [sa, sb, sc], (0.45 + 0.55 * facing) as f32));
+    }
+    faces.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut mesh = egui::Mesh::default();
+    for (_, pts, light) in faces {
+        let fill = colour.lerp_to_gamma(shadow, 1.0 - light).gamma_multiply(0.8);
+        let base = mesh.vertices.len() as u32;
+        for p in pts {
+            mesh.colored_vertex(p, fill);
+        }
+        mesh.add_triangle(base, base + 1, base + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 /// How far up its axis the playback draws the tool (mm).
 const TOOL_MARK_LENGTH: f64 = 25.0;
 
@@ -1607,6 +1703,9 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
     }
     let Some((_, paths)) = &window.paths else { return };
     let t = Tokens::get();
+    if let Some(Some(Ok(sim))) = window.gcode.as_ref().map(|g| &g.sim) {
+        draw_stock(painter, proj, sim, t.body, t.body_edge);
+    }
     let selected = window.gcode.as_ref().and_then(GcodeView::selected_move);
     // Going through a setup's G-code shows that setup's toolpaths only.
     let only = window.gcode.as_ref().map(|g| g.setup.as_str());
