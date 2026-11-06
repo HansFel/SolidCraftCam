@@ -1,6 +1,7 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use solidcraft_geom::{Loop2, Region2, Seg2, Vec2, Vec3};
+use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::prelude::*;
 
 use super::*;
 use crate::lead::{lead_in, lead_out};

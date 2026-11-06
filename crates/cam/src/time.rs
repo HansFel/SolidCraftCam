@@ -7,7 +7,8 @@
 //! lowest speed and acceleration any of its moves allows, so the estimate errs long.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Vec2, Vec3};
+use solidcore_record::{Vec2, Vec3};
+use solidcraft_geom::prelude::*;
 
 use crate::gcode::Program;
 use crate::path::{MAX_MOVES, Move, arc_sweep};

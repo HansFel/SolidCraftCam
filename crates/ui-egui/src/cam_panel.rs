@@ -10,9 +10,10 @@
 use egui::RichText;
 use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
+use solidcore_record::Vec3;
 use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind, Units};
 use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
 use crate::i18n::tr;
@@ -1516,7 +1517,7 @@ fn posts_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     ui_kit::text_row(ui, tr("ui.cam.post_dwell"), &mut edit.dwell, "G4 P{seconds}");
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.post_hint")).color(t.text_dim)).wrap());
     for (key, block) in POST_BLOCKS.iter().zip(edit.blocks.iter_mut()) {
-        ui_kit::multiline_text_field(ui, tr(key), egui::Id::new(("cam-post-block", *key)), block);
+        ui_kit::multiline_text_field(ui, tr(key), egui::Id::unique(("cam-post-block", *key)), block);
     }
     if ui_kit::button(ui, tr("ui.cam.save_post"), ui_kit::Button::Primary).clicked() {
         match edit.post().and_then(|post| list.name_free(&post.name, original.as_deref()).map(|()| post)) {
@@ -1543,7 +1544,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         let t = Tokens::get();
         let title = crate::i18n::format("ui.cam.gcode_title", &[("setup", &view.setup)]);
         let corner = ctx.content_rect().right_bottom() - egui::vec2(t.space_24, t.space_24);
-        let closed = ui_kit::Window::new(egui::Id::new("sc_cam_gcode"), "cut", &title)
+        let closed = ui_kit::Window::new(egui::Id::unique("sc_cam_gcode"), "cut", &title)
             .cards(1.6)
             .resizable(t.form_card_width * 1.4)
             .placed(egui::Align2::RIGHT_BOTTOM, corner)
@@ -1556,7 +1557,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let mut actions = Vec::new();
     let height = Tokens::get().form_card_width * 2.0;
-    let closed = ui_kit::Window::new(egui::Id::new("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).resizable(height).show_body(ctx, |ui| {
+    let closed = ui_kit::Window::new(egui::Id::unique("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).resizable(height).show_body(ctx, |ui| {
         let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts")];
         ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
         ui.separator();

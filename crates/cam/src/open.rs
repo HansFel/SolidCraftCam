@@ -2,7 +2,8 @@
 //! chain, the chain extended past its ends; leads then bring it on and take it off.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Seg2, Vec2};
+use solidcore_record::{Seg2, Vec2};
+use solidcraft_geom::prelude::*;
 
 use crate::offset::MAX_PIECES;
 use crate::ops::MAX_COORD;

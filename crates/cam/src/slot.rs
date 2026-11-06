@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};
+use solidcraft_geom::prelude::*;
 
 use crate::open::{OpenPath, check_self, offset_pieces};
 use crate::ops::{Builder, Cut, mills};

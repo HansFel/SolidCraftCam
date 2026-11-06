@@ -177,7 +177,7 @@ impl CamSetupForm {
             let r = |i: usize| self.corner.get(i).and_then(|c| BOX_REFS.get(*c)).copied().unwrap_or("center");
             p["box_point"] = json!({"x": r(0), "y": r(1), "z": r(2)});
         }
-        let at = |v: solidcraft_engine::geom::Vec3| json!([v.x, v.y, v.z]);
+        let at = |v: solidcore_record::Vec3| json!([v.x, v.y, v.z]);
         if self.zero == 0 {
             match crate::selection::items(inputs, 0).first() {
                 Some(Sel::Vertex { point, .. }) => p["work_origin"] = at(*point),

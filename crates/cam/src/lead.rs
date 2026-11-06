@@ -5,7 +5,8 @@
 use std::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec2;
+use solidcore_record::Vec2;
+use solidcraft_geom::prelude::*;
 
 use crate::piece::Piece;
 use crate::{Result, invalid};

@@ -5,9 +5,10 @@ use crate::viewport::Proj;
 use crate::{SolveApp, theme::Tokens, ui_kit};
 use egui::{Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
+use solidcore_record::Vec3;
 use solidcraft_engine::Sel;
 use solidcraft_engine::cam::{MATERIALS, Tool, ToolKind};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::prelude::*;
 use std::sync::{Arc, Mutex, mpsc};
 
 #[derive(Clone, Debug)]
@@ -674,13 +675,13 @@ fn geometry(app: &SolveApp, inputs: &[SelInput], drill: bool) -> Value {
         }
         return out;
     }
-    let state = app.session.world_state();
+    let state = app.session.world_state().ok();
     let faces: Vec<Value> = picks
         .iter()
         .filter_map(|pick| {
             let Sel::Face { body, index, point } = pick else { return None };
             // A face the model gives no name is found again by the picked point.
-            let name = solidcraft_engine::doc::naming::face_names(state.body(body)?).get(*index).cloned().unwrap_or_default();
+            let name = solidcraft_engine::doc::naming::face_names(state.as_ref()?.body(body)?).get(*index).cloned().unwrap_or_default();
             Some(json!({"body": body, "name": name, "at": [point.x, point.y, point.z]}))
         })
         .collect();
@@ -992,7 +993,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     }
     if form.kind == 2 && !picked {
         ui.add(egui::Label::new(tr("ui.cam.holes_hint")).wrap());
-        ui_kit::text_area(ui, tr("ui.cam.holes_hint"), egui::Id::new("cam-holes"), &mut form.holes, 3, 100_000);
+        ui_kit::text_area(ui, tr("ui.cam.holes_hint"), egui::Id::unique("cam-holes"), &mut form.holes, 3, 100_000);
     }
     ui_kit::text_row(ui, tr("ui.cam.output"), &mut form.output, tr("ui.cam.output_hint"));
     let params = form.params();

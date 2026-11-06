@@ -4,6 +4,7 @@
 //! expressions evaluated when posting.
 
 use serde_json::{Value, json};
+use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
     CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, Move, OpenContourParams, OpenPath, OpenSide,
     Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_open, contour_with_tabs,
@@ -17,7 +18,7 @@ use solidcraft_doc::cam::{
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
 use solidcraft_doc::{Expr, FeatureKind, select_profiles};
-use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::prelude::*;
 use solidcraft_sketch::{LinkGeom, LinkKind};
 
 use super::CommandSpec;
@@ -1962,7 +1963,7 @@ fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Res
         .filter(|(c, r)| {
             let inset = (r * 0.1).min(0.2);
             let probe = plane.to_world(*c + Vec2::new(r - inset, 0.0)) + plane.normal() * 0.1;
-            !body.body.contains(probe)
+            !matches!(body.body.classify_point(probe), Ok(solidcraft_kernel::PointClass::Inside))
         })
         .map(|(c, _)| plane.to_world(c))
         .collect();
@@ -2286,7 +2287,7 @@ fn filled_above(body: &solidcraft_kernel::Body, plane: &Plane, lp: &Loop2) -> bo
         .into_iter()
         .map(|side| mid + side * inset)
         .find(|p| lp.contains(*p))
-        .is_some_and(|p| body.contains(plane.to_world(p) + plane.normal() * 0.1))
+        .is_some_and(|p| matches!(body.classify_point(plane.to_world(p) + plane.normal() * 0.1), Ok(solidcraft_kernel::PointClass::Inside)))
 }
 
 /// The regions to machine in work XY, and the openings: holes of a face picked as single

@@ -5,7 +5,8 @@
 //! knows nothing about undercuts or a tool's side.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Vec2, Vec3};
+use solidcore_record::{Vec2, Vec3};
+use solidcraft_geom::prelude::*;
 
 use crate::path::{Move, Toolpath, arc_sweep};
 use crate::tool::{Tool, ToolKind};
