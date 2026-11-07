@@ -1,0 +1,121 @@
+# CAM fork only: builds the desktop app for Linux and the web app on every push to
+# cam-linuxcnc, and publishes them as the rolling pre-release `cam-latest`, so a machine runs
+# SolidCraft CAM by downloading it (scripts/cam-update.sh) instead of compiling for an hour.
+#
+#   solidcraft-cam-linux-x86_64.tar.gz   the desktop app (bin/, share/), no install needed
+#   solidcraft-cam-linux-x86_64.rpm      the same as a package for Fedora/openSUSE
+#   solidcraft-cam-web.tar.gz            the static web site (dist/web) for packaging/docker
+#
+# Thin LTO is off: the build takes about half as long and the app is as fast in practice.
+name: CAM build
+
+on:
+  push:
+    branches: [cam-linuxcnc]
+    paths: ["**", "!docs/**", "!**/*.md", "ATTRIBUTION.md", "!tests/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: cam-build
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    name: Linux x86_64
+    if: github.repository == 'HansFel/SolidCraftCam'
+    # The oldest GitHub-hosted image, so the binaries need only glibc >= 2.35.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      NFPM_VERSION: 2.47.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cam-linux
+      - name: Build and package (rpm, tar.gz)
+        run: packaging/linux/package.sh --formats "rpm tar"
+      - name: Name the files
+        run: |
+          mkdir -p out
+          cp dist/release/*.tar.gz out/solidcraft-cam-linux-x86_64.tar.gz
+          cp dist/release/*.rpm out/solidcraft-cam-linux-x86_64.rpm
+          tar -tzf out/solidcraft-cam-linux-x86_64.tar.gz | grep -E '/bin/solidcraft$'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cam-linux
+          path: out/*
+          if-no-files-found: error
+
+  web:
+    name: Web
+    if: github.repository == 'HansFel/SolidCraftCam'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TRUNK_VERSION: v0.21.14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cam-web
+      - name: Install trunk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the web app
+        working-directory: apps/solidcraft-web
+        env:
+          SOLIDCRAFT_GIT_COMMIT: ${{ github.sha }}
+        run: trunk build --release
+      - name: Pack the site
+        run: |
+          mkdir -p out
+          tar -czf out/solidcraft-cam-web.tar.gz -C dist/web .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cam-web
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish cam-latest
+    needs: [linux, web]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: out
+          merge-multiple: true
+      - name: Replace the cam-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          short="${GITHUB_SHA::9}"
+          printf '%s\n' "$short" > out/COMMIT
+          gh release delete cam-latest --yes --cleanup-tag || true
+          gh release create cam-latest out/* --prerelease --target "$GITHUB_SHA" \
+            --title "SolidCraft CAM $short" \
+            --notes "Built from cam-linuxcnc at $GITHUB_SHA. Install or update with scripts/cam-update.sh."
