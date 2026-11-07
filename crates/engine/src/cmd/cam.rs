@@ -19,6 +19,7 @@ use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
 use solidcraft_doc::{Expr, FeatureKind, select_profiles};
 use solidcraft_geom::prelude::*;
+use solidcraft_kernel::PathSeg;
 use solidcraft_sketch::{LinkGeom, LinkKind};
 
 use super::CommandSpec;
@@ -1587,24 +1588,15 @@ fn edge_chain(s: &Session, frame: &WorkFrame, picks: &[(&str, Vec3)]) -> std::re
     let mut open: Vec<Seg2> = Vec::new();
     for &(body_name, at) in picks {
         let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
-        let mesh = body.mesh();
-        let index = nearest_edge(&mesh.edges, at).ok_or_else(|| format!("no edge of `{body_name}` at the picked point"))?;
+        let index = exact_edge_at(&body.body, body_name, at)?;
         // A round rim split into pieces is taken whole, as the viewport shows it picked; an
         // edge picked twice counts once.
-        for index in mesh.circular_rim(index) {
+        for index in exact_rim(&body.body, index) {
             if taken.contains(&(body_name, index)) {
                 continue;
             }
             taken.push((body_name, index));
-            let pts = mesh.edges.get(index).ok_or("the picked edge is gone")?;
-            if pts.len() > 20_000 || open.len() > 20_000 {
-                return Err("the picked edges have too many points".into());
-            }
-            let tol = (body.body.size() * 1e-6).max(1e-6) * 10.0;
-            let circle = solidcraft_kernel::edge_circle(&body.body, index).filter(|c| {
-                let ends = [pts.first(), pts.last()].into_iter().flatten().all(|p| p.dist(c.start).min(p.dist(c.end)) <= tol);
-                ends && pts.iter().all(|p| (p.dist(c.center) - c.radius).abs() <= tol) && c.axis.dot(frame.z).abs() > 1.0 - 1e-9
-            });
+            let circle = solidcraft_kernel::edge_circle(&body.body, index).filter(|c| c.axis.dot(frame.z).abs() > 1.0 - 1e-9);
             match circle {
                 Some(c) if c.angle >= std::f64::consts::TAU - 1e-9 => loops.push(Loop2::circle(flat(c.center), c.radius)),
                 Some(c) => {
@@ -1613,14 +1605,32 @@ fn edge_chain(s: &Session, frame: &WorkFrame, picks: &[(&str, Vec3)]) -> std::re
                     open.push(Seg2::Arc { center, radius: c.radius, start: (a - center).angle(), sweep });
                 }
                 None => {
-                    let mut prev: Option<Vec2> = None;
-                    for p in pts.iter().map(|p| flat(*p)) {
-                        match prev {
-                            Some(a) if a.dist(p) <= 1e-9 => continue,
-                            Some(a) => open.push(Seg2::Line { a, b: p }),
-                            None => {}
+                    for seg in exact_edge(&body.body, index)? {
+                        if open.len() > 20_000 {
+                            return Err("the picked edges have too many pieces".into());
                         }
-                        prev = Some(p);
+                        match seg {
+                            // An arc square to the tool axis stays an arc seen along it.
+                            PathSeg::Arc { a, center, axis, angle } if axis.normalized().is_some_and(|n| n.dot(frame.z).abs() > 1.0 - 1e-9) => {
+                                let (c, a2) = (flat(center), flat(a));
+                                let sweep = if axis.dot(frame.z) > 0.0 { angle } else { -angle };
+                                let radius = a2.dist(c);
+                                if radius > 1e-9 && sweep.abs() > 1e-12 {
+                                    open.push(Seg2::Arc { center: c, radius, start: (a2 - c).angle(), sweep });
+                                }
+                            }
+                            other => {
+                                let pts = seg_points(&other);
+                                for w in pts.windows(2) {
+                                    if let [p, q] = w {
+                                        let (a, b) = (flat(*p), flat(*q));
+                                        if a.dist(b) > 1e-9 {
+                                            open.push(Seg2::Line { a, b });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1664,17 +1674,69 @@ fn open_end_note(frame: &WorkFrame, chains: &[Vec<Seg2>]) -> String {
     }
 }
 
-/// The tessellated edge nearest `at`, if one passes within [`ON_CONTOUR`].
-fn nearest_edge(edges: &[Vec<Vec3>], at: Vec3) -> Option<usize> {
-    let near = |pts: &[Vec3]| {
-        pts.windows(2)
-            .filter_map(|w| match w {
-                [a, b] => Some(seg3_dist(*a, *b, at)),
-                _ => None,
-            })
-            .fold(f64::INFINITY, f64::min)
-    };
-    edges.iter().enumerate().map(|(i, pts)| (i, near(pts))).filter(|(_, d)| *d <= ON_CONTOUR).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+/// The edge of `body` nearest `at` by the distance to its exact curve, if one passes within
+/// [`ON_CONTOUR`]. A mesh body has no exact edges to machine along.
+fn exact_edge_at(body: &solidcraft_kernel::Body, body_name: &str, at: Vec3) -> std::result::Result<usize, String> {
+    if body.is_mesh() {
+        return Err(format!("`{body_name}` is a mesh body: pick edges of a solid"));
+    }
+    match solidcraft_kernel::comb_edge_near(body, at).map_err(|e| e.to_string())? {
+        Some((d, index)) if d <= ON_CONTOUR => Ok(index),
+        _ => Err(format!("no edge of `{body_name}` at the picked point")),
+    }
+}
+
+/// Edge `index` of `body` exactly, from its start vertex to its end, as lines and arcs (a
+/// free-form curve as the lines of its polyline within 0.01 mm).
+fn exact_edge(body: &solidcraft_kernel::Body, index: usize) -> std::result::Result<Vec<PathSeg>, String> {
+    let segs = solidcraft_kernel::edge_path(body, index).map_err(|e| format!("edge {index} cannot be read exactly: {e}"))?;
+    let segs = PathSeg::flattened(&segs);
+    if segs.is_empty() {
+        return Err(format!("edge {index} has no length"));
+    }
+    if segs.len() > 20_000 {
+        return Err(format!("edge {index} has too many pieces"));
+    }
+    Ok(segs)
+}
+
+/// Points along a segment: a line's ends, an arc's every quarter of its way, so that the
+/// points of a planar piece fix its plane.
+fn seg_points(seg: &PathSeg) -> Vec<Vec3> {
+    match seg {
+        PathSeg::Line { a, b } => vec![*a, *b],
+        other => [0.0, 0.25, 0.5, 0.75, 1.0].into_iter().filter_map(|f| other.along(f).map(|(p, _)| p)).collect(),
+    }
+}
+
+/// The pieces of the whole round rim edge `index` of `body` is part of: the arcs on its circle
+/// that join end to end into a full turn (a kernel may split a rim into halves). Just `index`
+/// for an open arc or any other edge.
+fn exact_rim(body: &solidcraft_kernel::Body, index: usize) -> Vec<usize> {
+    let single = vec![index];
+    let Some(c) = solidcraft_kernel::edge_circle(body, index) else { return single };
+    if c.angle >= std::f64::consts::TAU - 1e-9 {
+        return single;
+    }
+    let tol = (body.size() * 1e-6).max(1e-6) * 10.0;
+    let mut rim = vec![(index, c)];
+    for i in (0..body.edge_count().min(100_000)).filter(|i| *i != index) {
+        if let Some(o) = solidcraft_kernel::edge_circle(body, i)
+            && o.center.dist(c.center) <= tol
+            && (o.radius - c.radius).abs() <= tol
+            && o.axis.dot(c.axis).abs() > 1.0 - 1e-9
+        {
+            rim.push((i, o));
+        }
+    }
+    let turn: f64 = rim.iter().map(|(_, o)| o.angle).sum();
+    // Every end joins exactly one other piece's end, and the pieces make one full turn.
+    let joined = rim.iter().all(|(i, o)| {
+        [o.start, o.end]
+            .iter()
+            .all(|p| rim.iter().filter(|(j, _)| j != i).flat_map(|(_, q)| [q.start, q.end]).filter(|q| q.dist(*p) <= tol).count() == 1)
+    });
+    if rim.len() >= 2 && joined && (turn - std::f64::consts::TAU).abs() <= 1e-6 { rim.into_iter().map(|(i, _)| i).collect() } else { single }
 }
 
 /// The normal of the plane through `pts`. Points on one straight line give the tool axis when
@@ -1708,44 +1770,51 @@ fn plane_normal(pts: &[Vec3], axis: Vec3, tol: f64) -> std::result::Result<Vec3,
 fn find_chain(s: &Session, frame: &WorkFrame, body_name: &str, ats: &[Vec3]) -> std::result::Result<(Vec<(usize, Vec3)>, bool), String> {
     let state = s.model.state();
     let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
-    let mesh = body.mesh();
-    let edges = &mesh.edges;
-    if edges.len() > 100_000 {
+    let count = body.body.edge_count();
+    if count > 100_000 {
         return Err("the body has too many edges".into());
     }
     let tol = (body.body.size() * 1e-5).max(1e-5);
     let mut picked: Vec<usize> = Vec::new();
     for at in ats {
-        let index = nearest_edge(edges, *at).ok_or_else(|| format!("no edge of `{body_name}` at the picked point"))?;
-        for i in mesh.circular_rim(index) {
+        let index = exact_edge_at(&body.body, body_name, *at)?;
+        for i in exact_rim(&body.body, index) {
             if !picked.contains(&i) {
                 picked.push(i);
             }
         }
     }
-    let pts: Vec<Vec3> = picked.iter().filter_map(|i| edges.get(*i)).flatten().copied().collect();
+    // Each edge exactly: its ends, the directions it leaves its start and reaches its end, and
+    // points along it; `None` for an edge that cannot be read exactly (never part of a chain).
+    let geo: Vec<Option<ChainEdge>> = (0..count).map(|i| exact_edge(&body.body, i).ok().and_then(|segs| ChainEdge::of(&segs))).collect();
+    let edge = |i: usize| geo.get(i).and_then(Option::as_ref);
+    let mut pts: Vec<Vec3> = Vec::new();
+    for i in &picked {
+        pts.extend_from_slice(&edge(*i).ok_or_else(|| format!("edge {i} of `{body_name}` cannot be read exactly"))?.points);
+    }
     let normal = plane_normal(&pts, frame.z, tol)?;
     let origin = *pts.first().ok_or("the picked edges have no points")?;
-    let ends = |i: usize| edges.get(i).and_then(|e| Some((*e.first()?, *e.last()?, e.get(1).copied()?, e.get(e.len().checked_sub(2)?).copied()?)));
-    let in_plane = |i: usize| edges.get(i).is_some_and(|e| e.len() >= 2 && e.iter().all(|p| (*p - origin).dot(normal).abs() <= tol));
+    let in_plane = |i: usize| edge(i).is_some_and(|e| e.points.iter().all(|p| (*p - origin).dot(normal).abs() <= tol));
     let seed = *picked.first().ok_or("no edge picked")?;
-    let (start, end, after_start, before_end) = ends(seed).ok_or("the picked edge is gone")?;
+    let ChainEdge { start, end, leaves, reaches, .. } = edge(seed).cloned().ok_or("the picked edge is gone")?;
     let mut taken = vec![seed];
     // Walks on from `at` (heading `dir`) until `goal`; the edges in walking order.
     let grow = |taken: &mut Vec<usize>, mut at: Vec3, mut dir: Vec3, goal: Vec3| -> (Vec<usize>, bool) {
         let mut out = Vec::new();
-        for _ in 0..edges.len() {
+        for _ in 0..count {
             if at.dist(goal) <= tol {
                 return (out, true);
             }
-            let next = (0..edges.len())
+            let next = (0..count)
                 .filter(|i| !taken.contains(i) && in_plane(*i))
                 .filter_map(|i| {
-                    let (a, b, a1, b1) = ends(i)?;
-                    let (far, out, back) = if a.dist(at) <= tol {
-                        (b, a1 - a, b - b1)
-                    } else if b.dist(at) <= tol {
-                        (a, b1 - b, a - a1)
+                    let e = edge(i)?;
+                    // Walked from its start it leaves along `leaves` and arrives heading
+                    // `reaches`; walked from its end, the other way round.
+                    let (far, out, back) = if e.start.dist(at) <= tol {
+                        (e.end, e.leaves, e.reaches)
+                    } else if e.end.dist(at) <= tol {
+                        (e.start, -e.reaches, -e.leaves)
                     } else {
                         return None;
                     };
@@ -1762,30 +1831,41 @@ fn find_chain(s: &Session, frame: &WorkFrame, body_name: &str, ats: &[Vec3]) -> 
         (out, false)
     };
     // Forward from the seed's end, then (if that does not come round) back from its start.
-    let (forward, mut closed) = if start.dist(end) <= tol { (Vec::new(), true) } else { grow(&mut taken, end, end - before_end, start) };
+    let (forward, mut closed) = if start.dist(end) <= tol { (Vec::new(), true) } else { grow(&mut taken, end, reaches, start) };
     let mut chain = vec![seed];
     chain.extend(forward);
     if !closed {
-        let (backward, _) = grow(&mut taken, start, start - after_start, end);
+        let (backward, _) = grow(&mut taken, start, -leaves, end);
         chain = backward.into_iter().rev().chain(chain).collect();
         closed = false;
     }
-    let mid = |i: usize| {
-        let e = edges.get(i)?;
-        let length: f64 = e.windows(2).map(|w| if let [a, b] = w { a.dist(*b) } else { 0.0 }).sum();
-        let mut left = length / 2.0;
-        for w in e.windows(2) {
-            if let [a, b] = w {
-                let l = a.dist(*b);
-                if l >= left && l > 0.0 {
-                    return Some(*a + (*b - *a) * (left / l));
-                }
-                left -= l;
-            }
-        }
-        e.first().copied()
-    };
-    Ok((chain.into_iter().filter_map(|i| Some((i, mid(i)?))).collect(), closed))
+    Ok((chain.into_iter().filter_map(|i| Some((i, edge(i)?.mid))).collect(), closed))
+}
+
+/// An edge as [`find_chain`] walks it, from its exact curve.
+#[derive(Clone)]
+struct ChainEdge {
+    start: Vec3,
+    end: Vec3,
+    /// The direction it leaves its start in.
+    leaves: Vec3,
+    /// The direction it reaches its end in.
+    reaches: Vec3,
+    /// The point halfway along it.
+    mid: Vec3,
+    /// Points along it, enough to tell whether it lies in a plane.
+    points: Vec<Vec3>,
+}
+
+impl ChainEdge {
+    fn of(segs: &[PathSeg]) -> Option<ChainEdge> {
+        let (first, last) = (segs.first()?, segs.last()?);
+        let (leaves, _) = first.tangents()?;
+        let (_, reaches) = last.tangents()?;
+        let (mid, _) = solidcraft_kernel::along_path(segs, 0.5).ok()?;
+        let points: Vec<Vec3> = segs.iter().flat_map(seg_points).collect();
+        Some(ChainEdge { start: first.start(), end: last.end(), leaves, reaches, mid, points })
+    }
 }
 
 /// `cam.edges.chain`: a suggested chain through picked edges, for the form to show as picked.
@@ -1815,13 +1895,6 @@ fn chain_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Most edges a chain suggestion starts from.
 const MAX_REGIONS_PICKED: usize = 256;
-
-/// The distance from `p` to the segment `a`-`b`.
-fn seg3_dist(a: Vec3, b: Vec3, p: Vec3) -> f64 {
-    let d = b - a;
-    let t = if d.len2() > 0.0 { ((p - a).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-    (a + d * t).dist(p)
-}
 
 /// A pick on the model: `{body, at}` with `at` a model point.
 fn pick_param(cmd: &str, v: &Value, key: &str) -> Result<(String, Vec3)> {
