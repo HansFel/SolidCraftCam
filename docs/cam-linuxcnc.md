@@ -166,6 +166,38 @@ slot adds side passes, at most **Stepover** apart, until the walls are reached, 
 **Wall stock to leave** on both walls. Depth passes follow **Stepdown**; a ramp angle above
 0 (programmatic) ramps back and forth along an open path instead of plunging.
 
+## Chamfers and engraving
+
+**Chamfer** runs a chamfer or engraving cutter along picked edges (a closed chain all round,
+an open one along its side) or round the contours of a face or sketch. Give the **Chamfer
+width** on the face and how far the **Tip** runs below the chamfer (0.5 mm by default, so the
+flat tip never rubs the wall); the depth follows from the cutter's tip angle, one pass at the
+start depth, which is the edge's height. A pointed cutter needs a tip offset above 0, and a
+chamfer wider than the cone is refused.
+
+**Engraving** runs the cutter's tip on picked edges, sketch curves or sketch text, as deep as
+the final depth, in depth passes of **Stepdown**.
+
+## Holes milled round their axis
+
+**Helical bore** mills a hole wider than the tool (and at most twice as wide, so no core is
+left standing) by going down a helix, **Stepdown** a turn, then one full turn round the
+bottom, and out through the middle. **Thread** mills a thread with a thread mill: down the
+middle of the drilled core hole (or beside a stud for an outside thread), out onto the
+thread, and up one **pitch** a turn to above the top, counter-clockwise for a right-hand
+thread. **Tapping** with a tap from the library feeds one pitch a turn and is always written
+as the post's rigid tapping cycle (`G84`, Fanuc's `M29` and `G84`, LinuxCNC's `G33.1`,
+Sinumerik's `G331`/`G332`); a post without one (GRBL, Heidenhain for now) refuses the program
+rather than writing a tap as plain moves.
+
+## Fixtures and part zero
+
+A setup's **Fixtures** are the bodies that hold the part (vice jaws, clamps). They never count
+as part of the model's box, so the stock and a box-point part zero ignore them, and posting
+refuses a step whose tool or holder comes within 0.5 mm of a fixture's box. **Part zero follows
+later model changes** works a box-point part zero out again from the model as it is each time,
+instead of keeping where it was when the setup was saved.
+
 ## Drilling at picked bores
 
 For **Drill**, pick round edges (each gives its centre), a flat face (every round hole in
@@ -195,8 +227,10 @@ Clicking a row draws that line's move on the model, thick for a cut and thinner 
 with a ring where it ends; **◀ Previous move** and **Next move ▶** step through the motion
 lines. The program is posted again whenever the design changes, so it always shows what an
 export would write. **Copy** puts the whole program on the clipboard. The panel can be sized
-too; closing it brings the CAM window back. It is read-only: edit the steps, not the code, so
-every program stays checked against its toolpaths.
+too; closing it brings the CAM window back. **Search** finds the next line holding a text.
+**Edit** turns the list into the program as text; **Export edited program…** writes that text
+as it is. Edited text is neither posted again nor read back and checked, which the panel says
+in red: check such a program in the control's own simulation before running it.
 
 **Play** runs the tool along the program as it is written: the way it has come is drawn over
 the toolpaths, the tool is shown as a line up its axis with a ring at its tip, and the row it
@@ -422,6 +456,11 @@ machine or setup names. Machining order and skipped steps:
 
 `cam.op.move` gives an operation a new place in the order (from 0) and `cam.op.skip`
 leaves it out of posting or puts it back; both return the order and the skipped steps.
+`cam.op.duplicate` (`{"setup", "name", "new_name"?, "to_setup"?}`) copies a step right after
+itself, or to the end of another setup, the name numbered on when taken; `cam.op.rename` gives
+a step a new name, also in the skipped list. `cam.op.chamfer`, `cam.op.engrave`,
+`cam.op.helix`, `cam.op.thread` and `cam.op.tap` make the steps above; `cam.export` takes
+`text` to write a hand-edited program as it is (`checked: false` in its answer).
 `cam.tool.speeds` (`{"tool": 1, "material": "aluminium"}`, or `setup` for that setup's
 material and highest spindle speed) returns the spindle speed, feeds, stepdown and
 stepover the cutting data give, without changing the design.

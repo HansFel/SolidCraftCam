@@ -18,7 +18,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("Same inputs as cam.job.create; computes in an isolated document without changing the design."),
     CommandSpec::new("cam.export", "Export LinuxCNC G-code", crate::checked!("cam.export", export))
         .icon("export").noundo().contract(&EXPORT).output(crate::schema::output_schema_for::<ExportResult>)
-        .params("setup; path; overwrite?: false. Posts the complete setup using LinuxCNC, verifies the read-back, then writes atomically."),
+        .params("setup; path; overwrite?: false; text?: the program as edited by hand, written as it is (at most 64 MB), neither posted nor read back → {path, bytes, checked}. Without text: posts the complete setup with its post, verifies the read-back, then writes atomically."),
 ];
 
 fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
@@ -49,9 +49,18 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         return Err(bad(cmd, "width, height and cutting depth must be positive"));
     }
     let mut work = s.scratch();
+    // The design's own tool of that number keeps its kind (a tap, a chamfer cutter, ...) and the
+    // sizes that go with it, as long as it cuts the way the job does; otherwise a plain drill
+    // or end mill of the typed size.
+    let at_points = matches!(a.kind, JobKind::Drill | JobKind::Tap);
+    let kind = match work.doc.cam.tool(a.tool) {
+        Some(t) if t.kind.cuts_down() == at_points => t.kind.key(),
+        _ if at_points => "drill",
+        _ => "flat_endmill",
+    };
     cam::tool_cmd(
         &mut work,
-        &json!({"number": a.tool, "kind": if matches!(a.kind, JobKind::Drill) { "drill" } else { "flat_endmill" }, "diameter": a.diameter, "flute_length": a.flute_length, "spindle_rpm": a.spindle_rpm}),
+        &json!({"number": a.tool, "kind": kind, "diameter": a.diameter, "flute_length": a.flute_length, "spindle_rpm": a.spindle_rpm}),
     )?;
     let mut setup = json!({"name": a.setup, "work_offset": a.work_offset});
     if let Some(material) = &a.material {
@@ -63,7 +72,8 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         "top": a.top, "bottom": a.bottom, "clearance": a.clearance, "retract": a.retract,
         "stepdown": a.stepdown, "stepover": a.stepover, "feed": a.feed,
         "plunge_feed": a.plunge_feed, "spindle_rpm": a.spindle_rpm, "coolant": a.coolant});
-    if picked && !matches!(a.kind, JobKind::Drill | JobKind::Face) {
+    let holes_job = matches!(a.kind, JobKind::Drill | JobKind::Helix | JobKind::Thread | JobKind::Tap);
+    if picked && !holes_job && !matches!(a.kind, JobKind::Face) {
         let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
         map.remove("outer");
         for (key, value) in [("sketch", &a.sketch), ("profiles", &a.profiles), ("faces", &a.faces), ("edges", &a.edges), ("geometry", &a.geometry)] {
@@ -95,7 +105,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     if let (Some(start), JobKind::Contour) = (a.start, &a.kind) {
         op["start"] = json!(start);
     }
-    if !matches!(a.kind, JobKind::Drill | JobKind::Face) {
+    if matches!(a.kind, JobKind::Contour | JobKind::Pocket | JobKind::Slot) {
         if let (Some(side), JobKind::Contour) = (&a.side, &a.kind) {
             op["side"] = json!(side);
         }
@@ -152,7 +162,27 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             }
             cam::face_cmd(&mut work, &op)?;
         }
-        JobKind::Drill => {
+        JobKind::Chamfer | JobKind::Engrave => {
+            let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
+            map.remove("stepover");
+            if matches!(a.kind, JobKind::Chamfer) {
+                // Its depth follows from its width; the stored bottom is the edge's height.
+                map.remove("bottom");
+                map.remove("stepdown");
+                let width = a.chamfer_width.filter(|w| w.is_finite() && *w > 0.0).ok_or_else(|| bad(cmd, "a chamfer needs its `chamfer_width` above 0"))?;
+                map.insert("width".into(), json!(width));
+                if let Some(v) = a.tip_offset {
+                    map.insert("tip_offset".into(), json!(v));
+                }
+                if let Some(side) = &a.side {
+                    map.insert("side".into(), json!(side));
+                }
+                cam::chamfer_cmd(&mut work, &op)?;
+            } else {
+                cam::engrave_cmd(&mut work, &op)?;
+            }
+        }
+        JobKind::Drill | JobKind::Helix | JobKind::Thread | JobKind::Tap => {
             let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
             map.remove("outer");
             map.remove("stepover");
@@ -181,8 +211,35 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             } else {
                 map.insert("holes".into(), json!(holes));
             }
-            map.insert("dwell".into(), json!(a.dwell));
-            cam::drill_cmd(&mut work, &op)?;
+            match a.kind {
+                JobKind::Helix | JobKind::Thread => {
+                    let diameter = a.hole_diameter.filter(|d| d.is_finite() && *d > 0.0).ok_or_else(|| bad(cmd, "give the `hole_diameter`"))?;
+                    map.insert("diameter".into(), json!(diameter));
+                    if matches!(a.kind, JobKind::Thread) {
+                        map.remove("stepdown");
+                        for (key, value) in [("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v))), ("left_hand", a.left_hand.map(|v| json!(v)))] {
+                            if let Some(value) = value {
+                                map.insert(key.into(), value);
+                            }
+                        }
+                        cam::thread_cmd(&mut work, &op)?;
+                    } else {
+                        if let Some(climb) = a.climb {
+                            map.insert("climb".into(), json!(climb));
+                        }
+                        cam::helix_cmd(&mut work, &op)?;
+                    }
+                }
+                JobKind::Tap => {
+                    map.remove("stepdown");
+                    map.remove("feed");
+                    cam::tap_cmd(&mut work, &op)?;
+                }
+                _ => {
+                    map.insert("dwell".into(), json!(a.dwell));
+                    cam::drill_cmd(&mut work, &op)?;
+                }
+            }
         }
     }
     let setup = work.doc.cam.setup(&a.setup).ok_or_else(|| bad(cmd, "missing setup"))?;
@@ -229,14 +286,29 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "path is required"));
     }
     solidcraft_io::vfs::check(&a.path).map_err(|e| EngineError::Other(e.to_string()))?;
-    let post = s.doc.cam.setup(&a.setup).and_then(|setup| cam::chosen_post(&s.doc.cam, setup)).unwrap_or_else(|| "linuxcnc".into());
-    let result = cam::post_cmd(s, &json!({"setup": a.setup, "post": post}))?;
-    let text = result.get("gcode").and_then(Value::as_str).ok_or_else(|| bad(cmd, "post returned no G-code"))?;
+    // Hand-edited text goes out as it is; the user has been told it is not checked.
+    let posted;
+    let (text, checked) = match &a.text {
+        Some(text) => {
+            if text.len() > 64 * 1024 * 1024 {
+                return Err(bad(cmd, "the edited program is larger than 64 MB"));
+            }
+            if s.doc.cam.setup(&a.setup).is_none() {
+                return Err(bad(cmd, format!("no setup `{}`", a.setup)));
+            }
+            (text.as_str(), false)
+        }
+        None => {
+            let post = s.doc.cam.setup(&a.setup).and_then(|setup| cam::chosen_post(&s.doc.cam, setup)).unwrap_or_else(|| "linuxcnc".into());
+            posted = cam::post_cmd(s, &json!({"setup": a.setup, "post": post}))?;
+            (posted.get("gcode").and_then(Value::as_str).ok_or_else(|| bad(cmd, "post returned no G-code"))?, true)
+        }
+    };
     if a.overwrite {
         solidcraft_io::write_atomic(std::path::Path::new(&a.path), text.as_bytes(), true)
     } else {
         solidcraft_io::safe_write::create_atomic(std::path::Path::new(&a.path), text.as_bytes())
     }
     .map_err(|e| EngineError::Other(format!("{}: {e}", a.path)))?;
-    Ok(json!({"path": a.path, "bytes": text.len()}))
+    Ok(json!({"path": a.path, "bytes": text.len(), "checked": checked}))
 }

@@ -11,6 +11,8 @@ use crate::{CamError, Result, invalid};
 pub const MAX_TOOL_NUMBER: u32 = 9999;
 /// Largest tool diameter (mm).
 pub const MAX_TOOL_DIAMETER: f64 = 1000.0;
+/// Largest tool or holder length (mm).
+pub const MAX_TOOL_LENGTH: f64 = 10_000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,15 +20,116 @@ pub enum ToolKind {
     FlatEndmill,
     BallEndmill,
     Drill,
+    /// An end mill with rounded corners (`corner_radius`).
+    BullNose,
+    /// A chamfer cutter: a cone of `tip_angle` (included) from `tip_diameter` up to `diameter`.
+    Chamfer,
+    /// An engraving cutter: a cone of `tip_angle` (included) to a point or a small `tip_diameter`.
+    VBit,
+    /// A T-slot cutter: a disc `diameter` across and `flute_length` high on a thinner neck
+    /// (`shank_diameter`), cutting sideways under an overhang.
+    TSlot,
+    /// A centre (spot) drill: a short stiff point of `tip_angle` that marks where a drill starts.
+    CentreDrill,
+    /// A reamer: sizes a drilled hole, cutting with its side over `flute_length`.
+    Reamer,
+    /// A tap: cuts a thread of `pitch` into a drilled hole, the feed tied to the spindle.
+    Tap,
+    /// A thread mill: cuts a thread of `pitch` by running a helix round the hole.
+    ThreadMill,
 }
 
 impl ToolKind {
+    /// Every kind, in the order the tool form offers them.
+    pub const ALL: &[ToolKind] = &[
+        ToolKind::FlatEndmill,
+        ToolKind::BallEndmill,
+        ToolKind::BullNose,
+        ToolKind::Chamfer,
+        ToolKind::VBit,
+        ToolKind::TSlot,
+        ToolKind::ThreadMill,
+        ToolKind::Drill,
+        ToolKind::CentreDrill,
+        ToolKind::Reamer,
+        ToolKind::Tap,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             ToolKind::FlatEndmill => "flat end mill",
             ToolKind::BallEndmill => "ball end mill",
             ToolKind::Drill => "drill",
+            ToolKind::BullNose => "corner-radius end mill",
+            ToolKind::Chamfer => "chamfer cutter",
+            ToolKind::VBit => "engraving cutter",
+            ToolKind::TSlot => "T-slot cutter",
+            ToolKind::CentreDrill => "centre drill",
+            ToolKind::Reamer => "reamer",
+            ToolKind::Tap => "tap",
+            ToolKind::ThreadMill => "thread mill",
         }
+    }
+
+    /// The name a command or a file gives the kind (`flat_endmill`, `v_bit`, ...).
+    pub fn key(self) -> &'static str {
+        match self {
+            ToolKind::FlatEndmill => "flat_endmill",
+            ToolKind::BallEndmill => "ball_endmill",
+            ToolKind::Drill => "drill",
+            ToolKind::BullNose => "bull_nose",
+            ToolKind::Chamfer => "chamfer",
+            ToolKind::VBit => "v_bit",
+            ToolKind::TSlot => "t_slot",
+            ToolKind::CentreDrill => "centre_drill",
+            ToolKind::Reamer => "reamer",
+            ToolKind::Tap => "tap",
+            ToolKind::ThreadMill => "thread_mill",
+        }
+    }
+
+    /// The kind a command or a file names, if it is one.
+    pub fn from_key(key: &str) -> Option<ToolKind> {
+        ToolKind::ALL.iter().copied().find(|k| k.key() == key)
+    }
+
+    /// Tools that go straight down the hole axis and cut only there (drilling cycles).
+    pub fn cuts_down(self) -> bool {
+        matches!(self, ToolKind::Drill | ToolKind::CentreDrill | ToolKind::Reamer | ToolKind::Tap)
+    }
+
+    /// Tools with a cone at the tip (`tip_angle`).
+    pub fn has_cone(self) -> bool {
+        matches!(self, ToolKind::Chamfer | ToolKind::VBit | ToolKind::CentreDrill)
+    }
+
+    /// Tools that cut a thread (`pitch`).
+    pub fn threads(self) -> bool {
+        matches!(self, ToolKind::Tap | ToolKind::ThreadMill)
+    }
+}
+
+/// What holds the tool in the spindle, as a cylinder above the stick-out: what a collision
+/// check keeps clear of the stock, the model and the fixtures.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolHolder {
+    #[serde(default)]
+    pub description: String,
+    /// Largest diameter (mm).
+    pub diameter: f64,
+    /// Length from the holder's nose up to the spindle face (mm).
+    pub length: f64,
+}
+
+impl ToolHolder {
+    pub fn validate(&self) -> Result<()> {
+        if !(self.diameter > 0.0 && self.diameter <= MAX_TOOL_DIAMETER) || !(self.length > 0.0 && self.length <= MAX_TOOL_LENGTH) {
+            return invalid("a tool holder needs a diameter up to 1000 mm and a length up to 10000 mm, both above 0");
+        }
+        if self.description.chars().count() > 256 {
+            return invalid("a tool holder's description is at most 256 characters");
+        }
+        Ok(())
     }
 }
 
@@ -59,6 +162,30 @@ pub struct Tool {
     /// Cutting data by material group (`aluminium`, `steel`, … or a library's own names).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cutting: BTreeMap<String, CuttingData>,
+    /// Bull nose: the corner radius (mm), at most the radius.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radius: Option<f64>,
+    /// Chamfer, engraving and centre drill (and a drill's point): the included angle of the
+    /// cone (degrees; 90 for a 45 degree chamfer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_angle: Option<f64>,
+    /// Chamfer and engraving: the diameter of the flat at the cone's tip (mm; absent: a point).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_diameter: Option<f64>,
+    /// Tap and thread mill: the thread's pitch (mm per turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// Diameter of the shank, or a T-slot cutter's neck (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shank_diameter: Option<f64>,
+    /// The whole tool's length (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overall_length: Option<f64>,
+    /// How far the tool stands out of its holder (mm): the deepest it can reach next to a wall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stick_out: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<ToolHolder>,
 }
 
 fn two() -> u32 {
@@ -80,7 +207,38 @@ impl Tool {
             stepdown: None,
             stepover: None,
             cutting: BTreeMap::new(),
+            corner_radius: None,
+            tip_angle: None,
+            tip_diameter: None,
+            pitch: None,
+            shank_diameter: None,
+            overall_length: None,
+            stick_out: None,
+            holder: None,
         }
+    }
+
+    /// Half the cone's included angle (radians), for the tools with a cone; a drill's point
+    /// is 118 degrees unless the tool says otherwise.
+    pub fn half_angle(&self) -> Option<f64> {
+        let default = match self.kind {
+            ToolKind::Drill => Some(118.0),
+            ToolKind::CentreDrill | ToolKind::Chamfer => Some(90.0),
+            ToolKind::VBit => Some(60.0),
+            _ => None,
+        };
+        self.tip_angle.or(default).map(|a| (a * 0.5).to_radians())
+    }
+
+    /// The radius of the flat at the tip of a cone (0: a point).
+    pub fn tip_radius(&self) -> f64 {
+        self.tip_diameter.map_or(0.0, |d| d * 0.5)
+    }
+
+    /// How deep the tool reaches below its holder: the stick-out, else the overall length,
+    /// else the flute length.
+    pub fn reach(&self) -> f64 {
+        self.stick_out.or(self.overall_length).unwrap_or(self.flute_length)
     }
     pub fn radius(&self) -> f64 {
         self.diameter * 0.5
@@ -104,7 +262,52 @@ impl Tool {
         if self.cutting.len() > MAX_MATERIALS || self.cutting.keys().any(|m| !valid_material(m)) {
             return invalid("a tool keeps cutting data for at most 64 materials, each named by 1 to 64 characters");
         }
+        self.validate_shape()?;
+        if let Some(holder) = &self.holder {
+            holder.validate()?;
+        }
         self.cutting.values().try_for_each(CuttingData::validate)
+    }
+
+    /// The kind's own sizes: present where the kind uses them, and inside the tool.
+    fn validate_shape(&self) -> Result<()> {
+        let length = |v: Option<f64>| v.is_none_or(|v| v > 0.0 && v <= MAX_TOOL_LENGTH);
+        if !length(self.shank_diameter) || !length(self.overall_length) || !length(self.stick_out) {
+            return invalid("a tool's shank diameter, overall length and stick-out are above 0 and at most 10000 mm");
+        }
+        if let (Some(all), Some(out)) = (self.overall_length, self.stick_out)
+            && out > all
+        {
+            return invalid("a tool cannot stick out further than it is long");
+        }
+        if let Some(r) = self.corner_radius
+            && (self.kind != ToolKind::BullNose || !(r > 0.0 && r <= self.radius()))
+        {
+            return invalid("a corner radius belongs to a corner-radius end mill, above 0 and at most the tool's radius");
+        }
+        if self.kind == ToolKind::BullNose && self.corner_radius.is_none() {
+            return invalid("a corner-radius end mill needs its corner radius");
+        }
+        if let Some(a) = self.tip_angle
+            && (!(self.kind.has_cone() || self.kind == ToolKind::Drill) || !(1.0..=179.0).contains(&a))
+        {
+            return invalid("a tip angle belongs to a chamfer cutter, an engraving cutter or a drill, from 1 to 179 degrees");
+        }
+        if let Some(d) = self.tip_diameter
+            && (!matches!(self.kind, ToolKind::Chamfer | ToolKind::VBit) || !(d >= 0.0 && d < self.diameter))
+        {
+            return invalid("a tip diameter belongs to a chamfer or engraving cutter, from 0 and below the tool's diameter");
+        }
+        match (self.kind.threads(), self.pitch) {
+            (true, None) => return invalid("a tap or thread mill needs the thread's pitch"),
+            (true, Some(p)) if !(0.05..=20.0).contains(&p) => return invalid("a thread pitch is from 0.05 to 20 mm"),
+            (false, Some(_)) => return invalid("a pitch belongs to a tap or a thread mill"),
+            _ => {}
+        }
+        if self.kind == ToolKind::TSlot && self.shank_diameter.is_some_and(|neck| neck >= self.diameter) {
+            return invalid("a T-slot cutter's neck is thinner than its disc");
+        }
+        Ok(())
     }
 }
 

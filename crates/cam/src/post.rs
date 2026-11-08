@@ -50,6 +50,36 @@ pub enum CommentStyle {
     None,
 }
 
+/// The language a post writes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    /// G-code (RS-274 and its relatives): the templates and switches below apply.
+    #[default]
+    GCode,
+    /// Heidenhain's conversational language: numbered blocks, `L`, `CC`/`C`, `TOOL CALL`.
+    /// Only the units, decimals, comments, arcs and arc tolerance of the post apply.
+    Klartext,
+}
+
+/// How a post writes a tapped hole: the spindle reverses at the bottom in step with the feed,
+/// so it is always one block of the controller's rigid tapping, never plain moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tapping {
+    /// The controller cannot tap: a program with a tapped hole is refused.
+    #[default]
+    None,
+    /// `G98 G84 X Y Z R F` and `G80` (Fanuc, Mach3, Centroid), feed one pitch a turn.
+    G84,
+    /// `M29 S` then `G98 G84 X Y Z R F` and `G80`: Fanuc rigid tapping.
+    G84Rigid,
+    /// `G33.1 Z K` from the retract height, which it returns to (LinuxCNC).
+    G33_1,
+    /// `SPOS=0`, `G331 Z K S` in and `G332 Z K` out (Sinumerik tapping without a compensating chuck).
+    G331,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineNumbers {
     pub start: u32,
@@ -103,6 +133,11 @@ pub struct Post {
     /// with a dwell is always written move by move, as `G83` has no dwell.
     #[serde(default)]
     pub canned_cycles: bool,
+    /// How tapped holes are written; `none` refuses them.
+    #[serde(default)]
+    pub tapping: Tapping,
+    #[serde(default)]
+    pub language: Language,
 }
 
 fn yes() -> bool {
@@ -144,6 +179,8 @@ impl Post {
             two_digit_codes: false,
             dwell: default_dwell(),
             canned_cycles: false,
+            tapping: Tapping::G33_1,
+            language: Language::GCode,
         }
     }
 
@@ -188,6 +225,8 @@ impl Post {
             two_digit_codes: false,
             dwell: default_dwell(),
             canned_cycles: false,
+            tapping: Tapping::None,
+            language: Language::GCode,
         }
     }
 
@@ -201,6 +240,7 @@ impl Post {
         post.header = lines(&["G17 G21 G40 G49 G80 G90 G94 {work_offset}"]);
         post.tool_change = lines(&["M5", "M6 T{tool}", "G43 H{tool}"]);
         post.trailing_decimal = true;
+        post.tapping = Tapping::G84;
         post
     }
 
@@ -213,21 +253,131 @@ impl Post {
         post.header = lines(&["G17 G21 G40 G49 G80 G90 G94 {work_offset}"]);
         post.tool_change = lines(&["M5", "T{tool} M6", "G43 H{tool}"]);
         post.trailing_decimal = true;
+        post.tapping = Tapping::G84;
         post
+    }
+
+    /// Fanuc 0i/30i style (public Fanuc programming manuals): program between `%` lines with an
+    /// `O` number, two-digit codes, a decimal point on every number (Fanuc reads `X10` as 10
+    /// micrometres), `T M06` with `G43 H`, canned drilling cycles, dwells `G04 X` in seconds and
+    /// rigid tapping with `M29`.
+    pub fn fanuc() -> Post {
+        Post {
+            name: "fanuc".into(),
+            extension: "nc".into(),
+            units: Units::Mm,
+            decimals: 3,
+            feed_decimals: 1,
+            line_numbers: None,
+            comments: CommentStyle::Parentheses,
+            header: lines(&["%", "O0001 ({program})", "G17 {units} G40 G49 G80 G90 G94 {work_offset}"]),
+            tool_change: lines(&["M05", "T{tool} M06", "G43 H{tool}"]),
+            tool_change_first: true,
+            spindle_on: lines(&["S{rpm} M03"]),
+            spindle_off: lines(&["M05"]),
+            coolant_on: lines(&["M08"]),
+            coolant_off: lines(&["M09"]),
+            footer: lines(&["M30", "%"]),
+            arcs: true,
+            arc_tolerance: 0.005,
+            helical_arcs: true,
+            trailing_decimal: true,
+            two_digit_codes: true,
+            dwell: "G04 X{seconds}".into(),
+            canned_cycles: true,
+            tapping: Tapping::G84Rigid,
+            language: Language::GCode,
+        }
+    }
+
+    /// Siemens Sinumerik 808D/828D/840D in its own language (public Sinumerik programming
+    /// manuals): `;` comments, `G71` millimetres, `T D1` and `M6`, dwells `G4 F` in seconds,
+    /// arcs with incremental `I` `J`, holes move by move (no `CYCLE8x`), tapping with `G331`/`G332`.
+    pub fn sinumerik() -> Post {
+        Post {
+            name: "sinumerik".into(),
+            extension: "mpf".into(),
+            units: Units::Mm,
+            decimals: 3,
+            feed_decimals: 1,
+            line_numbers: None,
+            comments: CommentStyle::Semicolon,
+            header: lines(&["G17 G71 G40 G90 G94 {work_offset}"]),
+            tool_change: lines(&["M5", "T{tool} D1", "M6"]),
+            tool_change_first: true,
+            spindle_on: lines(&["S{rpm} M3"]),
+            spindle_off: lines(&["M5"]),
+            coolant_on: lines(&["M8"]),
+            coolant_off: lines(&["M9"]),
+            footer: lines(&["M30"]),
+            arcs: true,
+            arc_tolerance: 0.005,
+            helical_arcs: true,
+            trailing_decimal: false,
+            two_digit_codes: false,
+            dwell: "G4 F{seconds}".into(),
+            canned_cycles: false,
+            tapping: Tapping::G331,
+            language: Language::GCode,
+        }
+    }
+
+    /// Heidenhain TNC in conversational Klartext: numbered blocks, `TOOL CALL`, `L` lines with
+    /// `FMAX` rapids, `CC`/`C` arcs, cycle 9 dwells; helices as short lines, holes move by move.
+    /// The control's active preset is part zero. Not checked on a control yet: try the first
+    /// programs in its test run.
+    pub fn heidenhain() -> Post {
+        Post {
+            name: "heidenhain".into(),
+            extension: "h".into(),
+            units: Units::Mm,
+            decimals: 3,
+            feed_decimals: 0,
+            line_numbers: None,
+            comments: CommentStyle::Semicolon,
+            header: Vec::new(),
+            tool_change: Vec::new(),
+            tool_change_first: true,
+            spindle_on: Vec::new(),
+            spindle_off: Vec::new(),
+            coolant_on: Vec::new(),
+            coolant_off: Vec::new(),
+            footer: Vec::new(),
+            arcs: true,
+            arc_tolerance: 0.005,
+            helical_arcs: false,
+            trailing_decimal: false,
+            two_digit_codes: false,
+            dwell: default_dwell(),
+            canned_cycles: false,
+            tapping: Tapping::None,
+            language: Language::Klartext,
+        }
     }
 
     pub fn builtin(name: &str) -> Option<Post> {
         match name.trim().to_ascii_lowercase().as_str() {
             "centroid" => Some(Post::centroid()),
+            "fanuc" => Some(Post::fanuc()),
             "grbl" => Some(Post::grbl()),
+            "heidenhain" => Some(Post::heidenhain()),
             "linuxcnc" => Some(Post::linuxcnc()),
             "mach3" => Some(Post::mach3()),
             "rs274" => Some(Post::rs274()),
+            "sinumerik" => Some(Post::sinumerik()),
             _ => None,
         }
     }
 
-    pub const BUILTIN: &'static [&'static str] = &["centroid", "grbl", "linuxcnc", "mach3", "rs274"];
+    pub const BUILTIN: &'static [&'static str] = &["centroid", "fanuc", "grbl", "heidenhain", "linuxcnc", "mach3", "rs274", "sinumerik"];
+
+    /// Reads `text`, written through this post, back into moves with their line numbers (from 1).
+    pub fn read_back(&self, text: &str) -> Result<Vec<(usize, crate::Move)>> {
+        match self.language {
+            Language::GCode => crate::gcode::parse_lines(text),
+            Language::Klartext => crate::klartext::parse_lines(text),
+        }
+    }
 
     /// Whether the post writes the work offset (a `{work_offset}` in its header or tool change).
     pub fn writes_work_offset(&self) -> bool {

@@ -142,6 +142,14 @@ pub struct CamSetup {
     /// Operations left out when posting, by name. They keep their place in the order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
+    /// Bodies that hold the part (vice jaws, clamps, a fixture plate), by name: no tool or
+    /// holder may come near them, and they are never part of the model or its stock.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixtures: Vec<String>,
+    /// Part zero on a box point is worked out again from the model's or the stock's box each
+    /// time it is used, so it follows later model edits, rather than kept where it was saved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub zero_follows: bool,
 }
 
 fn one() -> u8 {
@@ -189,6 +197,8 @@ impl CamSetup {
             material: None,
             max_rpm: None,
             skipped: Vec::new(),
+            fixtures: Vec::new(),
+            zero_follows: false,
         }
     }
 
@@ -231,6 +241,12 @@ impl CamSetup {
         }
         if self.model_bodies.len() > 256 {
             return Err(DocError::Invalid("a CAM setup has at most 256 model bodies".into()));
+        }
+        if self.fixtures.len() > 256 || self.fixtures.iter().any(|n| n.is_empty() || n.len() > 256) {
+            return Err(DocError::Invalid("a CAM setup has at most 256 fixtures, each a body's name".into()));
+        }
+        if let Some(both) = self.fixtures.iter().find(|f| self.model_bodies.contains(f)) {
+            return Err(DocError::Invalid(format!("`{both}` cannot be both the part and a fixture")));
         }
         if let Some(stock) = &self.stock {
             stock.validate()?;
@@ -827,6 +843,47 @@ pub struct CamSlotParams {
     pub ramp_angle: Expr,
 }
 
+/// Chamfer settings held as expressions: the chamfer's width on the face (a 90 degree cutter cuts
+/// as deep as wide) and how far the cutter's tip runs below the chamfer, so its flat tip never
+/// rubs the wall.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamChamferParams {
+    pub width: Expr,
+    #[serde(default = "tip_offset_mm")]
+    pub tip_offset: Expr,
+    /// Which side of a closed contour the chamfer is on (`auto`: outside an outline, inside a hole).
+    #[serde(default = "auto_side")]
+    pub side: CamSide,
+    #[serde(default = "tol_mm")]
+    pub tolerance: Expr,
+}
+
+/// Engraving settings: the cutter's tip runs on the curves at the cut's bottom.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamEngraveParams {
+    #[serde(default = "tol_mm")]
+    pub tolerance: Expr,
+}
+
+/// Helical boring: the finished hole's diameter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamHelixParams {
+    pub diameter: Expr,
+    #[serde(default = "true_val")]
+    pub climb: bool,
+}
+
+/// Thread milling: the thread's major diameter and pitch, inside a hole or on a stud, right- or left-hand.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamThreadParams {
+    pub diameter: Expr,
+    pub pitch: Expr,
+    #[serde(default = "true_val")]
+    pub internal: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub left_hand: bool,
+}
+
 /// Heights and feeds as expressions (`depth + 1 mm`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CamCut {
@@ -854,6 +911,14 @@ fn zero_mm() -> Expr {
 
 fn is_zero_mm(e: &Expr) -> bool {
     e.as_str() == "0 mm"
+}
+
+fn tip_offset_mm() -> Expr {
+    Expr::new("0.5 mm")
+}
+
+fn auto_side() -> CamSide {
+    CamSide::Auto
 }
 
 fn overrun_mm() -> Expr {
@@ -958,6 +1023,54 @@ pub enum CamOperation {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         coolant: bool,
     },
+    /// A chamfer along picked edges or contours, with a chamfer or engraving cutter, at the cut's top.
+    Chamfer {
+        name: String,
+        tool: u32,
+        geometry: CamGeometry,
+        params: CamChamferParams,
+        cut: CamCut,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spindle_rpm: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        coolant: bool,
+    },
+    /// Engraving along picked edges, sketch curves or text: the cutter's tip on them.
+    Engrave {
+        name: String,
+        tool: u32,
+        geometry: CamGeometry,
+        params: CamEngraveParams,
+        cut: CamCut,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spindle_rpm: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        coolant: bool,
+    },
+    /// Holes wider than the tool, milled by a helix down to the bottom.
+    HelicalBore {
+        name: String,
+        tool: u32,
+        geometry: CamGeometry,
+        params: CamHelixParams,
+        cut: CamCut,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spindle_rpm: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        coolant: bool,
+    },
+    /// Threads milled with a thread mill, one pitch a turn.
+    ThreadMill {
+        name: String,
+        tool: u32,
+        geometry: CamGeometry,
+        params: CamThreadParams,
+        cut: CamCut,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spindle_rpm: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        coolant: bool,
+    },
 }
 
 impl CamOperation {
@@ -967,6 +1080,25 @@ impl CamOperation {
             | CamOperation::Pocket { name, .. }
             | CamOperation::Face { name, .. }
             | CamOperation::Slot { name, .. }
+            | CamOperation::Chamfer { name, .. }
+            | CamOperation::Engrave { name, .. }
+            | CamOperation::HelicalBore { name, .. }
+            | CamOperation::ThreadMill { name, .. }
+            | CamOperation::Drill { name, .. } => name,
+        }
+    }
+
+    /// The name to change, for renaming a step (the setup's skipped list names it too).
+    pub fn name_mut(&mut self) -> &mut String {
+        match self {
+            CamOperation::Contour { name, .. }
+            | CamOperation::Pocket { name, .. }
+            | CamOperation::Face { name, .. }
+            | CamOperation::Slot { name, .. }
+            | CamOperation::Chamfer { name, .. }
+            | CamOperation::Engrave { name, .. }
+            | CamOperation::HelicalBore { name, .. }
+            | CamOperation::ThreadMill { name, .. }
             | CamOperation::Drill { name, .. } => name,
         }
     }
@@ -977,6 +1109,10 @@ impl CamOperation {
             | CamOperation::Pocket { tool, .. }
             | CamOperation::Face { tool, .. }
             | CamOperation::Slot { tool, .. }
+            | CamOperation::Chamfer { tool, .. }
+            | CamOperation::Engrave { tool, .. }
+            | CamOperation::HelicalBore { tool, .. }
+            | CamOperation::ThreadMill { tool, .. }
             | CamOperation::Drill { tool, .. } => *tool,
         }
     }
@@ -987,6 +1123,10 @@ impl CamOperation {
             | CamOperation::Pocket { geometry, .. }
             | CamOperation::Face { geometry, .. }
             | CamOperation::Slot { geometry, .. }
+            | CamOperation::Chamfer { geometry, .. }
+            | CamOperation::Engrave { geometry, .. }
+            | CamOperation::HelicalBore { geometry, .. }
+            | CamOperation::ThreadMill { geometry, .. }
             | CamOperation::Drill { geometry, .. } => geometry,
         }
     }
@@ -998,6 +1138,10 @@ impl CamOperation {
             | CamOperation::Pocket { spindle_rpm, .. }
             | CamOperation::Face { spindle_rpm, .. }
             | CamOperation::Slot { spindle_rpm, .. }
+            | CamOperation::Chamfer { spindle_rpm, .. }
+            | CamOperation::Engrave { spindle_rpm, .. }
+            | CamOperation::HelicalBore { spindle_rpm, .. }
+            | CamOperation::ThreadMill { spindle_rpm, .. }
             | CamOperation::Drill { spindle_rpm, .. } => *spindle_rpm,
         }
     }
@@ -1008,6 +1152,10 @@ impl CamOperation {
             | CamOperation::Pocket { coolant, .. }
             | CamOperation::Face { coolant, .. }
             | CamOperation::Slot { coolant, .. }
+            | CamOperation::Chamfer { coolant, .. }
+            | CamOperation::Engrave { coolant, .. }
+            | CamOperation::HelicalBore { coolant, .. }
+            | CamOperation::ThreadMill { coolant, .. }
             | CamOperation::Drill { coolant, .. } => *coolant,
         }
     }
@@ -1018,8 +1166,17 @@ impl CamOperation {
             | CamOperation::Pocket { cut, .. }
             | CamOperation::Face { cut, .. }
             | CamOperation::Slot { cut, .. }
+            | CamOperation::Chamfer { cut, .. }
+            | CamOperation::Engrave { cut, .. }
+            | CamOperation::HelicalBore { cut, .. }
+            | CamOperation::ThreadMill { cut, .. }
             | CamOperation::Drill { cut, .. } => cut,
         }
+    }
+
+    /// Operations on hole centres rather than on a region or a path.
+    pub fn at_points(&self) -> bool {
+        matches!(self, CamOperation::Drill { .. } | CamOperation::HelicalBore { .. } | CamOperation::ThreadMill { .. })
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -1028,8 +1185,8 @@ impl CamOperation {
             return Err(DocError::Invalid("a CAM operation name must be 1 to 128 characters".into()));
         }
         self.geometry().validate()?;
-        if matches!(self, CamOperation::Drill { .. }) != matches!(self.geometry(), CamGeometry::Points { .. }) {
-            return Err(DocError::Invalid("hole centres belong to drill operations; milling needs a region".into()));
+        if self.at_points() != matches!(self.geometry(), CamGeometry::Points { .. }) {
+            return Err(DocError::Invalid("hole centres belong to drilling, helical boring and thread milling; milling needs a region".into()));
         }
         if matches!(self.geometry(), CamGeometry::Stock) && !matches!(self, CamOperation::Face { .. }) {
             return Err(DocError::Invalid("the stock outline belongs to facing; other milling needs a region".into()));
@@ -1080,6 +1237,25 @@ impl CamOperation {
                 check_expr(&params.stock_to_leave, "stock_to_leave")?;
                 check_expr(&params.tolerance, "tolerance")?;
                 check_expr(&params.ramp_angle, "ramp_angle")?;
+                check_spindle(*spindle_rpm)?;
+            }
+            CamOperation::Chamfer { params, spindle_rpm, .. } => {
+                check_expr(&params.width, "width")?;
+                check_expr(&params.tip_offset, "tip_offset")?;
+                check_expr(&params.tolerance, "tolerance")?;
+                check_spindle(*spindle_rpm)?;
+            }
+            CamOperation::Engrave { params, spindle_rpm, .. } => {
+                check_expr(&params.tolerance, "tolerance")?;
+                check_spindle(*spindle_rpm)?;
+            }
+            CamOperation::HelicalBore { params, spindle_rpm, .. } => {
+                check_expr(&params.diameter, "diameter")?;
+                check_spindle(*spindle_rpm)?;
+            }
+            CamOperation::ThreadMill { params, spindle_rpm, .. } => {
+                check_expr(&params.diameter, "diameter")?;
+                check_expr(&params.pitch, "pitch")?;
                 check_spindle(*spindle_rpm)?;
             }
             CamOperation::Pocket { params, spindle_rpm, .. } => {

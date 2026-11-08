@@ -11,7 +11,7 @@ use egui::RichText;
 use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
 use solidcore_record::Vec3;
-use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tool, ToolKind, Units};
+use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tapping, Tool, ToolKind, Units};
 use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
 use solidcraft_engine::geom::prelude::*;
 
@@ -257,10 +257,13 @@ fn program_folder(app: &SolveApp, setup: &str) -> Option<String> {
 fn post_label(name: &str) -> String {
     match name {
         "centroid" => "Centroid".into(),
+        "fanuc" => "Fanuc".into(),
         "grbl" => "GRBL".into(),
+        "heidenhain" => "Heidenhain".into(),
         "linuxcnc" => "LinuxCNC".into(),
         "mach3" => "Mach3".into(),
         "rs274" => "RS-274".into(),
+        "sinumerik" => "Sinumerik".into(),
         other => other.to_string(),
     }
 }
@@ -314,10 +317,35 @@ fn kind_key(kind: ToolKind) -> &'static str {
         ToolKind::FlatEndmill => "ui.cam.kind.flat",
         ToolKind::BallEndmill => "ui.cam.kind.ball",
         ToolKind::Drill => "ui.cam.kind.drill",
+        ToolKind::BullNose => "ui.cam.kind.bull_nose",
+        ToolKind::Chamfer => "ui.cam.kind.chamfer",
+        ToolKind::VBit => "ui.cam.kind.v_bit",
+        ToolKind::TSlot => "ui.cam.kind.t_slot",
+        ToolKind::CentreDrill => "ui.cam.kind.centre_drill",
+        ToolKind::Reamer => "ui.cam.kind.reamer",
+        ToolKind::Tap => "ui.cam.kind.tap",
+        ToolKind::ThreadMill => "ui.cam.kind.thread_mill",
     }
 }
 
-const KINDS: [ToolKind; 3] = [ToolKind::FlatEndmill, ToolKind::BallEndmill, ToolKind::Drill];
+const KINDS: &[ToolKind] = ToolKind::ALL;
+
+/// The optional sizes the tool form shows: field, label key, and the kinds that use it.
+const SIZES: &[(usize, &str, fn(ToolKind) -> bool)] = &[
+    (0, "ui.cam.corner_radius", |k| k == ToolKind::BullNose),
+    (1, "ui.cam.tip_angle", |k| k.has_cone() || k == ToolKind::Drill),
+    (2, "ui.cam.tip_diameter", |k| matches!(k, ToolKind::Chamfer | ToolKind::VBit)),
+    (3, "ui.cam.pitch", ToolKind::threads),
+    (4, "ui.cam.shank_diameter", |_| true),
+    (5, "ui.cam.overall_length", |_| true),
+    (6, "ui.cam.stick_out", |_| true),
+];
+
+/// A size as typed: empty is none, else a number (a comma is a decimal point).
+fn optional(text: &str) -> Result<Option<f64>, String> {
+    let t = text.trim().replace(',', ".");
+    if t.is_empty() { Ok(None) } else { t.parse::<f64>().map(Some).map_err(|_| tr("ui.cam.invalid_number").to_string()) }
+}
 
 fn number(v: f64) -> String {
     let s = format!("{v:.4}");
@@ -334,6 +362,10 @@ struct ToolEdit {
     flute_length: String,
     description: String,
     cutting: Vec<[String; 4]>,
+    /// Corner radius, tip angle, tip diameter, pitch, shank diameter, overall length, stick-out.
+    sizes: [String; 7],
+    /// The holder's description, diameter and length; no diameter: no holder.
+    holder: [String; 3],
 }
 
 impl ToolEdit {
@@ -353,6 +385,20 @@ impl ToolEdit {
             flute_length: number(tool.flute_length),
             description: tool.description.clone(),
             cutting,
+            sizes: [
+                tool.corner_radius,
+                tool.tip_angle,
+                tool.tip_diameter,
+                tool.pitch,
+                tool.shank_diameter,
+                tool.overall_length,
+                tool.stick_out,
+            ]
+            .map(|v| v.map(number).unwrap_or_default()),
+            holder: match &tool.holder {
+                Some(h) => [h.description.clone(), number(h.diameter), number(h.length)],
+                None => Default::default(),
+            },
         }
     }
 
@@ -368,6 +414,23 @@ impl ToolEdit {
         tool.flute_length = parse(&self.flute_length)?;
         tool.flutes = self.flutes.trim().parse().map_err(|_| bad())?;
         tool.description = self.description.trim().chars().take(256).collect();
+        // Sizes the kind does not use are dropped, so changing the kind never leaves one behind.
+        let mut sizes = [None; 7];
+        for &(i, _, used) in SIZES {
+            if used(kind)
+                && let Some(text) = self.sizes.get(i)
+            {
+                sizes[i] = optional(text)?;
+            }
+        }
+        [tool.corner_radius, tool.tip_angle, tool.tip_diameter, tool.pitch, tool.shank_diameter, tool.overall_length, tool.stick_out] = sizes;
+        tool.holder = match (optional(&self.holder[1])?, optional(&self.holder[2])?) {
+            (None, None) => None,
+            (Some(diameter), Some(length)) => {
+                Some(solidcraft_engine::cam::ToolHolder { description: self.holder[0].trim().chars().take(256).collect(), diameter, length })
+            }
+            _ => return Err(tr("ui.cam.holder_needs_both").to_string()),
+        };
         for (material, row) in MATERIALS.iter().zip(&self.cutting) {
             if row.iter().all(|v| v.trim().is_empty()) {
                 tool.cutting.remove(*material);
@@ -469,6 +532,10 @@ struct PostEdit {
     trailing_decimal: bool,
     two_digit_codes: bool,
     canned_cycles: bool,
+    /// Place in [`TAPPING`].
+    tapping: usize,
+    /// G-code or Klartext, as the post it started from writes.
+    language: solidcraft_engine::cam::Language,
     tool_change_first: bool,
     dwell: String,
     /// Program start, tool change, spindle on, spindle off, coolant on, coolant off, program end.
@@ -510,6 +577,8 @@ impl PostEdit {
             trailing_decimal: p.trailing_decimal,
             two_digit_codes: p.two_digit_codes,
             canned_cycles: p.canned_cycles,
+            tapping: TAPPING.iter().position(|(t, _)| *t == p.tapping).unwrap_or(0),
+            language: p.language,
             tool_change_first: p.tool_change_first,
             dwell: p.dwell.clone(),
             blocks: [
@@ -555,6 +624,8 @@ impl PostEdit {
             trailing_decimal: self.trailing_decimal,
             two_digit_codes: self.two_digit_codes,
             canned_cycles: self.canned_cycles,
+            tapping: TAPPING.get(self.tapping).map_or(Tapping::None, |(t, _)| *t),
+            language: self.language,
             dwell: self.dwell.trim().to_string(),
         };
         post.validate().map_err(|e| e.to_string())?;
@@ -590,7 +661,18 @@ pub struct CamPanel {
     /// The window is folded to its title and the setups' eyes, so the model behind it is free;
     /// the toolpaths stay drawn.
     pub(crate) folded: bool,
+    /// The step being renamed in the job list (setup, step) and the name as typed.
+    renaming: Option<(String, String, String)>,
 }
+
+/// How a post can write a tapped hole, as the post form offers it.
+const TAPPING: &[(Tapping, &str)] = &[
+    (Tapping::None, "ui.cam.tapping_none"),
+    (Tapping::G84, "ui.cam.tapping_g84"),
+    (Tapping::G84Rigid, "ui.cam.tapping_g84_rigid"),
+    (Tapping::G33_1, "ui.cam.tapping_g33_1"),
+    (Tapping::G331, "ui.cam.tapping_g331"),
+];
 
 /// The tool library file's name offered when it is exported.
 const LIBRARY_FILE: &str = "tool-library.json";
@@ -683,6 +765,10 @@ pub(crate) struct GcodeView {
     pub(crate) speed: usize,
     /// The setup's stock after its steps, drawn in the view while set ([`draw_paths`]).
     pub(crate) sim: Option<Result<solidcraft_engine::cmd::CamSimulation, String>>,
+    /// The text searched for in the lines.
+    search: String,
+    /// The program as edited by hand, while it is; exported as it is, never read back.
+    edited: Option<String>,
 }
 
 /// Playback speeds (mm of tool travel per second).
@@ -753,7 +839,21 @@ impl GcodeView {
             playing: false,
             speed: 2,
             sim: None,
+            search: String::new(),
+            edited: None,
         }
+    }
+
+    /// The first line after the selected one (round to the start) that holds `search`, any case.
+    fn find_next(&self) -> Option<usize> {
+        let program = self.program.as_ref().ok()?;
+        let needle = self.search.trim().to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        let from = self.selected.unwrap_or(0);
+        let n = program.lines.len();
+        (1..=n).map(|k| (from + k - 1) % n + 1).find(|line| program.lines.get(line - 1).is_some_and(|l| l.to_lowercase().contains(&needle)))
     }
 
     /// Simulates the material removal of the setup's steps, or hides a shown simulation.
@@ -871,6 +971,8 @@ enum Action {
     ImportLibrary,
     /// Takes the read file's tools into the library (`true`: also those replacing a tool).
     TakeImport(bool),
+    /// Saves the hand-edited program of a setup (setup, text) as it is.
+    ExportText(String, String),
     /// Puts a machine on the personal list.
     Machine(Box<Machine>),
     /// Takes a machine off the personal list.
@@ -913,6 +1015,10 @@ fn op_kind(op: &CamOperation) -> &'static str {
         CamOperation::Drill { .. } => "cmd.cam.op.drill",
         CamOperation::Face { .. } => "cmd.cam.op.face",
         CamOperation::Slot { .. } => "cmd.cam.op.slot",
+        CamOperation::Chamfer { .. } => "cmd.cam.op.chamfer",
+        CamOperation::Engrave { .. } => "cmd.cam.op.engrave",
+        CamOperation::HelicalBore { .. } => "cmd.cam.op.helix",
+        CamOperation::ThreadMill { .. } => "cmd.cam.op.thread",
     }
 }
 
@@ -997,7 +1103,25 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             if ui_kit::checkbox(ui, &format!("{}.", i + 1), &mut on).changed() {
                 actions.push(Action::Run("cam.op.skip", json!({"setup": setup.name, "name": name, "skip": !on})));
             }
-            ui.label(RichText::new(&name).color(if on { t.text } else { t.text_dim }));
+            let editing = d.renaming.as_mut().filter(|(s, n, _)| *s == setup.name && *n == name);
+            if let Some((_, _, text)) = editing {
+                // Enter renames; Escape or an unchanged name leaves it.
+                let (enter, _) = ui_kit::text_field(ui, text, tr("ui.cam.rename"));
+                if enter {
+                    let typed = text.trim().to_string();
+                    if !typed.is_empty() && typed != name {
+                        actions.push(Action::Run("cam.op.rename", json!({"setup": setup.name, "name": name, "new_name": typed})));
+                    }
+                    d.renaming = None;
+                } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    d.renaming = None;
+                }
+            } else {
+                let label = ui.add(egui::Label::new(RichText::new(&name).color(if on { t.text } else { t.text_dim })).sense(egui::Sense::click()));
+                if label.on_hover_text(tr("ui.cam.rename_hint")).double_clicked() {
+                    d.renaming = Some((setup.name.clone(), name.clone(), name.clone()));
+                }
+            }
             ui.label(RichText::new(tr(op_kind(op))).color(t.text_dim));
             let tool = app.session.doc.cam.tool(op.tool());
             let rpm = op.spindle_rpm().or(tool.and_then(|t| t.spindle_rpm));
@@ -1016,6 +1140,23 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
                 }
                 if ui_kit::button(ui, tr("ui.cam.down"), ui_kit::Button::Enabled(i + 1 < count)).clicked() {
                     actions.push(Action::Run("cam.op.move", json!({"setup": setup.name, "name": name, "to": i + 1})));
+                }
+                // A copy right after the step, or at the end of another setup (S3 and S4 alike).
+                ui_kit::compact_dropdown_menu(ui, ("cam-dup", &setup.name, &name), tr("ui.cam.duplicate"), |ui| {
+                    if ui_kit::list_picker_start(ui, &format!("cam-dup-{}-{name}", setup.name), tr("ui.cam.duplicate"), false).clicked() {
+                        actions.push(Action::Run("cam.op.duplicate", json!({"setup": setup.name, "name": name})));
+                        ui.close();
+                    }
+                    for other in app.session.doc.cam.setups.iter().filter(|o| o.name != setup.name) {
+                        let text = crate::i18n::format("ui.cam.copy_to", &[("setup", &other.name)]);
+                        if ui_kit::list_picker_start(ui, &format!("cam-dup-{}-{name}-{}", setup.name, other.name), &text, false).clicked() {
+                            actions.push(Action::Run("cam.op.duplicate", json!({"setup": setup.name, "name": name, "to_setup": other.name})));
+                            ui.close();
+                        }
+                    }
+                });
+                if ui_kit::button(ui, tr("ui.cam.rename"), ui_kit::Button::Small).clicked() {
+                    d.renaming = Some((setup.name.clone(), name.clone(), name.clone()));
                 }
                 if ui_kit::button(ui, tr("ui.cam.remove"), ui_kit::Button::Small).clicked() {
                     actions.push(Action::Run("cam.op.remove", json!({"setup": setup.name, "name": name})));
@@ -1039,8 +1180,24 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
 /// The G-code panel's body: the move buttons, then one row per line with its number, the
 /// selected line marked and its move drawn on the model ([`draw_paths`]), filling the panel.
 /// Posted again when the design changes.
-fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
+fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView, actions: &mut Vec<Action>) {
     let t = Tokens::get();
+    // Editing by hand: the whole program as text, exported as it is.
+    if let Some(text) = &mut view.edited {
+        ui_kit::text(ui, tr("ui.cam.edit_unchecked"), ui_kit::Text::Error("cam_gcode_edit"));
+        let mut done = false;
+        ui.horizontal_wrapped(|ui| {
+            if ui_kit::button(ui, tr("ui.cam.export_edited"), ui_kit::Button::Primary).clicked() {
+                actions.push(Action::ExportText(view.setup.clone(), text.clone()));
+            }
+            done = ui_kit::button(ui, tr("ui.cam.edit_discard"), ui_kit::Button::Small).clicked();
+        });
+        ui_kit::text_area(ui, tr("ui.cam.edit_gcode"), egui::Id::unique(("cam-gcode-edit", &view.setup)), text, 16, 64 * 1024 * 1024);
+        if done {
+            view.edited = None;
+        }
+        return;
+    }
     if view.key != design_key(app) {
         let (selected, travelled, speed, sim) = (view.selected, view.travelled, view.speed, view.sim.is_some());
         *view = GcodeView::new(app, &view.setup);
@@ -1073,6 +1230,7 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
             ui.ctx().copy_text(program.text.clone());
         }
     });
+    let Ok(program) = &view.program else { return };
     if let Some(time) = &program.time {
         let text = crate::i18n::format(
             "ui.cam.run_time",
@@ -1085,9 +1243,10 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
         );
         ui.add(egui::Label::new(text).wrap()).on_hover_text(tr("ui.cam.run_time_hint"));
     }
-    let mut simulate = false;
+    let (mut simulate, mut edit) = (false, false);
     ui.horizontal_wrapped(|ui| {
         simulate = ui_kit::button(ui, tr(if view.sim.is_some() { "ui.cam.sim_hide" } else { "ui.cam.simulate" }), ui_kit::Button::Normal).clicked();
+        edit = !cfg!(target_arch = "wasm32") && ui_kit::button(ui, tr("ui.cam.edit_gcode"), ui_kit::Button::Small).clicked();
     });
     if let Some(sim) = &view.sim {
         sim_rows(ui, sim);
@@ -1116,6 +1275,10 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
             .wrap(),
     );
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.gcode_hint")).color(t.text_dim)).wrap());
+    // Searching the lines, right above them.
+    // A form row keeps its width: a free text field would widen the panel frame by frame.
+    let (_, enter) = ui_kit::text_row(ui, tr("ui.cam.search_gcode"), &mut view.search, "");
+    let find = enter || ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_next"), ui_kit::Button::Small)).clicked();
     let row = ui_kit::row_height() + ui.spacing().item_spacing.y;
     let digits = program.lines.len().max(1).to_string().len();
     let mut area =
@@ -1151,6 +1314,10 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     if let Some(number) = clicked {
         view.go_to_line(number);
     }
+    if find && let Some(line) = view.find_next() {
+        view.go_to_line(line);
+        view.scroll = true;
+    }
     if step != 0 {
         view.step(step);
     }
@@ -1162,6 +1329,9 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView) {
     }
     if simulate {
         view.toggle_sim(app);
+    }
+    if edit && let Ok(program) = &view.program {
+        view.edited = Some(program.text.clone());
     }
 }
 
@@ -1208,7 +1378,19 @@ fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulatio
 fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut Vec<Action>) {
     let t = Tokens::get();
     ui.horizontal_wrapped(|ui| {
-        for id in ["cam.setup", "cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.slot", "cam.op.drill"] {
+        for id in [
+            "cam.setup",
+            "cam.op.face",
+            "cam.op.contour",
+            "cam.op.pocket",
+            "cam.op.slot",
+            "cam.op.chamfer",
+            "cam.op.engrave",
+            "cam.op.drill",
+            "cam.op.helix",
+            "cam.op.thread",
+            "cam.op.tap",
+        ] {
             if ui_kit::button(ui, tr(&format!("cmd.{id}")), ui_kit::Button::Normal).clicked() {
                 actions.push(Action::Start(id));
             }
@@ -1342,6 +1524,18 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     ui_kit::text_row(ui, tr("ui.cam.flutes"), &mut edit.flutes, "");
     ui_kit::text_row(ui, tr("ui.cam.flute"), &mut edit.flute_length, "");
     ui_kit::text_row(ui, tr("ui.cam.description"), &mut edit.description, "");
+    // The kind's own sizes, then lengths and the holder every tool can have.
+    let kind = KINDS.get(edit.kind).copied().unwrap_or(ToolKind::FlatEndmill);
+    for &(i, key, used) in SIZES {
+        if used(kind)
+            && let Some(text) = edit.sizes.get_mut(i)
+        {
+            ui_kit::text_row(ui, tr(key), text, tr("ui.cam.optional"));
+        }
+    }
+    ui_kit::text_row(ui, tr("ui.cam.holder"), &mut edit.holder[0], tr("ui.cam.optional"));
+    ui_kit::text_row(ui, tr("ui.cam.holder_diameter"), &mut edit.holder[1], tr("ui.cam.optional"));
+    ui_kit::text_row(ui, tr("ui.cam.holder_length"), &mut edit.holder[2], tr("ui.cam.optional"));
     cutting_rows(ui, edit);
     if ui_kit::button(ui, tr("ui.cam.save_tool"), ui_kit::Button::Primary).clicked() {
         let base = original.and_then(|n| library.find(n));
@@ -1537,6 +1731,8 @@ fn posts_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_trailing_decimal"), &mut edit.trailing_decimal));
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_two_digit"), &mut edit.two_digit_codes));
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_canned_cycles"), &mut edit.canned_cycles));
+    let tapping: Vec<&str> = TAPPING.iter().map(|(_, key)| tr(key)).collect();
+    ui_kit::choice_row(ui, tr("ui.cam.post_tapping"), "cam-post-tapping", &mut edit.tapping, &tapping);
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_tool_change_first"), &mut edit.tool_change_first));
     ui_kit::text_row(ui, tr("ui.cam.post_dwell"), &mut edit.dwell, "G4 P{seconds}");
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.post_hint")).color(t.text_dim)).wrap());
@@ -1568,15 +1764,23 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         let t = Tokens::get();
         let title = crate::i18n::format("ui.cam.gcode_title", &[("setup", &view.setup)]);
         let corner = ctx.content_rect().right_bottom() - egui::vec2(t.space_24, t.space_24);
+        let mut actions = Vec::new();
         let closed = ui_kit::Window::new(egui::Id::unique("sc_cam_gcode"), "cut", &title)
             .cards(1.6)
             .resizable(t.form_card_width * 1.4)
             .placed(egui::Align2::RIGHT_BOTTOM, corner)
-            .show_body(ctx, |ui| gcode_rows(app, ui, view));
+            .show_body(ctx, |ui| gcode_rows(app, ui, view, &mut actions));
         if closed {
             d.gcode = None;
         }
         app.cam_window = Some(d);
+        for action in actions {
+            // Hand-edited text is saved as it is, through the same command, never read back.
+            if let Action::ExportText(setup, text) = action {
+                let extension = program_extension(app, &setup);
+                app.pick_save_command(&program_file(&setup, &extension), &[&extension], "cam.export", json!({"setup": setup, "text": text}));
+            }
+        }
         return;
     }
     let mut actions = Vec::new();
@@ -1689,6 +1893,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 app.cam_window = Some(std::mem::take(&mut d));
                 import_library(app);
                 d = app.cam_window.take().unwrap_or_default();
+                Ok(())
+            }
+            Action::ExportText(setup, text) => {
+                let extension = program_extension(app, &setup);
+                app.pick_save_command(&program_file(&setup, &extension), &[&extension], "cam.export", json!({"setup": setup, "text": text}));
                 Ok(())
             }
             Action::TakeImport(replace) => {

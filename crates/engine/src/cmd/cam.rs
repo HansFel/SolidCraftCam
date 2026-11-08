@@ -28,9 +28,12 @@ use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.tool.define", "Define Tool", crate::checked!("cam.tool.define", tool_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ToolResult>).icon("hole").params(
-        "number (1…9999); kind?: flat_endmill|ball_endmill|drill (default flat_endmill); diameter (mm); flute_length (mm); \
-         description?; flutes?; spindle_rpm?; feed?; plunge_feed?; stepdown?; stepover?; \
-         cutting?: {material: {vc m/min, fz mm/tooth (drill: per rev), ap × D, ae × D}}",
+        "number (1…9999); kind?: flat_endmill|ball_endmill|bull_nose|chamfer|v_bit|t_slot|thread_mill|drill|centre_drill|reamer|tap \
+         (default flat_endmill); diameter (mm); flute_length (mm); description?; flutes?; spindle_rpm?; feed?; plunge_feed?; \
+         stepdown?; stepover?; cutting?: {material: {vc m/min, fz mm/tooth (drill: per rev), ap × D, ae × D}}; \
+         corner_radius? (bull_nose, required); tip_angle?: included degrees (chamfer 90, v_bit 60, centre_drill 90, drill 118); \
+         tip_diameter? (chamfer, v_bit); pitch? (tap, thread_mill, required); shank_diameter? (t_slot: the neck); overall_length?; \
+         stick_out?; holder?: {description?, diameter, length} or null. Omitted sizes are kept from a tool of the same kind.",
     ),
     CommandSpec::new("cam.tool.remove", "Remove Tool", crate::checked!("cam.tool.remove", tool_remove)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolRemoveParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>).icon("delete").params("number"),
     CommandSpec::new("cam.machine.define", "Define Machine", crate::checked!("cam.machine.define", machine_cmd))
@@ -72,7 +75,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          zero_axes?: {x?, y?, z?: {body, at, edge?}} (each moves zero along that work axis only,          after `wcs_origin_mode` has placed it, so unpicked axes take the box point); \
          wcs_origin_mode?: model_origin|selected_point|model_box_point|stock_box_point, with box_point?: \
          {x,y,z: negative|center|positive} in the work frame; stock_spec?: {kind: relative_box|box|cylinder|…}; \
-         model_bodies?: [names]; stock?: {min:[x,y,z], max:[x,y,z]}; \
+         model_bodies?: [names]; fixtures?: [names] (bodies holding the part: tools and holders keep 0.5 mm clear of their boxes, \
+         posting refuses a step that comes nearer); zero_follows?: bool (a box-point part zero follows later model edits); stock?: {min:[x,y,z], max:[x,y,z]}; \
          machine?: a machine's name, a machine as cam.machine.define takes it (copied into the design), or null; machine_post?: the post that machine names, in full as cam.post.define returns it (copied too); delete?: bool",
     ),
     CommandSpec::new("cam.op.contour", "2D Contour", crate::checked!("cam.op.contour", contour_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
@@ -111,6 +115,26 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+    CommandSpec::new("cam.op.tap", "Tap", crate::checked!("cam.op.tap", tap_cmd)).icon("hole")
+        .contract(&DRILL_CONTRACT)
+        .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
+        .params("setup; name; tool: a tap (kind tap, with its pitch); points?/holes? as for cam.op.drill; bottom: the thread's depth; spindle_rpm (or the tap's): the feed is one pitch a turn; clearance?; retract?; top?; coolant?. Written as the post's rigid tapping cycle (G84, G33.1, G331); a post without one refuses the program."),
+    CommandSpec::new("cam.op.helix", "Helical Bore", crate::checked!("cam.op.helix", helix_cmd)).icon("hole")
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
+        .params("setup; name; tool: an end mill; points?/holes? as for cam.op.drill; diameter: the hole's, above the tool's and at most twice it; bottom; stepdown?: depth per turn; climb? (default true); clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+    CommandSpec::new("cam.op.thread", "Thread Mill", crate::checked!("cam.op.thread", thread_cmd)).icon("hole")
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
+        .params("setup; name; tool: a thread mill; points?/holes? as for cam.op.drill; diameter: the thread's major diameter; pitch? (default the tool's); internal? (default true: in a hole, the core hole drilled before); left_hand?; bottom: the thread's depth; top?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?. Rises from the bottom one pitch a turn."),
+    CommandSpec::new("cam.op.chamfer", "Chamfer", crate::checked!("cam.op.chamfer", chamfer_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+        "setup; name; tool: a chamfer or engraving cutter; edges?: [{body, at}] the edges to chamfer (closed chains round, open ones along their side), or faces?/sketch?/outer: their contours; \
+         width: the chamfer's width on the face; tip_offset? (default 0.5 mm: how far the tip runs below the chamfer); side? auto|outside|inside; top?: the edge's height (default 0); tolerance?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
+    ),
+    CommandSpec::new("cam.op.engrave", "Engrave", crate::checked!("cam.op.engrave", engrave_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+        "setup; name; tool: an engraving cutter (or a small end mill); edges?: [{body, at}], or sketch?/profiles? (sketch text and curves), faces?: the curves the tip follows; \
+         bottom: the engraving's depth; stepdown?; top?; tolerance?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
+    ),
     CommandSpec::new("cam.post", "Post Process", crate::checked!("cam.post", post_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::PostParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::PostResult>).icon("export").noundo().params(
         "setup; post?: a built-in post or the name of a saved post (default: the setup's post, else its machine's, else rs274); program?: name (default the setup's) → \
          {gcode, extension, post, operations, readback, time: {cutting, rapid, dwell, tool_changes, total, per_operation, operations} in seconds or null}. G-code is always read back and checked against the toolpaths, \
@@ -129,6 +153,16 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<crate::schema::cam::OrderResult>)
         .icon("list")
         .params("setup; name; skip: true leaves it out when posting, false puts it back → {setup, order, skipped}"),
+    CommandSpec::new("cam.op.duplicate", "Duplicate CAM Operation", crate::checked!("cam.op.duplicate", duplicate_op))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::DuplicateParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::OrderResult>)
+        .icon("list")
+        .params("setup; name; new_name? (default the name with the next free number); to_setup?: the setup the copy goes to, at its end (default right after the step) → {setup, order, skipped} of the setup with the copy"),
+    CommandSpec::new("cam.op.rename", "Rename CAM Operation", crate::checked!("cam.op.rename", rename_op))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::RenameParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::OrderResult>)
+        .icon("list")
+        .params("setup; name; new_name: 1 to 128 characters, free in the setup → {setup, order, skipped}"),
     CommandSpec::new("cam.tool.speeds", "Tool Cutting Speeds", crate::checked!("cam.tool.speeds", speeds_cmd))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::SpeedsParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::SpeedsResult>)
@@ -153,9 +187,127 @@ pub static COMMANDS: &[CommandSpec] = &[
 const DRILL_CONTRACT: crate::schema::TypedContract<crate::schema::cam::DrillParams> = crate::schema::TypedContract::new();
 
 pub(super) fn drill_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "cam.op.drill";
+    hole_cmd(s, p, "cam.op.drill")
+}
+
+pub(super) fn tap_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.op.tap";
+    let tool = num(p, "tool").and_then(|n| s.doc.cam.tool(n as u32));
+    if !tool.is_some_and(|t| t.kind == ToolKind::Tap) {
+        return Err(bad(cmd, "tapping needs a tap (cam.tool.define with kind tap and its pitch)"));
+    }
+    hole_cmd(s, p, cmd)
+}
+
+fn hole_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let args: crate::schema::cam::DrillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, "define the drill tool first"))?;
+    let points = hole_points(s, cmd, p, &args.setup)?;
+    let op = CamOperation::Drill {
+        name: args.name.clone(),
+        tool: args.tool,
+        geometry: CamGeometry::Points { points: points.iter().map(|p| [p.x, p.y]).collect() },
+        cut: cut_param(cmd, p, &tool)?,
+        dwell: args.dwell,
+        spindle_rpm: args.spindle_rpm.or(tool.spindle_rpm),
+        coolant: args.coolant,
+    };
+    store_op(s, cmd, &args.setup, op)
+}
+
+/// Helical boring and thread milling: hole centres as drilling picks them, and the diameter.
+fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<Value> {
+    let args: crate::schema::cam::HoleMillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+    let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, format!("no tool {} (cam.tool.define first)", args.tool)))?;
+    let points = hole_points(s, cmd, p, &args.setup)?;
+    let geometry = CamGeometry::Points { points: points.iter().map(|p| [p.x, p.y]).collect() };
+    let diameter = req_expr(cmd, p, "diameter")?;
+    // A thread rises one pitch a turn over its whole depth: one pass from the bottom.
+    let mut p = p.clone();
+    if thread && p.get("stepdown").is_none() {
+        p["stepdown"] = json!(1000);
+    }
+    let cut = cut_param(cmd, &p, &tool)?;
+    let (spindle_rpm, coolant) = (args.spindle_rpm.or(tool.spindle_rpm), args.coolant);
+    let op = if thread {
+        let pitch = match expr(&p, "pitch") {
+            Some(e) => e,
+            None => Expr::new(format!("{} mm", tool.pitch.ok_or_else(|| bad(cmd, "give the thread's `pitch`: the tool has none"))?)),
+        };
+        let params = solidcraft_doc::cam::CamThreadParams {
+            diameter,
+            pitch,
+            internal: args.internal.unwrap_or(true),
+            left_hand: args.left_hand.unwrap_or(false),
+        };
+        CamOperation::ThreadMill { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
+    } else {
+        let params = solidcraft_doc::cam::CamHelixParams { diameter, climb: args.climb.unwrap_or(true) };
+        CamOperation::HelicalBore { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
+    };
+    store_op(s, cmd, &args.setup, op)
+}
+
+pub(super) fn helix_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    hole_mill_cmd(s, p, "cam.op.helix", false)
+}
+
+pub(super) fn thread_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    hole_mill_cmd(s, p, "cam.op.thread", true)
+}
+
+/// Chamfering and engraving: the picked edges as paths, or the contours of faces and sketches.
+fn edge_op_cmd(s: &mut Session, p: &Value, cmd: &str, chamfer: bool) -> Result<Value> {
+    let setup_name = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?.to_string();
+    let name = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).ok_or_else(|| bad(cmd, "`name` is required"))?.to_string();
+    let tool_n =
+        num(p, "tool").filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u32).ok_or_else(|| bad(cmd, "`tool` must be a tool number"))?;
+    let tool = s.doc.cam.tool(tool_n).cloned().ok_or_else(|| bad(cmd, format!("no tool {tool_n} (cam.tool.define first)")))?;
+    let mut p = p.clone();
+    if p.get("edges").is_some() {
+        p["chain"] = json!(true);
+    }
+    // A chamfer's depth follows from its width: its stored bottom is the edge's height.
+    if chamfer && p.get("bottom").is_none() {
+        p["bottom"] = p.get("top").cloned().unwrap_or(json!(0));
+    }
+    let p = &p;
+    let geometry = geometry_param(s, cmd, p)?;
+    let cut = cut_param(cmd, p, &tool)?;
+    let tolerance = expr(p, "tolerance").unwrap_or_else(|| Expr::new("0.01 mm"));
+    let (spindle_rpm, coolant) = (num(p, "spindle_rpm").or(tool.spindle_rpm), bool_(p, "coolant").unwrap_or(false));
+    let op = if chamfer {
+        let side = match str_(p, "side").unwrap_or("auto") {
+            "auto" => CamSide::Auto,
+            "outside" => CamSide::Outside,
+            "inside" => CamSide::Inside,
+            other => return Err(bad(cmd, format!("`side` must be auto, outside or inside, not `{other}`"))),
+        };
+        let params = solidcraft_doc::cam::CamChamferParams {
+            width: req_expr(cmd, p, "width")?,
+            tip_offset: expr(p, "tip_offset").unwrap_or_else(|| Expr::new("0.5 mm")),
+            side,
+            tolerance,
+        };
+        CamOperation::Chamfer { name, tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
+    } else {
+        let params = solidcraft_doc::cam::CamEngraveParams { tolerance };
+        CamOperation::Engrave { name, tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
+    };
+    store_op(s, cmd, &setup_name, op)
+}
+
+pub(super) fn chamfer_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    edge_op_cmd(s, p, "cam.op.chamfer", true)
+}
+
+pub(super) fn engrave_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    edge_op_cmd(s, p, "cam.op.engrave", false)
+}
+
+/// Hole centres in work XY from `points` and `holes` picks (a round edge's centre, every round
+/// hole of a flat face, a sketch point, or the circles of a sketch profile), each once.
+fn hole_points(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<Vec2>> {
     let mut points = if p.get("points").is_some() { vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)? } else { Vec::new() };
     // Picked bores: a round edge's centre, every round hole of a picked flat face, a sketch
     // point, or the circles of a sketch profile, in work XY.
@@ -164,7 +316,7 @@ pub(super) fn drill_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             .as_array()
             .filter(|h| h.len() <= solidcraft_doc::cam::MAX_LOOP_POINTS)
             .ok_or_else(|| bad(cmd, "`holes` must be a list of {body, at} or {sketch, point | profile}"))?;
-        let setup = s.doc.cam.setup(&args.setup).ok_or_else(|| bad(cmd, "create the setup first"))?;
+        let setup = s.doc.cam.setup(setup_name).ok_or_else(|| bad(cmd, "create the setup first"))?;
         let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
         for pick in holes {
             if pick.get("sketch").is_some() {
@@ -192,28 +344,7 @@ pub(super) fn drill_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
-    let op = CamOperation::Drill {
-        name: args.name.clone(),
-        tool: args.tool,
-        geometry: CamGeometry::Points { points: points.iter().map(|p| [p.x, p.y]).collect() },
-        cut: cut_param(cmd, p, &tool)?,
-        dwell: args.dwell,
-        spindle_rpm: args.spindle_rpm.or(tool.spindle_rpm),
-        coolant: args.coolant,
-    };
-    op.validate().map_err(|e| bad(cmd, e.to_string()))?;
-    let setup = s.doc.cam.setup(&args.setup).cloned().ok_or_else(|| bad(cmd, "create the setup first"))?;
-    build_path(s, &setup, &op).map_err(|e| bad(cmd, e))?;
-    let setup = s.doc_mut().cam.setup_mut(&args.setup).ok_or_else(|| bad(cmd, "setup disappeared"))?;
-    if let Some(slot) = setup.operations.iter_mut().find(|o| o.name() == args.name) {
-        *slot = op;
-    } else {
-        if setup.operations.len() >= MAX_OPS {
-            return Err(bad(cmd, "too many CAM operations"));
-        }
-        setup.operations.push(op);
-    }
-    Ok(json!({"setup": args.setup, "operation": args.name}))
+    Ok(points)
 }
 
 pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
@@ -222,18 +353,18 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|n| *n >= 1.0 && *n <= 9999.0 && n.fract() == 0.0)
         .map(|n| n as u32)
         .ok_or_else(|| bad(cmd, "`number` must be an integer 1…9999"))?;
-    let kind = match str_(p, "kind").unwrap_or("flat_endmill") {
-        "flat_endmill" => ToolKind::FlatEndmill,
-        "ball_endmill" => ToolKind::BallEndmill,
-        "drill" => ToolKind::Drill,
-        other => return Err(bad(cmd, format!("unknown tool kind `{other}` (flat_endmill, ball_endmill, drill)"))),
-    };
-    // A drill cuts only at its point: turning a tool that mills into one would break those steps.
-    if kind == ToolKind::Drill
-        && let Some(op) =
-            s.doc.cam.setups.iter().flat_map(|x| &x.operations).find(|op| op.tool() == number && !matches!(op, CamOperation::Drill { .. }))
-    {
-        return Err(bad(cmd, format!("tool {number} mills in operation `{}`, which a drill cannot do: give the drill another number", op.name())));
+    let kind_key = str_(p, "kind").unwrap_or("flat_endmill");
+    let kind = ToolKind::from_key(kind_key).ok_or_else(|| {
+        let known: Vec<&str> = ToolKind::ALL.iter().map(|k| k.key()).collect();
+        bad(cmd, format!("unknown tool kind `{kind_key}` ({})", known.join(", ")))
+    })?;
+    // A tool that cuts only straight down cannot take over steps that mill, nor the other way.
+    if let Some(op) = s.doc.cam.setups.iter().flat_map(|x| &x.operations).find(|op| op.tool() == number) {
+        let drills = matches!(op, CamOperation::Drill { .. });
+        if drills != kind.cuts_down() {
+            let what = if drills { "drills" } else { "mills" };
+            return Err(bad(cmd, format!("tool {number} {what} in operation `{}`, which a {} cannot do: give it another number", op.name(), kind.label())));
+        }
     }
     let diameter = num(p, "diameter").ok_or_else(|| bad(cmd, "`diameter` is required (mm)"))?;
     let flute_length = num(p, "flute_length").ok_or_else(|| bad(cmd, "`flute_length` is required (mm)"))?;
@@ -257,6 +388,28 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     tool.cutting = match p.get("cutting") {
         Some(cutting) => serde_json::from_value(cutting.clone()).map_err(|e| bad(cmd, format!("`cutting`: {e}")))?,
         None => s.doc.cam.tool(number).map(|t| t.cutting.clone()).unwrap_or_default(),
+    };
+    // The kind's sizes, lengths and holder: omitted, a redefined tool of the same kind keeps
+    // them; `null` clears one.
+    let old = s.doc.cam.tool(number).filter(|t| t.kind == kind).cloned();
+    let size = |key: &str, was: Option<f64>| -> Result<Option<f64>> {
+        match p.get(key) {
+            None => Ok(was),
+            Some(Value::Null) => Ok(None),
+            Some(v) => v.as_f64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be a number (mm or degrees) or null"))),
+        }
+    };
+    tool.corner_radius = size("corner_radius", old.as_ref().and_then(|t| t.corner_radius))?;
+    tool.tip_angle = size("tip_angle", old.as_ref().and_then(|t| t.tip_angle))?;
+    tool.tip_diameter = size("tip_diameter", old.as_ref().and_then(|t| t.tip_diameter))?;
+    tool.pitch = size("pitch", old.as_ref().and_then(|t| t.pitch))?;
+    tool.shank_diameter = size("shank_diameter", old.as_ref().and_then(|t| t.shank_diameter))?;
+    tool.overall_length = size("overall_length", old.as_ref().and_then(|t| t.overall_length))?;
+    tool.stick_out = size("stick_out", old.as_ref().and_then(|t| t.stick_out))?;
+    tool.holder = match p.get("holder") {
+        None => s.doc.cam.tool(number).and_then(|t| t.holder.clone()),
+        Some(Value::Null) => None,
+        Some(h) => Some(serde_json::from_value(h.clone()).map_err(|e| bad(cmd, format!("`holder`: {e}")))?),
     };
     tool.validate().map_err(|e| bad(cmd, e.to_string()))?;
     let doc = s.doc_mut();
@@ -293,6 +446,80 @@ fn move_op(s: &mut Session, p: &Value) -> Result<Value> {
     let from = setup.operations.iter().position(|o| o.name() == name).ok_or_else(|| bad(cmd, "the operation is gone"))?;
     let op = setup.operations.remove(from);
     setup.operations.insert(to.min(setup.operations.len()), op);
+    Ok(order_json(setup))
+}
+
+/// A step name for a setup: trimmed, 1 to 128 characters, not taken by another step.
+fn free_op_name(cmd: &str, setup: &CamSetup, name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        return Err(bad(cmd, "a step name is 1 to 128 characters, without control characters"));
+    }
+    if setup.operations.iter().any(|o| o.name() == name) {
+        return Err(bad(cmd, format!("setup `{}` already has a step `{name}`", setup.name)));
+    }
+    Ok(name.to_string())
+}
+
+/// `name` with the first number from 2 that makes it free in `setup` (`Contour 2`, `Contour 3`, …).
+fn numbered_name(setup: &CamSetup, name: &str) -> String {
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
+    let base = if base.is_empty() { name } else { base };
+    let base: String = base.chars().take(120).collect();
+    (2..=10_000).map(|n| format!("{base} {n}")).find(|c| setup.operations.iter().all(|o| o.name() != c)).unwrap_or_else(|| format!("{base} copy"))
+}
+
+fn duplicate_op(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.op.duplicate";
+    let (setup, name) = named_op(s, cmd, p)?;
+    let from_setup = setup.name.clone();
+    let place = setup.operations.iter().position(|o| o.name() == name).ok_or_else(|| bad(cmd, "the operation is gone"))?;
+    let mut op = setup.operations.get(place).cloned().ok_or_else(|| bad(cmd, "the operation is gone"))?;
+    let skipped = setup.skipped.contains(&name);
+    let target_name = match str_(p, "to_setup").map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_string(),
+        None => from_setup.clone(),
+    };
+    let same = target_name == from_setup;
+    let target = s.doc_mut().cam.setup_mut(&target_name).ok_or_else(|| bad(cmd, format!("no setup `{target_name}`")))?;
+    if target.operations.len() >= MAX_OPS {
+        return Err(bad(cmd, format!("a CAM setup has at most {} operations", MAX_OPS)));
+    }
+    let new_name = match str_(p, "new_name") {
+        Some(n) => free_op_name(cmd, target, n)?,
+        None if !same && target.operations.iter().all(|o| o.name() != name) => name.clone(),
+        None => numbered_name(target, &name),
+    };
+    *op.name_mut() = new_name.clone();
+    if same {
+        target.operations.insert(place + 1, op);
+    } else {
+        target.operations.push(op);
+    }
+    if skipped {
+        target.skipped.push(new_name);
+    }
+    Ok(order_json(target))
+}
+
+fn rename_op(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.op.rename";
+    let wanted = str_(p, "new_name").ok_or_else(|| bad(cmd, "`new_name` is required"))?.to_string();
+    // The same name again changes nothing, and leaves nothing to undo.
+    let (setup_name, name) = (str_(p, "setup").unwrap_or_default().trim(), str_(p, "name").unwrap_or_default().trim());
+    if wanted.trim() == name
+        && let Some(setup) = s.doc.cam.setup(setup_name).filter(|x| x.operations.iter().any(|o| o.name() == name))
+    {
+        return Ok(order_json(setup));
+    }
+    let (setup, name) = named_op(s, cmd, p)?;
+    let new_name = free_op_name(cmd, setup, &wanted)?;
+    if let Some(op) = setup.operations.iter_mut().find(|o| o.name() == name) {
+        *op.name_mut() = new_name.clone();
+    }
+    for skipped in setup.skipped.iter_mut().filter(|n| **n == name) {
+        *skipped = new_name.clone();
+    }
     Ok(order_json(setup))
 }
 
@@ -435,6 +662,23 @@ pub fn post_from(cam: &CamSettings, p: &crate::schema::cam::PostDefineParams) ->
             "semicolon" => CommentStyle::Semicolon,
             "none" => CommentStyle::None,
             other => return Err(format!("`comments` must be parentheses, semicolon or none, not `{other}`")),
+        };
+    }
+    if let Some(v) = &p.language {
+        post.language = match v.as_str() {
+            "g_code" => solidcraft_cam::Language::GCode,
+            "klartext" => solidcraft_cam::Language::Klartext,
+            other => return Err(format!("`language` must be g_code or klartext, not `{other}`")),
+        };
+    }
+    if let Some(v) = &p.tapping {
+        post.tapping = match v.as_str() {
+            "none" => solidcraft_cam::Tapping::None,
+            "g84" => solidcraft_cam::Tapping::G84,
+            "g84_rigid" => solidcraft_cam::Tapping::G84Rigid,
+            "g33_1" => solidcraft_cam::Tapping::G33_1,
+            "g331" => solidcraft_cam::Tapping::G331,
+            other => return Err(format!("`tapping` must be none, g84, g84_rigid, g33_1 or g331, not `{other}`")),
         };
     }
     for (block, lines) in [
@@ -588,6 +832,18 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     setup.box_point = parse_value(cmd, p, "box_point", existing.as_ref().map(|e| e.box_point).unwrap_or_default())?;
     setup.flip_z = bool_(p, "flip_z").unwrap_or(existing.as_ref().map(|e| e.flip_z).unwrap_or(false));
     setup.flip_x = bool_(p, "flip_x").unwrap_or(existing.as_ref().map(|e| e.flip_x).unwrap_or(false));
+    // Fixtures keep clear of the tools and stay out of the model's box; each must be a body.
+    setup.fixtures = if p.get("fixtures").is_some() {
+        let names = string_list(cmd, p, "fixtures")?;
+        let state = s.model.state();
+        if let Some(missing) = names.iter().find(|n| !state.bodies.iter().any(|b| b.name == **n)) {
+            return Err(bad(cmd, format!("there is no body `{missing}` to be a fixture")));
+        }
+        names
+    } else {
+        existing.as_ref().map(|e| e.fixtures.clone()).unwrap_or_default()
+    };
+    setup.zero_follows = bool_(p, "zero_follows").unwrap_or_else(|| existing.as_ref().is_some_and(|e| e.zero_follows));
     setup.model_bodies = if p.get("model_bodies").is_some() {
         string_list(cmd, p, "model_bodies")?
     } else {
@@ -1250,6 +1506,13 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
     for op in setup.operations.iter().filter(|op| !setup.skipped.iter().any(|n| n == op.name())) {
         let tool = s.doc.cam.tool(op.tool()).cloned().ok_or_else(|| bad(cmd, format!("operation `{}` needs tool {}", op.name(), op.tool())))?;
         let path = build_path(s, &setup, op).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?;
+        let live = live_setup(s, &setup).map_err(|e| bad(cmd, e))?;
+        if let Some((fixture, at)) = fixture_hit(s, &live, &tool, &path).map_err(|e| bad(cmd, e))? {
+            return Err(bad(
+                cmd,
+                format!("operation `{}`: the tool or its holder comes near fixture `{fixture}` (at {:.1}, {:.1}, {:.1})", op.name(), at.x, at.y, at.z),
+            ));
+        }
         move_count = move_count.saturating_add(path.moves.len());
         if move_count > 2_000_000 {
             return Err(bad(cmd, "setup exceeds 2000000 toolpath moves; split the job"));
@@ -2046,10 +2309,21 @@ fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Res
 /// The smallest and largest work coordinates of `bodies` (every body when empty) in `frame`:
 /// the corners of each body's box.
 fn model_extent(s: &Session, bodies: &[String], frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
+    bodies_extent(s, bodies, &[], frame)
+}
+
+/// The box round a setup's part: its model bodies, else every body but its fixtures.
+fn part_extent(s: &Session, setup: &CamSetup, frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
+    bodies_extent(s, &setup.model_bodies, &setup.fixtures, frame)
+}
+
+/// The box in `frame` round `bodies` (empty: every body), leaving `without` out; from each
+/// body's exact outline bounds.
+fn bodies_extent(s: &Session, bodies: &[String], without: &[String], frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
     let state = s.model.state();
     let (mut lo, mut hi) =
         (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
-    for body in state.bodies.iter().filter(|b| bodies.is_empty() || bodies.contains(&b.name)) {
+    for body in state.bodies.iter().filter(|b| (bodies.is_empty() || bodies.contains(&b.name)) && !without.contains(&b.name)) {
         let b = body.body.outline_bounds();
         if !(b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z) {
             continue;
@@ -2070,7 +2344,7 @@ fn model_extent(s: &Session, bodies: &[String], frame: &WorkFrame) -> std::resul
 /// The stock's box in `frame`: around the model, or the stock's own size centred on the model
 /// with its top at the model's top. Round stock is boxed square to the tool axis.
 fn stock_extent(s: &Session, setup: &CamSetup, frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
-    let (lo, hi) = model_extent(s, &setup.model_bodies, frame)?;
+    let (lo, hi) = part_extent(s, setup, frame)?;
     let mid = (lo + hi) * 0.5;
     let up = |size: f64, step: f64| if step > 0.0 { (size / step).ceil() * step } else { size };
     let fixed = |w: f64, d: f64, h: f64| (Vec3::new(mid.x - w / 2.0, mid.y - d / 2.0, hi.z - h), Vec3::new(mid.x + w / 2.0, mid.y + d / 2.0, hi.z));
@@ -2106,7 +2380,7 @@ fn box_origin(s: &Session, setup: &CamSetup) -> std::result::Result<Vec3, String
     let frame = WorkFrame { o: Vec3::ZERO, ..work_frame(setup)? };
     let (lo, hi) = match setup.wcs_origin_mode {
         WcsOriginMode::StockBoxPoint => stock_extent(s, setup, &frame)?,
-        _ => model_extent(s, &setup.model_bodies, &frame)?,
+        _ => part_extent(s, setup, &frame)?,
     };
     let at = |r: BoxAxisRef, a: f64, b: f64| match r {
         BoxAxisRef::Negative => a,
@@ -2129,6 +2403,7 @@ impl Session {
     /// The frame and stock of setup `name`; None when its axes do not form a frame.
     pub fn cam_setup_outline(&self, name: &str) -> Option<SetupOutline> {
         let setup = self.doc.cam.setup(name)?;
+        let setup = &*live_setup(self, setup).ok()?;
         let frame = work_frame(setup).ok()?;
         let stock = stock_extent(self, setup, &frame).ok().map(|(lo, hi)| {
             std::array::from_fn(|i| {
@@ -2170,13 +2445,15 @@ impl Session {
     pub fn cam_program(&self, setup: &str) -> std::result::Result<CamProgram, String> {
         let found = self.doc.cam.setup(setup).ok_or_else(|| format!("no setup `{setup}`"))?;
         let post = chosen_post(&self.doc.cam, found).unwrap_or_else(|| "linuxcnc".into());
+        let found = &*live_setup(self, found)?;
         let frame = work_frame(found)?;
+        let writer = resolve_post(&self.doc.cam, &post)?;
         let out = post_program(self, &json!({"setup": setup, "post": post})).map_err(|e| e.to_string())?;
         let gcode = out.get("gcode").and_then(Value::as_str).ok_or("post returned no G-code")?.to_string();
         let extension = out.get("extension").and_then(Value::as_str).unwrap_or("ngc").to_string();
         let mut moves = Vec::new();
         let mut at: Option<Vec3> = None;
-        for (line, m) in solidcraft_cam::parse_lines(&gcode).map_err(|e| e.to_string())? {
+        for (line, m) in writer.read_back(&gcode).map_err(|e| e.to_string())? {
             let Some(to) = m.target() else { continue };
             if let Some(from) = at {
                 let points = match m {
@@ -2216,6 +2493,7 @@ impl Session {
     /// size (mm); None picks one from the stock's size.
     pub fn cam_simulate(&self, setup: &str, cell: Option<f64>) -> std::result::Result<CamSimulation, String> {
         let found = self.doc.cam.setup(setup).ok_or_else(|| format!("no setup `{setup}`"))?;
+        let found = &*live_setup(self, found)?;
         let frame = work_frame(found)?;
         // A stock box given in work coordinates (scripts) wins over the one worked out from the model.
         let (lo, hi) = match found.stock {
@@ -2223,7 +2501,7 @@ impl Session {
             None => stock_extent(self, found, &frame)?,
         };
         // No more than a tenth of a millimetre beyond the model on any side in XY: no allowance.
-        let fits_model = model_extent(self, &found.model_bodies, &frame)
+        let fits_model = part_extent(self, found, &frame)
             .is_ok_and(|(mlo, mhi)| [lo.x - mlo.x, lo.y - mlo.y, mhi.x - hi.x, mhi.y - hi.y].iter().all(|d| *d >= -0.1));
         let round = found.stock.is_none()
             && matches!(found.stock_spec, CamStock::Cylinder { .. } | CamStock::RelativeCylinder { .. } | CamStock::Tube { .. });
@@ -2530,13 +2808,64 @@ fn engine_pocket(s: &Session, p: &CamPocketParams) -> std::result::Result<Pocket
     })
 }
 
+/// `setup` as it stands now: with `zero_follows`, part zero worked out again on its box point
+/// of the model or stock as the model is today.
+fn live_setup<'a>(s: &Session, setup: &'a CamSetup) -> std::result::Result<std::borrow::Cow<'a, CamSetup>, String> {
+    if !setup.zero_follows || !matches!(setup.wcs_origin_mode, WcsOriginMode::ModelBoxPoint | WcsOriginMode::StockBoxPoint) {
+        return Ok(std::borrow::Cow::Borrowed(setup));
+    }
+    let o = box_origin(s, setup)?;
+    let mut live = setup.clone();
+    live.work_origin = [o.x, o.y, o.z];
+    Ok(std::borrow::Cow::Owned(live))
+}
+
+/// The first move of `path` (tool `tool`, holder included) that comes within `CLEAR` of one of
+/// `setup`'s fixtures, as `(fixture, point)`. Each fixture is its body's exact outline box, the
+/// tool a cylinder from its tip up its reach, and the holder one above that; moves are checked
+/// as the boxes they sweep, arcs followed within 0.05 mm.
+fn fixture_hit(s: &Session, setup: &CamSetup, tool: &Tool, path: &solidcraft_cam::Toolpath) -> std::result::Result<Option<(String, Vec3)>, String> {
+    const CLEAR: f64 = 0.5;
+    if setup.fixtures.is_empty() {
+        return Ok(None);
+    }
+    let frame = work_frame(setup)?;
+    let mut boxes = Vec::new();
+    for name in &setup.fixtures {
+        let (lo, hi) = bodies_extent(s, std::slice::from_ref(name), &[], &frame).map_err(|_| format!("fixture `{name}` is not a body of the design"))?;
+        boxes.push((name, lo - Vec3::new(CLEAR, CLEAR, CLEAR), hi + Vec3::new(CLEAR, CLEAR, CLEAR)));
+    }
+    let reach = tool.reach();
+    let holder = tool.holder.as_ref().map(|h| (h.diameter * 0.5, h.length));
+    // (radius, from, to) above the tip: the tool, then the holder.
+    let mut parts = vec![(tool.radius().max(tool.shank_diameter.unwrap_or(0.0) * 0.5), 0.0, reach)];
+    if let Some((r, length)) = holder {
+        parts.push((r, reach, reach + length));
+    }
+    let points = path.checked_points(0.05, 2_000_000).map_err(|e| e.to_string())?;
+    for pair in points.windows(2) {
+        let [(a, _), (b, _)] = pair else { continue };
+        for &(r, from, to) in &parts {
+            let lo = Vec3::new(a.x.min(b.x) - r, a.y.min(b.y) - r, a.z.min(b.z) + from);
+            let hi = Vec3::new(a.x.max(b.x) + r, a.y.max(b.y) + r, a.z.max(b.z) + to);
+            if let Some((name, _, _)) =
+                boxes.iter().find(|(_, flo, fhi)| lo.x < fhi.x && hi.x > flo.x && lo.y < fhi.y && hi.y > flo.y && lo.z < fhi.z && hi.z > flo.z)
+            {
+                return Ok(Some(((*name).clone(), frame.model(*b))));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> std::result::Result<solidcraft_cam::Toolpath, String> {
+    let setup = &*live_setup(s, setup)?;
     let mut cut = engine_cut(s, op.cut())?;
     // Material left on the floor: the passes stop that far above the bottom.
     let floor = match op {
         CamOperation::Contour { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
         CamOperation::Pocket { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
-        CamOperation::Drill { .. } | CamOperation::Face { .. } | CamOperation::Slot { .. } => 0.0,
+        _ => 0.0,
     };
     if !floor.is_finite() || floor < 0.0 {
         return Err("the floor stock must be 0 or more".into());
@@ -2548,11 +2877,17 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         }
     }
     let tool = s.doc.cam.tool(op.tool()).ok_or_else(|| format!("there is no tool {}", op.tool()))?;
-    if cut.heights.top - cut.heights.bottom > tool.flute_length {
+    // A thread mill reaches below its short cutting edge; its own check knows how far.
+    if !matches!(op, CamOperation::ThreadMill { .. }) && cut.heights.top - cut.heights.bottom > tool.flute_length {
         return Err("cutting depth exceeds the tool's flute length".into());
     }
     if let CamOperation::Drill { geometry: CamGeometry::Points { points }, dwell, .. } = op {
         let points: Vec<_> = points.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+        // A hole step with a tap taps: one pitch a turn at the step's spindle speed.
+        if tool.kind == ToolKind::Tap {
+            let rpm = op.spindle_rpm().or(tool.spindle_rpm).ok_or("tapping needs a spindle speed: give the step or the tap one")?;
+            return solidcraft_cam::tap(&points, tool, &cut, rpm).map_err(|e| e.to_string());
+        }
         return drill(&points, tool, &cut, *dwell).map_err(|e| e.to_string());
     }
     if let CamOperation::Face { geometry, params, .. } = op {
@@ -2601,64 +2936,154 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
         return Ok(path);
     }
-    let (regions, openings) = resolve_geometry(s, setup, op.geometry(), matches!(op, CamOperation::Contour { .. }))?;
     match op {
-        CamOperation::Contour { params: p, .. } => {
-            let (params, other) = (engine_contour(s, p, false)?, engine_contour(s, p, true)?);
-            let start = match p.start {
-                Some(a) => {
-                    let w = work_frame(setup)?.local(Vec3::new(a[0], a[1], a[2]));
-                    Some(Vec2::new(w.x, w.y))
-                }
-                None => None,
-            };
-            let leads = engine_leads(s, p)?;
-            let tabs = engine_tabs(s, p.tabs.as_deref())?;
-            let mut moves = Vec::new();
-            for (group, params) in [(&regions, &params), (&openings, &other)] {
-                if !group.is_empty() {
-                    moves.extend(contour_with_tabs(group, tool, params, &leads, &tabs, &cut, start).map_err(|e| e.to_string())?.moves);
-                }
-            }
-            // An edge chain that does not close is followed as an open contour.
-            if let CamGeometry::Edges { .. } = op.geometry() {
-                let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(op.geometry()))?;
-                if !chains.is_empty() {
-                    if !tabs.is_empty() {
-                        return Err("holding tabs are for closed contours: the picked edges leave this one open".into());
-                    }
-                    let paths: Vec<OpenPath> = chains.into_iter().map(|segs| OpenPath { segs }).collect();
-                    let open = OpenContourParams {
-                        side: match p.open_side {
-                            CamOpenSide::Left => OpenSide::Left,
-                            CamOpenSide::Right => OpenSide::Right,
-                            CamOpenSide::On => OpenSide::On,
-                        },
-                        reverse: p.reverse,
-                        stock_to_leave: params.stock_to_leave,
-                        tolerance: params.tolerance,
-                        extend_start: eval_len(s, &p.extend_start, "extend_start")?,
-                        extend_end: eval_len(s, &p.extend_end, "extend_end")?,
-                    };
-                    moves.extend(contour_open(&paths, tool, &open, &leads, &cut).map_err(|e| e.to_string())?.moves);
-                }
-            }
-            if moves.is_empty() {
-                return Err("there is nothing to contour".into());
-            }
-            let path = solidcraft_cam::Toolpath::new(moves);
-            solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
-            Ok(path)
-        }
-        CamOperation::Pocket { params, .. } => {
+        CamOperation::Contour { geometry, params, .. } => contour_path(s, setup, geometry, params, tool, &cut),
+        CamOperation::Pocket { geometry, params, .. } => {
+            let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
             let params = engine_pocket(s, params)?;
             let all: Vec<Region2> = regions.into_iter().chain(openings).collect();
             pocket(&all, tool, &params, &cut).map_err(|e| e.to_string())
+        }
+        CamOperation::Chamfer { geometry, params, .. } => chamfer_path(s, setup, geometry, params, tool, cut),
+        CamOperation::Engrave { geometry, params, .. } => {
+            // The cutter's tip on the curves: one pass of a slot as wide as the tool.
+            let params = SlotParams {
+                width: None,
+                stepover: tool.diameter,
+                stock_to_leave: 0.0,
+                tolerance: eval_len(s, &params.tolerance, "tolerance")?,
+                ramp_angle: 0.0,
+            };
+            let path = slot(&slot_paths(s, setup, geometry)?, tool, &params, &cut).map_err(|e| e.to_string())?;
+            solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
+            Ok(path)
+        }
+        CamOperation::HelicalBore { geometry, params, .. } => {
+            let params = solidcraft_cam::HelixParams { diameter: eval_len(s, &params.diameter, "diameter")?, climb: params.climb };
+            solidcraft_cam::helical_bore(&hole_centres(geometry)?, tool, &params, &cut).map_err(|e| e.to_string())
+        }
+        CamOperation::ThreadMill { geometry, params, .. } => {
+            let params = solidcraft_cam::ThreadParams {
+                diameter: eval_len(s, &params.diameter, "diameter")?,
+                pitch: eval_len(s, &params.pitch, "pitch")?,
+                internal: params.internal,
+                left_hand: params.left_hand,
+            };
+            solidcraft_cam::thread_mill(&hole_centres(geometry)?, tool, &params, &cut).map_err(|e| e.to_string())
         }
         CamOperation::Drill { .. } => Err("drilling needs hole centres".into()),
         CamOperation::Face { .. } => Err("facing takes the stock outline or a rectangle".into()),
         CamOperation::Slot { .. } => Err("a slot takes edges or contours".into()),
     }
+}
+
+/// The hole centres of an operation on points, in work XY.
+fn hole_centres(geometry: &CamGeometry) -> std::result::Result<Vec<Vec2>, String> {
+    match geometry {
+        CamGeometry::Points { points } => Ok(points.iter().map(|p| Vec2::new(p[0], p[1])).collect()),
+        _ => Err("this step needs hole centres".into()),
+    }
+}
+
+/// A contour round the picked faces, sketch profiles or polygons, and along picked edges
+/// (closed chains as contours, open ones followed on their side).
+fn contour_path(
+    s: &Session,
+    setup: &CamSetup,
+    geometry: &CamGeometry,
+    p: &CamContourParams,
+    tool: &Tool,
+    cut: &Cut,
+) -> std::result::Result<solidcraft_cam::Toolpath, String> {
+    let (regions, openings) = resolve_geometry(s, setup, geometry, true)?;
+    let (params, other) = (engine_contour(s, p, false)?, engine_contour(s, p, true)?);
+    let start = match p.start {
+        Some(a) => {
+            let w = work_frame(setup)?.local(Vec3::new(a[0], a[1], a[2]));
+            Some(Vec2::new(w.x, w.y))
+        }
+        None => None,
+    };
+    let leads = engine_leads(s, p)?;
+    let tabs = engine_tabs(s, p.tabs.as_deref())?;
+    let mut moves = Vec::new();
+    for (group, params) in [(&regions, &params), (&openings, &other)] {
+        if !group.is_empty() {
+            moves.extend(contour_with_tabs(group, tool, params, &leads, &tabs, cut, start).map_err(|e| e.to_string())?.moves);
+        }
+    }
+    // An edge chain that does not close is followed as an open contour.
+    if let CamGeometry::Edges { .. } = geometry {
+        let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(geometry))?;
+        if !chains.is_empty() {
+            if !tabs.is_empty() {
+                return Err("holding tabs are for closed contours: the picked edges leave this one open".into());
+            }
+            let paths: Vec<OpenPath> = chains.into_iter().map(|segs| OpenPath { segs }).collect();
+            let open = OpenContourParams {
+                side: match p.open_side {
+                    CamOpenSide::Left => OpenSide::Left,
+                    CamOpenSide::Right => OpenSide::Right,
+                    CamOpenSide::On => OpenSide::On,
+                },
+                reverse: p.reverse,
+                stock_to_leave: params.stock_to_leave,
+                tolerance: params.tolerance,
+                extend_start: eval_len(s, &p.extend_start, "extend_start")?,
+                extend_end: eval_len(s, &p.extend_end, "extend_end")?,
+            };
+            moves.extend(contour_open(&paths, tool, &open, &leads, cut).map_err(|e| e.to_string())?.moves);
+        }
+    }
+    if moves.is_empty() {
+        return Err("there is nothing to contour".into());
+    }
+    let path = solidcraft_cam::Toolpath::new(moves);
+    solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// A chamfer with a cone (chamfer or engraving cutter): the tip runs `tip_offset` below where the
+/// chamfer meets the wall, `width / tan(half angle)` below the top, so the cone cuts the chamfer
+/// `width` wide on the top face. The tool centre then runs at the cone's radius at that height
+/// from the wall, which is a contour with a tool of that radius, in one pass.
+fn chamfer_path(
+    s: &Session,
+    setup: &CamSetup,
+    geometry: &CamGeometry,
+    params: &solidcraft_doc::cam::CamChamferParams,
+    tool: &Tool,
+    mut cut: Cut,
+) -> std::result::Result<solidcraft_cam::Toolpath, String> {
+    if !matches!(tool.kind, ToolKind::Chamfer | ToolKind::VBit) {
+        return Err("a chamfer needs a chamfer cutter or an engraving cutter".into());
+    }
+    let width = eval_len(s, &params.width, "width")?;
+    let offset = eval_len(s, &params.tip_offset, "tip_offset")?;
+    if !(width > 0.0 && width <= 1000.0) || !(0.0..=1000.0).contains(&offset) {
+        return Err("a chamfer is wider than 0 mm, and its tip offset is 0 mm or more".into());
+    }
+    let tan = tool.half_angle().map(f64::tan).filter(|t| t.is_finite() && *t > 1e-3).ok_or("the cutter's tip angle is too small to chamfer")?;
+    let contact = tool.tip_radius() + offset * tan;
+    if contact < 0.01 {
+        return Err("a pointed cutter needs a tip offset, so its point does not run on the wall".into());
+    }
+    if contact + width > tool.radius() + 1e-9 {
+        return Err("the chamfer is wider than the cutter's cone reaches: use a larger cutter or a smaller chamfer".into());
+    }
+    let depth = width / tan + offset;
+    if depth > tool.flute_length + 1e-9 {
+        return Err("the chamfer goes deeper than the cutter's cone".into());
+    }
+    cut.heights.bottom = cut.heights.top - depth;
+    cut.stepdown = depth;
+    // The contour code offsets by the tool's radius: give it the cone's radius at the wall.
+    let mut contact_tool = Tool::new(tool.number, ToolKind::FlatEndmill, 2.0 * contact, tool.flute_length);
+    contact_tool.flutes = tool.flutes;
+    let mut contour = default_contour_params();
+    contour.side = params.side;
+    contour.tolerance = params.tolerance.clone();
+    contour_path(s, setup, geometry, &contour, &contact_tool, &cut)
 }
 
 /// A slot's paths in work XY: picked edges joined into chains (closed or open), else every
@@ -2701,6 +3126,8 @@ fn setup_json(setup: &CamSetup) -> Value {
         "stock_spec": setup.stock_spec,
         "wcs": setup.wcs,
         "model_bodies": setup.model_bodies,
+        "fixtures": setup.fixtures,
+        "zero_follows": setup.zero_follows,
         "material": setup.material,
         "max_rpm": setup.max_rpm,
         "machine": setup.machine,
@@ -2724,6 +3151,22 @@ fn setup_json(setup: &CamSetup) -> Value {
             }),
             CamOperation::Slot { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
                 "type": "slot", "name": name, "tool": tool, "geometry": geometry,
+                "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::Chamfer { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
+                "type": "chamfer", "name": name, "tool": tool, "geometry": geometry,
+                "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::Engrave { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
+                "type": "engrave", "name": name, "tool": tool, "geometry": geometry,
+                "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::HelicalBore { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
+                "type": "helical_bore", "name": name, "tool": tool, "geometry": geometry,
+                "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::ThreadMill { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
+                "type": "thread_mill", "name": name, "tool": tool, "geometry": geometry,
                 "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
             }),
         }).collect::<Vec<_>>(),
@@ -3802,6 +4245,162 @@ mod tests {
         assert!(s.execute("cam.post.remove", &json!({"name": "Werkstatt"})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": 3})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": {"name": "linuxcnc"}})).is_err());
+        assert_eq!(s.doc.to_json(), before);
+    }
+
+    #[test]
+    fn chamfers_engraving_helical_bores_threads_and_taps_post_and_read_back() {
+        let mut s = Session::default();
+        for tool in [
+            json!({"number": 1, "kind": "chamfer", "diameter": 12, "flute_length": 6, "tip_angle": 90, "tip_diameter": 1}),
+            json!({"number": 2, "kind": "v_bit", "diameter": 6, "flute_length": 5, "tip_angle": 60}),
+            json!({"number": 3, "diameter": 10, "flute_length": 25}),
+            json!({"number": 4, "kind": "thread_mill", "diameter": 6, "flute_length": 12, "pitch": 1.5}),
+            json!({"number": 5, "kind": "tap", "diameter": 10, "flute_length": 20, "pitch": 1.5, "spindle_rpm": 400}),
+        ] {
+            run(&mut s, "cam.tool.define", tool);
+        }
+        run(&mut s, "cam.setup", json!({"name": "Top"}));
+        let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
+        // A 1 mm chamfer round the outline: the tip 1.5 mm down, the centre 1 mm off the wall.
+        run(&mut s, "cam.op.chamfer", json!({"setup": "Top", "name": "Fase", "tool": 1, "outer": outer, "width": 1, "spindle_rpm": 8000}));
+        run(&mut s, "cam.op.engrave", json!({"setup": "Top", "name": "Gravur", "tool": 2, "outer": [[10, 10], [50, 10], [50, 30], [10, 30]], "bottom": -0.3, "spindle_rpm": 12000}));
+        run(&mut s, "cam.op.helix", json!({"setup": "Top", "name": "Bohrung", "tool": 3, "points": [[30, 20]], "diameter": 16, "bottom": -12, "stepdown": 2, "spindle_rpm": 8000}));
+        run(&mut s, "cam.op.thread", json!({"setup": "Top", "name": "M10", "tool": 4, "points": [[10, 20]], "diameter": 10, "bottom": -10, "spindle_rpm": 6000}));
+        run(&mut s, "cam.op.tap", json!({"setup": "Top", "name": "M10 Gewinde", "tool": 5, "points": [[50, 20]], "bottom": -12}));
+        let paths = s.cam_toolpaths();
+        let lowest = |name: &str| {
+            let path = paths.iter().find(|p| p.operation == name).unwrap();
+            path.points.as_ref().unwrap().iter().map(|(p, _)| p.z).fold(f64::INFINITY, f64::min)
+        };
+        assert!((lowest("Fase") + 1.5).abs() < 1e-9, "{}", lowest("Fase"));
+        assert!((lowest("Gravur") + 0.3).abs() < 1e-9);
+        assert!((lowest("Bohrung") + 12.0).abs() < 1e-9);
+        assert!((lowest("M10") + 10.0).abs() < 1e-9);
+        let fase = paths.iter().find(|p| p.operation == "Fase").unwrap().points.as_ref().unwrap().clone();
+        assert!(fase.iter().filter(|(_, cutting)| *cutting).any(|(p, _)| (p.x + 1.0).abs() < 1e-6), "the centre runs 1 mm off the wall");
+        let listed = run(&mut s, "cam.list", json!({}));
+        let kinds: Vec<&str> = listed["setups"][0]["operations"].as_array().unwrap().iter().map(|o| o["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["chamfer", "engrave", "helical_bore", "thread_mill", "drill"]);
+        // Every built-in post that can tap writes and reads the whole setup back; GRBL and
+        // Heidenhain (no cycle 207 yet) refuse the tap.
+        for post in solidcraft_cam::Post::BUILTIN {
+            let posted = s.execute("cam.post", &json!({"setup": "Top", "post": post}));
+            if matches!(*post, "grbl" | "heidenhain") {
+                assert!(posted.is_err(), "{post} has no tapping cycle");
+                continue;
+            }
+            assert!(posted.is_ok(), "{post}: {posted:?}");
+            let posted = posted.unwrap();
+            assert_eq!(posted["operations"], 5, "{post}");
+        }
+        // A saved design keeps the new steps.
+        let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(cold.cam, s.doc.cam);
+        // Refused: a chamfer wider than the cone, a pointed cutter on the wall, an end mill;
+        // a helix as narrow as the tool; a thread without a thread mill; a tap that is a drill.
+        let before = s.doc.to_json();
+        for (id, p) in [
+            ("cam.op.chamfer", json!({"setup": "Top", "name": "X", "tool": 1, "outer": outer, "width": 5.5})),
+            ("cam.op.chamfer", json!({"setup": "Top", "name": "X", "tool": 2, "outer": outer, "width": 1, "tip_offset": 0})),
+            ("cam.op.chamfer", json!({"setup": "Top", "name": "X", "tool": 3, "outer": outer, "width": 1})),
+            ("cam.op.helix", json!({"setup": "Top", "name": "X", "tool": 3, "points": [[0, 0]], "diameter": 10, "bottom": -5})),
+            ("cam.op.thread", json!({"setup": "Top", "name": "X", "tool": 3, "points": [[0, 0]], "diameter": 12, "pitch": 1.75, "bottom": -5})),
+            ("cam.op.tap", json!({"setup": "Top", "name": "X", "tool": 3, "points": [[0, 0]], "bottom": -5})),
+            ("cam.op.engrave", json!({"setup": "Top", "name": "X", "tool": 2, "bottom": -0.3})),
+        ] {
+            assert!(s.execute(id, &p).is_err(), "{id} {p}");
+        }
+        assert_eq!(s.doc.to_json(), before);
+    }
+
+    #[test]
+    fn fixtures_stay_clear_and_part_zero_can_follow_the_model() {
+        let mut s = Session::default();
+        let block = |s: &mut Session, p0: [f64; 2], p1: [f64; 2], height: f64, name: &str| {
+            run(s, "sketch.create", json!({"plane": "XY"}));
+            run(s, "sketch.rectangle.two_point", json!({"p0": p0, "p1": p1}));
+            run(s, "sketch.finish", json!({}));
+            run(s, "solid.extrude", json!({"distance": height, "operation": "new", "body_name": name}));
+        };
+        block(&mut s, [0.0, 0.0], [40.0, 30.0], 8.0, "Plate");
+        block(&mut s, [50.0, 0.0], [60.0, 30.0], 12.0, "Jaw");
+        let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
+        // The jaw is a fixture: the part's box, and so part zero, leave it out.
+        run(&mut s, "cam.setup", json!({"name": "Top", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner}));
+        let origin = s.doc.cam.setup("Top").unwrap().work_origin;
+        assert!((origin[2] - 8.0).abs() < 1e-6, "{origin:?}");
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
+        // Round the plate the cutter stays 4 mm off the jaw; 4 mm further out it runs into it.
+        let around = |w: f64| json!([[0, 0], [w, 0], [w, 30], [0, 30]]);
+        let contour = |name: &str, w: f64| json!({"setup": "Top", "name": name, "tool": 1, "outer": around(w), "side": "outside", "bottom": -3, "stepdown": 3});
+        run(&mut s, "cam.op.contour", contour("Round", 40.0));
+        run(&mut s, "cam.post", json!({"setup": "Top"}));
+        run(&mut s, "cam.op.contour", contour("Wide", 44.0));
+        let refused = s.execute("cam.post", &json!({"setup": "Top"}));
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("fixture `Jaw`")), "{refused:?}");
+        // A holder wider than the cutter counts too: the cutter passes the jaw, its holder 5 mm above the tip does not.
+        run(&mut s, "cam.op.remove", json!({"setup": "Top", "name": "Wide"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "stick_out": 5, "holder": {"diameter": 40, "length": 50}}));
+        assert!(s.execute("cam.post", &json!({"setup": "Top"})).is_err(), "the holder sweeps over the jaw");
+        // Not a body, or both part and fixture: refused.
+        assert!(s.execute("cam.setup", &json!({"name": "Top", "fixtures": ["Nope"]})).is_err());
+        assert!(s.execute("cam.setup", &json!({"name": "Top", "model_bodies": ["Jaw"]})).is_err());
+        // Part zero kept where it was saved, or following the model when asked.
+        run(&mut s, "cam.setup", json!({"name": "Kept", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner}));
+        run(&mut s, "cam.setup", json!({"name": "Live", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner, "zero_follows": true}));
+        block(&mut s, [0.0, 0.0], [10.0, 10.0], 20.0, "Boss");
+        let z = |s: &Session, name: &str| s.cam_setup_outline(name).unwrap().origin.z;
+        assert!((z(&s, "Kept") - 8.0).abs() < 1e-6 && (z(&s, "Live") - 20.0).abs() < 1e-6, "{} {}", z(&s, "Kept"), z(&s, "Live"));
+        let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert!(cold.cam.setup("Live").is_some_and(|x| x.zero_follows && x.fixtures == ["Jaw"]));
+    }
+
+    #[test]
+    fn steps_are_duplicated_and_renamed() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
+        run(&mut s, "cam.setup", json!({"name": "S3"}));
+        run(&mut s, "cam.setup", json!({"name": "S4"}));
+        for name in ["Core", "Drill"] {
+            let outer = json!([[0, 0], [40, 0], [40, 30], [0, 30]]);
+            run(&mut s, "cam.op.contour", json!({"setup": "S3", "name": name, "tool": 1, "outer": outer, "bottom": -1, "stepdown": 1}));
+        }
+        run(&mut s, "cam.op.skip", json!({"setup": "S3", "name": "Core", "skip": true}));
+        // A copy lands right after its step with the next free number, skipped like it.
+        let order = run(&mut s, "cam.op.duplicate", json!({"setup": "S3", "name": "Core"}));
+        assert_eq!((order["order"].clone(), order["skipped"].clone()), (json!(["Core", "Core 2", "Drill"]), json!(["Core", "Core 2"])));
+        let order = run(&mut s, "cam.op.duplicate", json!({"setup": "S3", "name": "Core 2"}));
+        assert_eq!(order["order"], json!(["Core", "Core 2", "Core 3", "Drill"]));
+        // To another setup: at its end, keeping the name while it is free there.
+        let order = run(&mut s, "cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "to_setup": "S4"}));
+        assert_eq!(order["order"], json!(["Drill"]));
+        let order = run(&mut s, "cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "to_setup": "S4", "new_name": "Bore"}));
+        assert_eq!((order["setup"].clone(), order["order"].clone()), (json!("S4"), json!(["Drill", "Bore"])));
+        // Renaming follows into the skipped list; the copy is its own step.
+        let order = run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Core", "new_name": "  Kernloch "}));
+        assert_eq!((order["order"].clone(), order["skipped"].clone()), (json!(["Kernloch", "Core 2", "Core 3", "Drill"]), json!(["Kernloch", "Core 2", "Core 3"])));
+        run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Drill", "new_name": "Drill"}));
+        assert_eq!(s.doc.cam.setup("S3").unwrap().operations.len(), 4);
+        // Undo takes a copy back.
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.cam.setup("S3").unwrap().operations[0].name(), "Core");
+        run(&mut s, "edit.redo", json!({}));
+        // Bad input changes nothing.
+        let before = s.doc.to_json();
+        for (id, p) in [
+            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "Core 2"})),
+            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": " "})),
+            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "x".repeat(129)})),
+            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "a
+b"})),
+            ("cam.op.rename", json!({"setup": "S3", "name": "Missing", "new_name": "B"})),
+            ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "to_setup": "Nope"})),
+            ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "new_name": "Core 2"})),
+            ("cam.op.duplicate", json!({"setup": "Nope", "name": "Drill"})),
+        ] {
+            assert!(s.execute(id, &p).is_err(), "{id} {p}");
+        }
         assert_eq!(s.doc.to_json(), before);
     }
 

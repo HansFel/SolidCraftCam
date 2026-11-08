@@ -32,8 +32,8 @@ pub(crate) const MAX_COORD: f64 = 1.0e6;
 pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Toolpath> {
     tool.validate()?;
     cut.validate()?;
-    if tool.kind != ToolKind::Drill {
-        return invalid("drilling requires a drill tool");
+    if !matches!(tool.kind, ToolKind::Drill | ToolKind::CentreDrill | ToolKind::Reamer) {
+        return invalid("drilling needs a drill, a centre drill or a reamer");
     }
     if points.is_empty() || points.len() > 10_000 {
         return invalid("drilling needs 1 to 10000 hole centres");
@@ -73,6 +73,56 @@ pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Tool
             peck: (levels.len() > 1).then_some(cut.stepdown),
             dwell,
             feed: cut.feeds.plunge,
+            tap: None,
+        });
+    }
+    let path = Toolpath { moves: b.moves, cycles };
+    verify(&path, &cut.heights)?;
+    Ok(path)
+}
+
+/// Tapping in work XY: each hole fed from the retract height to `bottom` and back, one pitch
+/// per spindle turn (`spindle_rpm` x the tap's pitch), recorded as a tapping cycle. Only a post
+/// with a rigid tapping cycle can write it: the spindle has to reverse at the bottom in step
+/// with the feed, which plain moves cannot say.
+pub fn tap(points: &[Vec2], tool: &Tool, cut: &Cut, spindle_rpm: f64) -> Result<Toolpath> {
+    tool.validate()?;
+    cut.validate()?;
+    let Some(pitch) = tool.pitch.filter(|_| tool.kind == ToolKind::Tap) else {
+        return invalid("tapping needs a tap with its pitch");
+    };
+    if !(spindle_rpm > 0.0 && spindle_rpm <= 1.0e5) {
+        return invalid("tapping needs a spindle speed above 0 and at most 100000 rev/min");
+    }
+    if points.is_empty() || points.len() > 10_000 {
+        return invalid("tapping needs 1 to 10000 hole centres");
+    }
+    if cut.heights.top <= cut.heights.bottom || cut.heights.top - cut.heights.bottom > tool.flute_length {
+        return invalid("the thread depth must be positive and within the tap's thread length");
+    }
+    if points.iter().any(|p| !p.is_finite() || p.x.abs() > MAX_COORD || p.y.abs() > MAX_COORD) {
+        return invalid("hole centres must be finite and within 1e6 mm");
+    }
+    let feed = spindle_rpm * pitch;
+    let mut b = Builder::new(cut);
+    let mut cycles = Vec::with_capacity(points.len());
+    for point in points {
+        b.travel_to(*point)?;
+        let start = b.moves.len();
+        b.push(Move::Rapid { to: point.extend(cut.heights.retract) })?;
+        b.push(Move::Feed { to: point.extend(cut.heights.bottom), feed })?;
+        b.push(Move::Feed { to: point.extend(cut.heights.retract), feed })?;
+        b.push(Move::Rapid { to: point.extend(cut.heights.clearance) })?;
+        cycles.push(DrillCycle {
+            start,
+            end: b.moves.len(),
+            at: *point,
+            retract: cut.heights.retract,
+            bottom: cut.heights.bottom,
+            peck: None,
+            dwell: 0.0,
+            feed,
+            tap: Some(pitch),
         });
     }
     let path = Toolpath { moves: b.moves, cycles };
@@ -202,7 +252,12 @@ impl Builder {
         Builder { moves: Vec::new(), pos: None, h: cut.heights, feeds: cut.feeds }
     }
 
-    fn push(&mut self, m: Move) -> Result<()> {
+    /// The moves collected.
+    pub(crate) fn into_moves(self) -> Vec<Move> {
+        self.moves
+    }
+
+    pub(crate) fn push(&mut self, m: Move) -> Result<()> {
         if self.moves.len() >= MAX_MOVES {
             return Err(CamError::TooLarge(format!("the toolpath has more than {MAX_MOVES} moves")));
         }
@@ -354,7 +409,13 @@ fn check_leave(leave: f64) -> Result<()> {
 
 /// A milling operation needs a tool that cuts with its side: a drill only cuts at its point.
 pub(crate) fn mills(tool: &Tool) -> Result<()> {
-    if tool.kind == ToolKind::Drill { invalid("a drill cannot mill: it cuts only at its point") } else { Ok(()) }
+    if tool.kind.cuts_down() {
+        invalid(format!("a {} cannot mill: it cuts only straight down", tool.kind.label()))
+    } else if tool.kind == ToolKind::ThreadMill {
+        invalid("a thread mill cuts threads only")
+    } else {
+        Ok(())
+    }
 }
 
 /// The loop turned to start at its corner nearest to `p`.

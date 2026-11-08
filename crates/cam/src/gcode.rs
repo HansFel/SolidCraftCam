@@ -6,7 +6,7 @@ use solidcore_record::{Vec2, Vec3};
 use solidcraft_geom::prelude::*;
 
 use crate::path::{DrillCycle, Move, Toolpath, arc_sweep};
-use crate::post::{CommentStyle, Post, Values, fill};
+use crate::post::{CommentStyle, Post, Tapping, Values, fill};
 use crate::tool::Tool;
 use crate::{CamError, Result, invalid};
 
@@ -227,6 +227,50 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// Tapped hole `c` from height `z0` as the post's rigid tapping block; a post that cannot
+    /// tap refuses it, as plain moves would drive the tap in without reversing the spindle.
+    fn tap_cycle(&mut self, c: &DrillCycle, pitch: f64, z0: f64) -> Result<()> {
+        let name = plain(&self.post.name);
+        if !(pitch > 0.0 && pitch.is_finite()) {
+            return Err(CamError::Unsafe("a tapped hole needs a thread pitch above 0".into()));
+        }
+        let f = self.value(c.feed / self.post.units.mm(), self.post.feed_decimals);
+        if number(c.feed / self.post.units.mm(), self.post.feed_decimals) == "0" {
+            return Err(CamError::Unsafe("a tapping feed is not above 0 at the post's precision".into()));
+        }
+        let rpm = number(c.feed / pitch, 0);
+        let (nx, ny, bottom, retract, start) = (self.coord(c.at.x), self.coord(c.at.y), self.coord(c.bottom), self.coord(c.retract), self.coord(z0));
+        let k = self.value(pitch / self.post.units.mm(), self.post.decimals.max(3));
+        let rapid = self.motion(0);
+        match self.post.tapping {
+            Tapping::None => return invalid(format!("post `{name}` has no rigid tapping cycle, so it cannot write a tapped hole")),
+            Tapping::G84 | Tapping::G84Rigid => {
+                if self.post.tapping == Tapping::G84Rigid {
+                    self.block(&format!("M29 S{rpm}"));
+                }
+                self.block(&format!("G98 G84 X{nx} Y{ny} Z{bottom} R{retract} F{f}"));
+                self.block("G80");
+            }
+            Tapping::G33_1 => {
+                self.block(&format!("{rapid} X{nx} Y{ny}"));
+                self.block(&format!("{rapid} Z{retract}"));
+                self.block(&format!("G33.1 Z{bottom} K{k}"));
+                self.block(&format!("{rapid} Z{start}"));
+            }
+            Tapping::G331 => {
+                self.block(&format!("{rapid} X{nx} Y{ny}"));
+                self.block(&format!("{rapid} Z{retract}"));
+                self.block("SPOS=0");
+                self.block(&format!("G331 Z{bottom} K{k} S{rpm}"));
+                self.block(&format!("G332 Z{retract} K{k}"));
+                self.block(&format!("{rapid} Z{start}"));
+            }
+        }
+        (self.x, self.y, self.z, self.feed) = (Some(nx), Some(ny), Some(start), Some(f));
+        self.pos = Some(c.at.extend(z0));
+        Ok(())
+    }
+
     /// Hole `c` as one canned cycle from height `z0`, which `G98` returns to.
     fn cycle(&mut self, c: &DrillCycle, z0: f64) -> Result<()> {
         let f = self.value(c.feed / self.post.units.mm(), self.post.feed_decimals);
@@ -295,6 +339,9 @@ fn cycle_start(c: &DrillCycle, moves: &[Move], from: Option<Vec3>) -> Option<f64
 /// Writes `program` for the controller `post` describes.
 pub fn emit(program: &Program, post: &Post) -> Result<String> {
     post.validate()?;
+    if post.language == crate::post::Language::Klartext {
+        return crate::klartext::emit(program, post);
+    }
     if program.operations.is_empty() {
         return invalid("the program has no operation");
     }
@@ -352,22 +399,53 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
             coolant = op.coolant;
         }
         w.reset();
-        let mut cycles = op.path.cycles.iter().filter(|_| post.canned_cycles).peekable();
+        // Tapped holes are always written as their cycle; drilled ones when the post has canned cycles.
+        let mut cycles = op.path.cycles.iter().filter(|c| post.canned_cycles || c.tap.is_some()).peekable();
         let mut skip_to = 0usize;
         for (index, m) in op.path.moves.iter().enumerate() {
             if index < skip_to {
                 continue;
             }
             while cycles.next_if(|c| c.start < index).is_some() {}
-            if let Some(c) = cycles.next_if(|c| c.start == index)
-                && let Some(z0) = cycle_start(c, &op.path.moves, w.pos)
-            {
-                w.cycle(c, z0)?;
+            if let Some(c) = cycles.next_if(|c| c.start == index) {
+                match (cycle_start(c, &op.path.moves, w.pos), c.tap) {
+                    (Some(z0), Some(pitch)) => w.tap_cycle(c, pitch, z0)?,
+                    (Some(z0), None) => w.cycle(c, z0)?,
+                    (None, Some(_)) => {
+                        return Err(CamError::Unsafe(format!(
+                            "operation `{}`: a tapped hole whose moves do not match its cycle cannot be written",
+                            plain(&op.name)
+                        )));
+                    }
+                    (None, None) => {
+                        write_move(&mut w, &mut values, &op.name, m)?;
+                        continue;
+                    }
+                }
                 skip_to = c.end;
                 continue;
             }
+            if op.path.cycles.iter().any(|c| c.tap.is_some() && c.start <= index && index < c.end) {
+                return Err(CamError::Unsafe(format!("operation `{}`: a tapped hole cannot be written move by move", plain(&op.name))));
+            }
+            write_move(&mut w, &mut values, &op.name, m)?;
+        }
+    }
+    if coolant {
+        w.template(&post.coolant_off, &values)?;
+    }
+    w.template(&post.spindle_off, &values)?;
+    w.template(&post.footer, &values)?;
+    Ok(w.out)
+}
+
+/// One move as the post writes it.
+fn write_move(w: &mut Writer<'_>, values: &mut Values, op: &str, m: &Move) -> Result<()> {
+    let post = w.post;
+    {
+        {
             if m.target().is_some_and(|to| !to.is_finite()) {
-                return Err(CamError::Unsafe(format!("operation `{}` has a coordinate that is not a finite number", plain(&op.name))));
+                return Err(CamError::Unsafe(format!("operation `{}` has a coordinate that is not a finite number", plain(op))));
             }
             match *m {
                 Move::Rapid { to } => w.rapid(to),
@@ -375,7 +453,7 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
                     if !(feed > 0.0) || !feed.is_finite() || number(feed / post.units.mm(), post.feed_decimals) == "0" =>
                 {
                     let _ = to;
-                    return Err(CamError::Unsafe(format!("operation `{}` has a feed that is not above 0 at the post's precision", plain(&op.name))));
+                    return Err(CamError::Unsafe(format!("operation `{}` has a feed that is not above 0 at the post's precision", plain(op))));
                 }
                 Move::Feed { to, feed } => w.feed(to, feed),
                 Move::Arc { to, center, ccw, feed } => w.arc(to, center, ccw, feed)?,
@@ -385,18 +463,24 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
                     }
                     values.seconds = w.value(seconds, 3);
                     values.milliseconds = number(seconds * 1000.0, 0);
-                    let dwell = fill(&post.dwell, &values)?;
+                    let dwell = fill(&post.dwell, values)?;
                     w.block(&dwell);
                 }
             }
         }
     }
-    if coolant {
-        w.template(&post.coolant_off, &values)?;
-    }
-    w.template(&post.spindle_off, &values)?;
-    w.template(&post.footer, &values)?;
-    Ok(w.out)
+    Ok(())
+}
+
+/// Whether `line` (after an optional `N` number) is a Sinumerik assignment such as `SPOS=0`.
+fn assignment(line: &str) -> bool {
+    let line = line.trim_start();
+    let line = match line.strip_prefix(['N', 'n']) {
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => rest.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start(),
+        _ => line,
+    };
+    let name: String = line.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    name.len() >= 2 && name.starts_with(|c: char| c.is_ascii_alphabetic()) && line[name.len()..].trim_start().starts_with('=')
 }
 
 /// The words of one line: `(letter, value)`.
@@ -450,13 +534,20 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
     let (mut x, mut y, mut z): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     let mut pos: Option<Vec3> = None;
     let mut moves = Vec::new();
+    // The spindle speed, for tapping blocks that give the pitch (`K`) rather than the feed.
+    let mut spindle: Option<f64> = None;
     for (i, line) in text.lines().enumerate() {
         let n = i + 1;
         if n > MAX_LINES {
             return Err(CamError::TooLarge(format!("more than {MAX_LINES} lines")));
         }
+        // A Sinumerik assignment (`SPOS=0`) moves no axis.
+        if assignment(line) {
+            continue;
+        }
         let ws = words(line, n)?;
         let mut dwell = false;
+        let mut tapping: Option<u16> = None;
         for &(c, v) in &ws {
             if c != 'G' {
                 continue;
@@ -467,12 +558,14 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
                 20 => mode = Some(2),
                 30 => mode = Some(3),
                 40 => dwell = true,
+                331 | 3310 | 3320 => tapping = Some((v * 10.0).round() as u16),
                 200 => units = 25.4,
                 210 => units = 1.0,
                 800 => mode = None,
                 810 => mode = Some(81),
                 820 => mode = Some(82),
                 830 => mode = Some(83),
+                840 => mode = Some(84),
                 910 => return Err(CamError::Parse(n, "not supported yet: incremental coordinates (G91)".into())),
                 980 => to_initial = true,
                 990 => to_initial = false,
@@ -480,9 +573,30 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
             }
         }
         let word = |letter: char| ws.iter().find(|(c, _)| *c == letter).map(|(_, v)| *v);
+        if let Some(s) = word('S').filter(|s| *s > 0.0) {
+            spindle = Some(s);
+        }
         if dwell {
-            // `G4 P` in seconds as this crate's own posts write it, or `G04 X` in seconds.
-            moves.push((n, Move::Dwell { seconds: word('X').or(word('P')).unwrap_or(0.0).max(0.0) }));
+            // `G4 P` in seconds as this crate's own posts write it, `G04 X` or Sinumerik's `G4 F`.
+            moves.push((n, Move::Dwell { seconds: word('X').or(word('P')).or(word('F')).unwrap_or(0.0).max(0.0) }));
+            continue;
+        }
+        if let Some(code) = tapping {
+            // Rigid tapping: in to Z at one pitch a turn, and (G33.1) straight back out.
+            let (Some(from), Some(bottom)) = (pos, word('Z').map(|v| v * units)) else {
+                return Err(CamError::Parse(n, "a tapping block before the position is known, or without Z".into()));
+            };
+            let (Some(k), Some(rpm)) = (word('K').map(|v| v * units).filter(|k| *k > 0.0), spindle) else {
+                return Err(CamError::Parse(n, "a tapping block without a pitch K above 0 or a spindle speed".into()));
+            };
+            let to = Vec3::new(from.x, from.y, bottom);
+            moves.push((n, Move::Feed { to, feed: k * rpm }));
+            if code == 331 {
+                moves.push((n, Move::Feed { to: from, feed: k * rpm }));
+            } else {
+                pos = Some(to);
+                z = Some(bottom);
+            }
             continue;
         }
         if let Some(f) = word('F') {
@@ -509,7 +623,7 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
                 None
             };
             let dwell = if mode == 82 { word('P').unwrap_or(0.0).max(0.0) } else { 0.0 };
-            drill_cycle(&mut moves, n, Vec3::new(px, py, z0), r, bottom, peck, dwell, feed, to_initial)?;
+            drill_cycle(&mut moves, n, Vec3::new(px, py, z0), r, bottom, peck, dwell, feed, to_initial, mode == 84)?;
             if moves.len() > crate::path::MAX_MOVES {
                 return Err(CamError::TooLarge("the drilling cycles make too many moves".into()));
             }
@@ -562,6 +676,7 @@ fn drill_cycle(
     dwell: f64,
     feed: f64,
     to_initial: bool,
+    tapping: bool,
 ) -> Result<()> {
     if bottom > r {
         return Err(CamError::Parse(n, "a drilling cycle whose Z is above its R".into()));
@@ -587,6 +702,11 @@ fn drill_cycle(
                 moves.push((n, Move::Rapid { to: at((next + PECK_CLEARANCE).min(r)) }));
                 depth = next;
             }
+        }
+        // G84 feeds back out as it went in.
+        None if tapping => {
+            moves.push((n, Move::Feed { to: at(bottom), feed }));
+            moves.push((n, Move::Feed { to: at(r), feed }));
         }
         None => {
             moves.push((n, Move::Feed { to: at(bottom), feed }));

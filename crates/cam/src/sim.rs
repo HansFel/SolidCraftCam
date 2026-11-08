@@ -416,7 +416,22 @@ fn surface(tool: &Tool, tip: f64, d: f64) -> f64 {
             let r = tool.radius();
             tip + r - (r * r - d * d).max(0.0).sqrt()
         }
-        ToolKind::Drill => tip + d / DRILL_TIP_TAN,
+        ToolKind::Drill if tool.tip_angle.is_none() => tip + d / DRILL_TIP_TAN,
+        // A cone: flat to the tip's radius, then rising at the half angle.
+        ToolKind::Drill | ToolKind::Chamfer | ToolKind::VBit | ToolKind::CentreDrill => {
+            let rise = (d - tool.tip_radius()).max(0.0);
+            match tool.half_angle().map(f64::tan).filter(|t| *t > 1e-9) {
+                Some(tan) => tip + rise / tan,
+                None => tip,
+            }
+        }
+        // A torus at the corner: flat inside, rounding up over the last corner radius.
+        ToolKind::BullNose => {
+            let rc = tool.corner_radius.unwrap_or(0.0).clamp(0.0, tool.radius());
+            let x = d - (tool.radius() - rc);
+            if x <= 0.0 { tip } else { tip + rc - (rc * rc - x * x).max(0.0).sqrt() }
+        }
+        ToolKind::TSlot | ToolKind::Reamer | ToolKind::Tap | ToolKind::ThreadMill => tip,
     }
 }
 

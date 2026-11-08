@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use solidcore_record::Vec3;
 use solidcraft_geom::prelude::*;
 
-use crate::gcode::{Program, parse};
+use crate::gcode::Program;
 use crate::path::Toolpath;
 use crate::post::Post;
 use crate::{CamError, Result};
@@ -58,7 +58,7 @@ pub fn readback(text: &str, program: &Program, post: &Post) -> Result<Readback> 
     if moves > crate::path::MAX_MOVES {
         return Err(CamError::TooLarge("program has too many moves to check".into()));
     }
-    let written = Toolpath::new(parse(text)?);
+    let written = Toolpath::new(post.read_back(text)?.into_iter().map(|(_, m)| m).collect());
     let planned = Toolpath::new(program.operations.iter().flat_map(|op| op.path.moves.iter().copied()).collect());
     let allowed = allowed_deviation(post);
     let reach = (allowed * 10.0).max(1.0);

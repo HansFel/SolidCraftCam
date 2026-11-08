@@ -1121,6 +1121,67 @@ fn cutting_data_give_spindle_speed_and_feeds_per_material() {
 }
 
 #[test]
+fn tool_kinds_keep_their_sizes_and_refuse_sizes_they_do_not_have() {
+    // Every kind reads back by its key, and a file keeps the sizes it was given.
+    for kind in ToolKind::ALL {
+        assert_eq!(ToolKind::from_key(kind.key()), Some(*kind));
+    }
+    assert_eq!(ToolKind::from_key("spoon"), None);
+    let mut bull = Tool::new(1, ToolKind::BullNose, 10.0, 25.0);
+    assert!(bull.validate().is_err(), "a corner-radius end mill needs its radius");
+    bull.corner_radius = Some(1.0);
+    (bull.overall_length, bull.stick_out, bull.shank_diameter) = (Some(75.0), Some(30.0), Some(10.0));
+    bull.holder = Some(ToolHolder { description: "ER25".into(), diameter: 42.0, length: 60.0 });
+    bull.validate().unwrap();
+    let json = serde_json::to_string(&bull).unwrap();
+    assert_eq!(serde_json::from_str::<Tool>(&json).unwrap(), bull);
+    assert_eq!(bull.reach(), 30.0);
+    // Older tools have none of the new sizes and read as before.
+    let old: Tool = serde_json::from_str(r#"{"number":2,"kind":"flat_endmill","diameter":6,"flute_length":20}"#).unwrap();
+    assert_eq!((old.holder.clone(), old.reach()), (None, 20.0));
+    let mut tap = Tool::new(6, ToolKind::Tap, 10.0, 20.0);
+    assert!(tap.validate().is_err(), "a tap needs its pitch");
+    tap.pitch = Some(1.5);
+    tap.validate().unwrap();
+    // A tap feeds one pitch a turn; a reamer and a centre drill feed per revolution like a drill.
+    let tapped = CuttingData { vc: 10.0 * PI, fz: 0.1, ap: 1.0, ae: 1.0 }.speeds(&tap, None).unwrap();
+    assert_eq!((tapped.spindle_rpm, tapped.feed, tapped.plunge_feed), (1000.0, 1500.0, 1500.0));
+    for kind in [ToolKind::CentreDrill, ToolKind::Reamer] {
+        let t = Tool::new(3, kind, 10.0, 20.0);
+        let d = CuttingData { vc: 10.0 * PI, fz: 0.1, ap: 1.0, ae: 1.0 }.speeds(&t, None).unwrap();
+        assert_eq!(d.feed, 100.0, "{kind:?}");
+    }
+    // Starting values exist for every kind; taps and reamers start slower than a drill.
+    for kind in ToolKind::ALL {
+        for m in MATERIALS {
+            CuttingData::starting(*kind, m, 6.0).unwrap().validate().unwrap();
+        }
+    }
+    let vc = |k: ToolKind| CuttingData::starting(k, "steel", 6.0).unwrap().vc;
+    assert!(vc(ToolKind::Tap) < vc(ToolKind::Reamer) && vc(ToolKind::Reamer) < vc(ToolKind::Drill));
+    // Sizes a kind does not have, or that do not fit it, are refused.
+    let with = |kind: ToolKind, f: &dyn Fn(&mut Tool)| {
+        let mut t = Tool::new(4, kind, 10.0, 20.0);
+        f(&mut t);
+        t.validate()
+    };
+    assert!(with(ToolKind::FlatEndmill, &|t| t.corner_radius = Some(1.0)).is_err());
+    assert!(with(ToolKind::BullNose, &|t| t.corner_radius = Some(6.0)).is_err());
+    assert!(with(ToolKind::FlatEndmill, &|t| t.pitch = Some(1.0)).is_err());
+    assert!(with(ToolKind::ThreadMill, &|t| t.pitch = Some(0.0)).is_err());
+    assert!(with(ToolKind::FlatEndmill, &|t| t.tip_angle = Some(90.0)).is_err());
+    assert!(with(ToolKind::Chamfer, &|t| t.tip_angle = Some(180.0)).is_err());
+    assert!(with(ToolKind::Chamfer, &|t| t.tip_diameter = Some(10.0)).is_err());
+    assert!(with(ToolKind::TSlot, &|t| t.shank_diameter = Some(12.0)).is_err());
+    assert!(with(ToolKind::FlatEndmill, &|t| (t.overall_length, t.stick_out) = (Some(40.0), Some(50.0))).is_err());
+    assert!(with(ToolKind::FlatEndmill, &|t| t.stick_out = Some(f64::NAN)).is_err());
+    let holder = |diameter: f64, length: f64| Some(ToolHolder { description: String::new(), diameter, length });
+    assert!(with(ToolKind::FlatEndmill, &|t| t.holder = holder(0.0, 50.0)).is_err());
+    assert!(with(ToolKind::FlatEndmill, &|t| t.holder = holder(40.0, f64::INFINITY)).is_err());
+    with(ToolKind::Chamfer, &|t| (t.tip_angle, t.tip_diameter) = (Some(90.0), Some(0.5))).unwrap();
+}
+
+#[test]
 fn machine_limits_hold_speeds_and_refuse_programs_beyond_them() {
     let mut m = Machine::new("Fräse");
     m.validate().unwrap();
@@ -1427,16 +1488,22 @@ fn every_builtin_post_writes_and_reads_back_a_contour_and_a_drill_job() {
         ],
         work_offset: Some(2),
     };
-    for name in Post::BUILTIN {
+    // Klartext has no work offset to write: its own test below.
+    for name in Post::BUILTIN.iter().filter(|n| **n != "heidenhain") {
         let post = Post::builtin(name).unwrap();
         assert_eq!(post.name, *name);
         post.validate().unwrap();
         let text = emit(&program, &post).unwrap();
         let back = readback(&text, &program, &post).unwrap();
         assert!(back.within(), "{name}: {back:?}");
-        // Every preset writes the offset it was given and the dwell in seconds.
+        // Every preset writes the offset it was given and the dwell in seconds, in its own words.
         assert!(text.contains("G55"), "{name} writes no work offset");
-        assert!(text.lines().filter(|l| l.contains("G4 P0.25")).count() == 2, "{name}: dwells as G4 P in seconds");
+        let dwell = match *name {
+            "fanuc" => "G04 X0.25",
+            "sinumerik" => "G4 F0.25",
+            _ => "G4 P0.25",
+        };
+        assert!(text.lines().filter(|l| l.contains(dwell)).count() == 2, "{name}: dwells as {dwell}:\n{text}");
         match *name {
             "grbl" => {
                 // No tool changer and no tool length offset; the operator is told which tool.
@@ -1452,9 +1519,70 @@ fn every_builtin_post_writes_and_reads_back_a_contour_and_a_drill_job() {
                 assert!(text.contains("T3 M6") && text.contains("G43 H3"));
             }
             "linuxcnc" => assert!(text.contains("G91.1 G61 G97") && text.contains("T3 M6")),
+            "fanuc" => {
+                // Between % lines, two-digit codes and a decimal point on every whole number.
+                assert!(text.starts_with("(Post test)\n%\nO0001 (Post test)") && text.trim_end().ends_with('%'), "{text}");
+                assert!(text.contains("T3 M06") && text.contains("G43 H3") && text.contains("G00 ") && !text.contains("G0 "));
+                assert!(text.contains("X40.") || text.contains("Y30."), "whole numbers carry a point:\n{text}");
+            }
+            "sinumerik" => {
+                assert_eq!(post.extension, "mpf");
+                assert!(text.contains("G71") && text.contains("T3 D1\nM6") && text.contains("; Contour"), "{text}");
+            }
             _ => {}
         }
     }
+}
+
+#[test]
+fn tapped_holes_are_written_as_rigid_tapping_or_refused() {
+    let mut m6 = Tool::new(5, ToolKind::Tap, 6.0, 15.0);
+    m6.pitch = Some(1.0);
+    let heights = cut(0.0, -10.0, 10.0);
+    let path = tap(&[v(10.0, 15.0), v(25.0, 15.0)], &m6, &heights, 500.0).unwrap();
+    // In and out at one pitch a turn, from and to the retract height, as one cycle per hole.
+    assert_eq!(path.cycles.len(), 2);
+    assert!(path.cycles.iter().all(|c| c.tap == Some(1.0) && c.feed == 500.0 && c.peck.is_none()));
+    let feeds: Vec<f64> = path.moves.iter().filter_map(Move::feed).collect();
+    assert_eq!(feeds, [500.0; 4]);
+    let program = Program {
+        name: "Tap".into(),
+        operations: vec![Operation { name: "M6".into(), tool: m6.clone(), spindle_rpm: 500.0, coolant: false, path: path.clone() }],
+        work_offset: None,
+    };
+    for name in Post::BUILTIN {
+        let post = Post::builtin(name).unwrap();
+        let written = emit(&program, &post);
+        let Ok(text) = written else {
+            // GRBL has no tapping cycle, Heidenhain's 207 is not written yet: the program is
+            // refused, never written as plain moves.
+            assert!(matches!(*name, "grbl" | "heidenhain") && post.tapping == Tapping::None, "{name}: {written:?}");
+            continue;
+        };
+        let back = readback(&text, &program, &post).unwrap();
+        assert!(back.within(), "{name}: {back:?}\n{text}");
+        assert!((back.cut_length - back.planned_cut_length).abs() < 1e-6, "{name}: {back:?}");
+        let block = match post.tapping {
+            Tapping::G33_1 => "G33.1 Z-10 K1",
+            Tapping::G84 => "G98 G84 X10. Y15. Z-10. R",
+            Tapping::G84Rigid => "M29 S500\nG98 G84 X10. Y15. Z-10. R",
+            Tapping::G331 => "SPOS=0\nG331 Z-10 K1 S500\nG332 Z",
+            Tapping::None => continue,
+        };
+        assert!(text.contains(block), "{name} writes {block}:\n{text}");
+    }
+    // A tap needs its pitch and a spindle speed; the moves of a tapped hole are never written alone.
+    assert!(tap(&[v(0.0, 0.0)], &Tool::new(5, ToolKind::Drill, 6.0, 15.0), &heights, 500.0).is_err());
+    assert!(tap(&[v(0.0, 0.0)], &m6, &heights, 0.0).is_err());
+    assert!(tap(&[v(0.0, 0.0)], &m6, &cut(0.0, -20.0, 20.0), 500.0).is_err(), "deeper than the thread length");
+    let mut broken = path;
+    broken.cycles[0].at = v(11.0, 15.0);
+    let program = Program {
+        name: "Tap".into(),
+        operations: vec![Operation { name: "M6".into(), tool: m6, spindle_rpm: 500.0, coolant: false, path: broken }],
+        work_offset: None,
+    };
+    assert!(emit(&program, &Post::linuxcnc()).is_err());
 }
 
 #[test]
@@ -1609,6 +1737,38 @@ mod sim_tests {
         // 2.236 mm wide at the top and the stock beyond it keeps its height.
         close(at(&stock, 20.0, 22.5), 0.0, 1e-6);
         close(at(&stock, 20.0, 24.0), 0.0, 1e-6);
+    }
+
+    #[test]
+    fn a_chamfer_cutter_and_a_corner_radius_end_mill_leave_their_shapes() {
+        // 90 degree chamfer cutter with a 1 mm flat, plunged 2 mm: flat in the middle, then a 45 degree wall.
+        let mut chamfer = Tool::new(5, ToolKind::Chamfer, 12.0, 6.0);
+        (chamfer.tip_angle, chamfer.tip_diameter) = (Some(90.0), Some(1.0));
+        let plunge = |at: Vec3| {
+            Toolpath::new(vec![
+                Move::Rapid { to: at + Vec3::new(0.0, 0.0, 10.0) },
+                Move::Feed { to: at, feed: 300.0 },
+                Move::Rapid { to: at + Vec3::new(0.0, 0.0, 10.0) },
+            ])
+        };
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -10.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+        stock.cut(&chamfer, &plunge(Vec3::new(20.0, 20.0, -2.0)), Vec3::new(20.0, 20.0, 10.0)).unwrap();
+        for (x, y) in [(20.0, 20.0), (21.5, 20.0), (20.0, 22.0)] {
+            let d = centre(&stock, x, y).dist(v(20.0, 20.0));
+            close(at(&stock, x, y), -2.0 + (d - 0.5).max(0.0), 1e-4);
+        }
+        close(at(&stock, 23.0, 20.0), 0.0, 1e-6);
+        // Corner radius 2 on a 10 mm end mill: flat to 3 mm out, then a quarter round.
+        let mut bull = Tool::new(6, ToolKind::BullNose, 10.0, 20.0);
+        bull.corner_radius = Some(2.0);
+        let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -10.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+        stock.cut(&bull, &plunge(Vec3::new(20.0, 20.0, -3.0)), Vec3::new(20.0, 20.0, 10.0)).unwrap();
+        for (x, y) in [(20.0, 20.0), (22.5, 20.0), (24.0, 20.0), (20.0, 24.5)] {
+            let e = centre(&stock, x, y).dist(v(20.0, 20.0)) - 3.0;
+            let want = if e <= 0.0 { -3.0 } else { -3.0 + 2.0 - (4.0 - e * e).max(0.0).sqrt() };
+            close(at(&stock, x, y), want, 1e-4);
+        }
+        close(at(&stock, 25.5, 20.0), 0.0, 1e-6);
     }
 
     #[test]
@@ -1879,4 +2039,139 @@ mod time_tests {
         }
         assert!(estimate(&good, &TimeModel { tool_change: 0.0, ..model() }).is_ok());
     }
+}
+
+#[test]
+fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
+    let mill = tool(10.0);
+    let heights = cut(0.0, -12.0, 2.0);
+    let path = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true }, &heights).unwrap();
+    // Down the helix 2 mm a turn, one turn at the bottom, out through the middle.
+    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    assert_eq!(arcs.len(), 12 + 2);
+    assert!(arcs.iter().all(|(to, ccw)| *ccw && (Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) - 3.0).abs() < 1e-9));
+    assert!(arcs.windows(2).all(|w| w[1].0.z <= w[0].0.z + 1e-9), "the helix only goes down");
+    // The stock keeps a 16 mm hole, 12 deep with a flat floor, and nothing outside it.
+    let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -20.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+    let report = stock.cut(&mill, &path, Vec3::new(20.0, 20.0, 10.0)).unwrap();
+    assert!(report.rapid_hits.is_empty(), "{report:?}");
+    for (x, y) in [(20.0, 20.0), (27.5, 20.0), (20.0, 12.5)] {
+        close(sim_height(&stock, x, y), -12.0, 1e-6);
+    }
+    close(sim_height(&stock, 28.5, 20.0), 0.0, 1e-6);
+    let program = Program {
+        name: "Bore".into(),
+        operations: vec![Operation { name: "Bore".into(), tool: mill.clone(), spindle_rpm: 8000.0, coolant: false, path }],
+        work_offset: None,
+    };
+    for name in Post::BUILTIN {
+        let post = Post::builtin(name).unwrap();
+        let text = emit(&program, &post).unwrap();
+        assert!(readback(&text, &program, &post).unwrap().within(), "{name}");
+    }
+    // Too narrow, or so wide a core would stand; a drill cannot mill.
+    for d in [10.0, 21.0, f64::NAN] {
+        assert!(helical_bore(&[v(0.0, 0.0)], &mill, &HelixParams { diameter: d, climb: true }, &heights).is_err(), "{d}");
+    }
+    let drill = Tool::new(2, ToolKind::Drill, 6.0, 30.0);
+    assert!(helical_bore(&[v(0.0, 0.0)], &drill, &HelixParams { diameter: 10.0, climb: true }, &heights).is_err());
+}
+
+#[test]
+fn a_milled_thread_rises_one_pitch_a_turn_in_its_hand() {
+    let mut mill = Tool::new(7, ToolKind::ThreadMill, 6.0, 12.0);
+    mill.pitch = Some(1.5);
+    let heights = cut(0.0, -10.0, 10.0);
+    let m10 = ThreadParams { diameter: 10.0, pitch: 1.5, internal: true, left_hand: false };
+    let path = thread_mill(&[v(0.0, 0.0)], &mill, &m10, &heights).unwrap();
+    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    // Up from the bottom, counter-clockwise for a right-hand thread, 0.75 mm a half turn, on a 2 mm radius.
+    assert_eq!(arcs.len(), 14);
+    for (i, (to, ccw)) in arcs.iter().enumerate() {
+        assert!(*ccw);
+        close(to.z, -10.0 + 0.75 * (i + 1) as f64, 1e-9);
+        close(Vec2::new(to.x, to.y).len(), 2.0, 1e-9);
+    }
+    assert!(arcs.last().is_some_and(|(to, _)| to.z >= 0.0), "the thread runs out above the top");
+    // It starts in the middle of the core hole and leaves there.
+    let first_feed = path.moves.iter().find_map(|m| if let Move::Feed { to, .. } = m { Some(*to) } else { None }).unwrap();
+    assert_eq!((first_feed.x, first_feed.y), (0.0, 0.0));
+    let left = thread_mill(&[v(0.0, 0.0)], &mill, &ThreadParams { left_hand: true, ..m10 }, &heights).unwrap();
+    assert!(left.moves.iter().all(|m| !matches!(m, Move::Arc { ccw: true, .. })));
+    // A stud: the tool runs outside the thread, on the major radius plus its own.
+    let stud = thread_mill(&[v(0.0, 0.0)], &mill, &ThreadParams { internal: false, ..m10 }, &heights).unwrap();
+    assert!(stud.moves.iter().all(|m| !matches!(m, Move::Arc { to, .. } if (Vec2::new(to.x, to.y).len() - 8.0).abs() > 1e-9)));
+    let program = Program {
+        name: "Thread".into(),
+        operations: vec![Operation { name: "M10".into(), tool: mill.clone(), spindle_rpm: 6000.0, coolant: false, path }],
+        work_offset: None,
+    };
+    for name in Post::BUILTIN {
+        let post = Post::builtin(name).unwrap();
+        let text = emit(&program, &post).unwrap();
+        assert!(readback(&text, &program, &post).unwrap().within(), "{name}");
+    }
+    // The tool must fit the core hole; the tool must be a thread mill; the pitch must be sane.
+    let mut fat = mill.clone();
+    fat.diameter = 9.0;
+    assert!(thread_mill(&[v(0.0, 0.0)], &fat, &m10, &heights).is_err());
+    assert!(thread_mill(&[v(0.0, 0.0)], &tool(6.0), &m10, &heights).is_err());
+    assert!(thread_mill(&[v(0.0, 0.0)], &mill, &ThreadParams { pitch: 0.0, ..m10 }, &heights).is_err());
+    assert!(thread_mill(&[], &mill, &m10, &heights).is_err());
+}
+
+/// The stock top of the cell nearest to (x, y).
+fn sim_height(stock: &StockMap, x: f64, y: f64) -> f64 {
+    let (nx, ny) = stock.size();
+    let i = (((x - stock.origin().x) / stock.cell()).floor() as isize).clamp(0, nx as isize - 1) as usize;
+    let j = (((y - stock.origin().y) / stock.cell()).floor() as isize).clamp(0, ny as isize - 1) as usize;
+    stock.height(i, j).unwrap_or(f64::NAN)
+}
+
+#[test]
+fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
+    let contour_path = contour(
+        &[rect(0.0, 0.0, 40.0, 30.0)],
+        &tool(6.0),
+        &ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 },
+        &cut(0.0, -4.0, 2.0),
+    )
+    .unwrap();
+    let drill_tool = Tool::new(3, ToolKind::Drill, 5.0, 40.0);
+    let drill_path = drill(&[v(10.0, 15.0), v(25.0, 15.0)], &drill_tool, &cut(0.0, -5.0, 2.0), 0.25).unwrap();
+    let bore = helical_bore(&[v(20.0, 15.0)], &tool(6.0), &HelixParams { diameter: 10.0, climb: true }, &cut(0.0, -4.0, 2.0)).unwrap();
+    let mut program = Program {
+        name: "Saugbacke S1".into(),
+        operations: vec![
+            Operation { name: "Außenkontur".into(), tool: tool(6.0), spindle_rpm: 6000.0, coolant: true, path: contour_path },
+            Operation { name: "Bohrung".into(), tool: tool(6.0), spindle_rpm: 6000.0, coolant: true, path: bore },
+            Operation { name: "Drill".into(), tool: drill_tool, spindle_rpm: 3000.0, coolant: false, path: drill_path },
+        ],
+        work_offset: None,
+    };
+    let post = Post::heidenhain();
+    post.validate().unwrap();
+    let text = emit(&program, &post).unwrap();
+    let back = readback(&text, &program, &post).unwrap();
+    assert!(back.within(), "{back:?}\n{text}");
+    assert!((back.cut_length - back.planned_cut_length).abs() < 0.05, "{back:?}");
+    let lines: Vec<&str> = text.lines().collect();
+    // Every block numbered from 0, between BEGIN and END PGM with the same name.
+    assert!(lines.iter().enumerate().all(|(i, l)| l.starts_with(&format!("{i} "))), "{text}");
+    assert_eq!(lines.first().copied(), Some("0 BEGIN PGM Saugbacke_S1 MM"));
+    assert!(lines.last().is_some_and(|l| l.ends_with("END PGM Saugbacke_S1 MM")));
+    // A tool call per tool, the spindle and coolant on the next move, FMAX rapids, signed
+    // coordinates, arcs as CC and C with a direction, dwells as cycle 9.
+    assert_eq!(lines.iter().filter(|l| l.contains("TOOL CALL ")).count(), 2, "{text}");
+    assert!(text.contains("TOOL CALL 1 Z S6000") && text.contains("TOOL CALL 3 Z S3000"), "{text}");
+    assert!(lines.iter().any(|l| l.contains(" FMAX M3 M8")), "{text}");
+    assert!(text.contains(" R0 FMAX") && text.contains("Z-4") && text.contains("X+43") || text.contains("X-3"), "{text}");
+    assert!(text.contains("CC X") && (text.contains(" DR+") || text.contains(" DR-")), "{text}");
+    assert!(text.contains("CYCL DEF 9.1 DWELL 0.250"), "{text}");
+    assert!(lines.iter().rev().nth(1).is_some_and(|l| l.contains("M5") && l.contains("M30")), "{text}");
+    assert!(text.contains("; Aussenkontur"), "German letters are spelled out: {text}");
+    assert!(!text.contains("G0") && !text.contains("G1 "), "no G-code: {text}");
+    // Another work offset than the control's preset is refused, as is a tapped hole.
+    program.work_offset = Some(2);
+    assert!(emit(&program, &post).is_err());
 }

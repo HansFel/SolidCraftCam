@@ -85,6 +85,10 @@ pub struct DrillCycle {
     /// Pause at the bottom (seconds).
     pub dwell: f64,
     pub feed: f64,
+    /// A tapped hole: the thread's pitch (mm). The tap feeds in and out at `feed`, one pitch a
+    /// turn, the spindle reversing at the bottom, so only a rigid tapping cycle can write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap: Option<f64>,
 }
 
 /// Lengths and time of a toolpath.

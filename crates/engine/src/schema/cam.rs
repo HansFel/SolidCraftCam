@@ -19,6 +19,30 @@ pub struct ToolParams {
     pub stepover: Option<f64>,
     /// Cutting data by material group: `{"aluminium": {vc, fz, ap, ae}, …}`.
     pub cutting: Option<std::collections::BTreeMap<String, CuttingParams>>,
+    /// Corner-radius end mill: the corner radius (mm).
+    pub corner_radius: Option<f64>,
+    /// Chamfer, engraving, centre drill or drill: the cone's included angle (degrees).
+    pub tip_angle: Option<f64>,
+    /// Chamfer or engraving cutter: the flat at the tip (mm).
+    pub tip_diameter: Option<f64>,
+    /// Tap or thread mill: the thread's pitch (mm).
+    pub pitch: Option<f64>,
+    /// The shank's diameter, or a T-slot cutter's neck (mm).
+    pub shank_diameter: Option<f64>,
+    /// The whole tool's length (mm).
+    pub overall_length: Option<f64>,
+    /// How far the tool stands out of its holder (mm).
+    pub stick_out: Option<f64>,
+    /// The holder: `{description?, diameter, length}` (mm), or null for none.
+    pub holder: Option<HolderParams>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HolderParams {
+    pub description: Option<String>,
+    pub diameter: f64,
+    pub length: f64,
 }
 
 /// vc m/min; fz mm per tooth (a drill: per revolution); ap and ae as shares of the diameter.
@@ -115,6 +139,10 @@ pub struct PostDefineParams {
     pub dwell: Option<String>,
     /// Whether each drilled hole is written as one canned cycle (`G81`, `G82`, `G83`).
     pub canned_cycles: Option<bool>,
+    /// How tapped holes are written: none (refused), g84, g84_rigid, g33_1 or g331.
+    pub tapping: Option<String>,
+    /// What the post writes: g_code or klartext (Heidenhain).
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -167,6 +195,10 @@ pub struct SetupParams {
     pub zero_edge: Option<PickParams>,
     /// Part zero axis by axis: each pick sets zero along that work axis only.
     pub zero_axes: Option<ZeroAxesParams>,
+    /// Bodies holding the part, by name: tools and holders must keep clear of them.
+    pub fixtures: Option<Vec<String>>,
+    /// Part zero on a box point follows later model edits.
+    pub zero_follows: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -256,8 +288,10 @@ pub struct MillingParams {
     pub floor_stock: Option<NumberExpr>,
     /// Facing: how far the tool's edge runs past the stock.
     pub overrun: Option<NumberExpr>,
-    /// Slot: its width (default the tool's diameter).
+    /// Slot: its width (default the tool's diameter). Chamfer: its width on the face.
     pub width: Option<NumberExpr>,
+    /// Chamfer: how far the cutter's tip runs below the chamfer.
+    pub tip_offset: Option<NumberExpr>,
     /// Facing: the material above the finished height (`bottom`); facing starts that high.
     pub allowance: Option<NumberExpr>,
     pub tolerance: Option<NumberExpr>,
@@ -409,6 +443,61 @@ pub struct SkipParams {
     pub skip: bool,
 }
 
+/// Holes milled round their axis (helical boring, thread milling).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HoleMillParams {
+    pub setup: String,
+    pub name: String,
+    pub tool: u32,
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    /// Picked bores, as for drilling.
+    pub holes: Option<Vec<HolePickParams>>,
+    /// The hole's diameter (helical boring) or the thread's major diameter.
+    pub diameter: NumberExpr,
+    /// Thread milling: rise per turn (default the tool's pitch).
+    pub pitch: Option<NumberExpr>,
+    /// Thread milling: a thread in a hole (default) or on a stud.
+    pub internal: Option<bool>,
+    pub left_hand: Option<bool>,
+    /// Helical boring: climb milling (default).
+    pub climb: Option<bool>,
+    pub bottom: NumberExpr,
+    pub clearance: Option<NumberExpr>,
+    pub retract: Option<NumberExpr>,
+    pub top: Option<NumberExpr>,
+    /// Helical boring: the depth of each turn.
+    pub stepdown: Option<NumberExpr>,
+    pub feed: Option<NumberExpr>,
+    pub plunge_feed: Option<NumberExpr>,
+    pub spindle_rpm: Option<f64>,
+    #[serde(default)]
+    pub coolant: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DuplicateParams {
+    pub setup: String,
+    pub name: String,
+    /// The copy's name (default the name with the next free number).
+    #[serde(default)]
+    pub new_name: Option<String>,
+    /// The setup the copy goes to, at its end (default the same setup, right after the step).
+    #[serde(default)]
+    pub to_setup: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct RenameParams {
+    pub setup: String,
+    pub name: String,
+    /// The step's new name, 1 to 128 characters and free in its setup.
+    pub new_name: String,
+}
+
 /// The setup's operations in machining order after the change.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct OrderResult {
@@ -452,6 +541,16 @@ pub enum JobKind {
     Face,
     /// A slot along picked edges or contours.
     Slot,
+    /// A chamfer along picked edges or contours (`chamfer_width`, `tip_offset`).
+    Chamfer,
+    /// Engraving along picked edges or sketch curves, `bottom` deep.
+    Engrave,
+    /// Helical boring of holes `hole_diameter` wide.
+    Helix,
+    /// Thread milling (`hole_diameter` the thread's major diameter, `pitch`, `internal`, `left_hand`).
+    Thread,
+    /// Tapping with a tap.
+    Tap,
 }
 
 /// Millimetres, mm/min and rpm. The rectangle is in setup work XY unless `sketch` or `faces`
@@ -535,6 +634,23 @@ pub struct JobParams {
     /// Slot: its width (mm; default the tool's diameter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_width: Option<f64>,
+    /// Chamfer: its width on the face (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamfer_width: Option<f64>,
+    /// Chamfer: how far the cutter's tip runs below the chamfer (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_offset: Option<f64>,
+    /// Helical boring: the hole's diameter; thread milling: the thread's major diameter (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_diameter: Option<f64>,
+    /// Thread milling: the pitch (mm; default the tool's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// Thread milling: in a hole (default) or on a stud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_hand: Option<bool>,
     pub top: f64,
     pub bottom: f64,
     pub clearance: f64,
@@ -577,10 +693,14 @@ pub struct ExportParams {
     pub path: String,
     #[serde(default)]
     pub overwrite: bool,
+    /// The program as edited by hand: written as it is, neither posted again nor read back.
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ExportResult {
     pub path: String,
     pub bytes: usize,
+    /// Whether the program written was posted and read back here; false for hand-edited text.
+    pub checked: bool,
 }

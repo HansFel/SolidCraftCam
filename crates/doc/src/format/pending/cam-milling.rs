@@ -24,5 +24,14 @@
 //! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) or a rectangle
 //! with a `stepover` and an `overrun` past the stock's edges. A slot operation (`slot`) runs the tool centre along each picked edge chain
 //! (open or closed) or contour, `width` wide (absent: the tool's diameter) with side passes `stepover`
-//! apart, `stock_to_leave` on both walls, `tolerance` and `ramp_angle` as for pockets. Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
+//! apart, `stock_to_leave` on both walls, `tolerance` and `ramp_angle` as for pockets. A tool's `kind` can also be
+//! `bull_nose` (with `corner_radius`), `chamfer` and `v_bit` (`tip_angle`, `tip_diameter`), `t_slot`,
+//! `centre_drill`, `reamer`, `tap` and `thread_mill` (both with `pitch`); any tool can give `shank_diameter`,
+//! `overall_length`, `stick_out` and a `holder` (`{description, diameter, length}`). Further operations:
+//! `chamfer` (edges or contours, `params: {width, tip_offset, side, tolerance}`), `engrave` (`params:
+//! {tolerance}`), `helical_bore` (hole centres, `params: {diameter, climb}`) and `thread_mill` (hole
+//! centres, `params: {diameter, pitch, internal, left_hand}`); a drill operation whose tool is a tap taps.
+//! A setup can name `fixtures` (bodies the tools keep clear of, never part of the model's box) and
+//! `zero_follows` (a box-point part zero worked out again from the model as it is). A post can say how it
+//! writes a tapped hole (`tapping`: `none`, `g84`, `g84_rigid`, `g33_1`, `g331`). Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
 //! means no setups. The last release refuses a design saved with this (the newer format number).

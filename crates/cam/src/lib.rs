@@ -16,6 +16,8 @@
 mod check;
 mod cutting;
 mod gcode;
+mod helix;
+mod klartext;
 mod lead;
 mod machine;
 mod offset;
@@ -34,22 +36,23 @@ mod tool;
 pub use check::verify;
 pub use cutting::{CuttingData, MATERIALS, Speeds, valid_material};
 pub use gcode::{Operation, Program, emit, parse, parse_lines, work_offset_code};
+pub use helix::{HelixParams, ThreadParams, helical_bore, thread_mill};
 pub use lead::{Lead, Leads};
 pub use machine::{MAX_MACHINE_NAME, Machine, RotaryAxis, reach};
 pub use offset::offset_regions;
 pub use open::{OpenContourParams, OpenPath, OpenSide};
 pub use ops::{
     ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, contour_with_tabs, drill,
-    face, pocket,
+    face, pocket, tap,
 };
 pub use path::{DrillCycle, Move, PathStats, Toolpath, arc_sweep};
-pub use post::{CommentStyle, LineNumbers, Post, Units};
+pub use post::{CommentStyle, Language, LineNumbers, Post, Tapping, Units};
 pub use readback::{Readback, allowed_deviation, readback};
 pub use sim::{RestMap, SimReport, StockMap};
 pub use slot::{SlotParams, slot};
 pub use tabs::Tabs;
 pub use time::{BLEND_ANGLE, MoveTime, TimeEstimate, TimeModel, estimate, move_times};
-pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, Tool, ToolKind, ToolLibraryFile};
+pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, MAX_TOOL_LENGTH, Tool, ToolHolder, ToolKind, ToolLibraryFile};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CamError {

@@ -45,6 +45,10 @@ pub struct CamSetupForm {
     machine: Option<Machine>,
     /// The personal post that machine names, copied into the design with it.
     machine_post: Option<solidcraft_engine::cam::Post>,
+    /// Bodies holding the part, by name: the tools keep clear of them.
+    fixtures: Vec<String>,
+    /// A box-point part zero follows later model edits.
+    zero_follows: bool,
 }
 
 /// The picks: part zero (a corner, or an edge: a round edge gives its centre), zero per axis
@@ -104,6 +108,8 @@ impl CamSetupForm {
             max_rpm: String::new(),
             machine: app.session.doc.cam.setups.last().and_then(|s| app.session.doc.cam.setup_machine(s)).cloned(),
             machine_post: None,
+            fixtures: app.session.doc.cam.setups.last().map(|s| s.fixtures.clone()).unwrap_or_default(),
+            zero_follows: false,
         }
     }
 
@@ -141,6 +147,8 @@ impl CamSetupForm {
             max_rpm: setup.max_rpm.map(number).unwrap_or_default(),
             machine: app.session.doc.cam.setup_machine(setup).cloned(),
             machine_post: None,
+            fixtures: setup.fixtures.clone(),
+            zero_follows: setup.zero_follows,
         }
     }
 
@@ -234,6 +242,8 @@ impl CamSetupForm {
         if let Some(post) = self.machine_post.as_ref().filter(|p| self.machine.as_ref().is_some_and(|m| m.post.as_ref() == Some(&p.name))) {
             p["machine_post"] = serde_json::to_value(post).unwrap_or(Value::Null);
         }
+        p["fixtures"] = json!(self.fixtures);
+        p["zero_follows"] = json!(self.zero_follows && mode >= BOX_MODES);
         let rpm = self.max_rpm.trim().replace(',', ".");
         p["max_rpm"] = if rpm.is_empty() { Value::Null } else { json!(rpm.parse::<f64>().map_err(|_| tr("ui.cam.invalid_number").to_string())?) };
         Ok(p)
@@ -264,6 +274,9 @@ pub fn head_rows(ui: &mut egui::Ui, form: &mut CamSetupForm) {
         }
         form.rest = form.rest.min(rests.len() - 1);
         ui_kit::choice_row(ui, tr("ui.cam.zero_rest"), "cam-setup-rest", &mut form.rest, &rests);
+    }
+    if form.zero >= BOX_MODES {
+        ui_kit::checkbox(ui, tr("ui.cam.zero_follows"), &mut form.zero_follows);
     }
     if form.zero >= BOX_MODES || (form.zero == 1 && form.rest < 2) {
         let refs = [tr("ui.cam.box_low"), tr("ui.cam.box_mid"), tr("ui.cam.box_high")];
@@ -296,6 +309,7 @@ pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
     for (label, value) in labels.iter().zip(form.values.iter_mut()) {
         ui_kit::text_row(ui, tr(label), value, "");
     }
+    fixture_rows(app, ui, form);
     machine_row(app, ui, form);
     let names: Vec<String> =
         std::iter::once(tr("ui.cam.mat_none").to_string()).chain(MATERIALS.iter().map(|m| crate::cam_panel::material_label(m))).collect();
@@ -307,6 +321,29 @@ pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
         form.material = chosen.checked_sub(1).and_then(|i| MATERIALS.get(i)).map(|m| (*m).to_string());
     }
     ui_kit::text_row(ui, tr("ui.cam.max_rpm"), &mut form.max_rpm, tr("ui.cam.max_rpm_hint"));
+}
+
+/// The bodies holding the part: each body of the design with a box to make it a fixture.
+fn fixture_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
+    let tr = crate::i18n::tr;
+    let Ok(state) = app.session.world_state() else { return };
+    let bodies: Vec<String> = state.bodies.iter().map(|b| b.name.clone()).collect();
+    if bodies.len() < 2 && form.fixtures.is_empty() {
+        return;
+    }
+    ui.label(egui::RichText::new(tr("ui.cam.fixtures")).strong());
+    note(ui, tr("ui.cam.fixtures_hint"));
+    form.fixtures.retain(|f| bodies.contains(f));
+    for name in bodies {
+        let mut on = form.fixtures.contains(&name);
+        if ui_kit::checkbox(ui, &name, &mut on).changed() {
+            if on {
+                form.fixtures.push(name);
+            } else {
+                form.fixtures.retain(|f| *f != name);
+            }
+        }
+    }
 }
 
 /// The machine: none, one of the personal list, or one only the design has.

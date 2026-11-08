@@ -62,6 +62,13 @@ impl CuttingData {
     /// them against the tool maker's data and the machine. `None` for another material.
     pub fn starting(kind: ToolKind, material: &str, diameter: f64) -> Option<CuttingData> {
         // vc m/min, fz as a share of D, ap and ae as shares of D.
+        // Taps and reamers run slower than a drill; the rest mill like an end mill.
+        let slow = match kind {
+            ToolKind::Tap => 0.3,
+            ToolKind::Reamer => 0.5,
+            _ => 1.0,
+        };
+        let kind = if kind.cuts_down() { ToolKind::Drill } else { kind };
         let (vc, fz, ap, ae) = match (kind, material) {
             (ToolKind::Drill, "aluminium") => (80.0, 0.020, 1.0, 1.0),
             (ToolKind::Drill, "steel") => (25.0, 0.015, 1.0, 1.0),
@@ -78,7 +85,7 @@ impl CuttingData {
             _ => return None,
         };
         let diameter = if diameter.is_finite() && diameter > 0.0 { diameter } else { 6.0 };
-        Some(CuttingData { vc, fz: (fz * diameter).clamp(0.002, 1.0), ap, ae })
+        Some(CuttingData { vc: vc * slow, fz: (fz * diameter).clamp(0.002, 1.0), ap, ae })
     }
 
     /// The spindle speed, feeds, stepdown and stepover these data give `tool`, the spindle
@@ -91,7 +98,12 @@ impl CuttingData {
             rpm = rpm.min(max);
         }
         let (feed, plunge_feed) = match tool.kind {
-            ToolKind::Drill => (rpm * self.fz, rpm * self.fz),
+            // A tap advances one pitch a turn, whatever the cutting data say.
+            ToolKind::Tap => {
+                let feed = rpm * tool.pitch.unwrap_or(self.fz);
+                (feed, feed)
+            }
+            kind if kind.cuts_down() => (rpm * self.fz, rpm * self.fz),
             _ => {
                 let feed = rpm * f64::from(tool.flutes) * self.fz;
                 (feed, feed * 0.5)

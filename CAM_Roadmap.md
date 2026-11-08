@@ -61,11 +61,11 @@ machine the bottom).
 | Part zero picked on the model (vertex, edge midpoint, circle centre, stock or model box point) | Done |
 | Part zero picked per axis (X, Y and Z zero each from a corner, edge or face) | Done |
 | Orientation picked on a face or edge (Z+ out of a flat face, X along a straight edge, either turned round) | Done |
-| Part zero and axes follow later model edits (today they are worked out when the setup is saved) | Planned |
+| Part zero and axes follow later model edits (today they are worked out when the setup is saved) | Partial: a box-point part zero follows the model with `zero_follows`; picked axes are still fixed when saved |
 | Work coordinate system shown in the viewport (axes at part zero) | Done |
 | Machine coordinate system and work offset G54–G59 | Partial: work offset done; the setup names its machine; machine zero is set at the machine |
 | Stock assigned to the setup, rotated and shifted | Partial: box around the model, fixed box and round bar in the setup form; no rotation or shift |
-| Fixtures assigned (bodies the tool must not touch) | Planned |
+| Fixtures assigned (bodies the tool must not touch) | Done: `fixtures` on the setup; posting refuses a step whose tool or holder comes within 0.5 mm of a fixture's box, and fixtures stay out of the part's box |
 | Setup preview: model, stock, fixtures and part zero together | Partial: stock box and part zero; no fixtures |
 | Stock continues from the preceding setup | Partial: `from_preceding` in the data model; needs simulation for the real rest |
 
@@ -111,7 +111,7 @@ Project
 | Setups and their steps as a tree in the CAM panel | Partial: flat job list with order and skip |
 | Drag and drop to reorder steps and move them between setups (`cam.op.move` gains a target setup) | Partial: Up/Down only |
 | Edit a step in its form (values, tool and geometry; OK replaces it in place) | Done |
-| Duplicate a step, rename it | Planned |
+| Duplicate a step, rename it | Done: `cam.op.duplicate` (also into another setup), `cam.op.rename`; Duplicate menu and Rename in the job list |
 | Tree state saved with the design | Done (order and skipped steps) |
 
 ### 3. Tool management
@@ -119,12 +119,12 @@ Project
 | Item | Status |
 |---|---|
 | Flat end mill, ball end mill, drill | Done |
-| Corner-radius (bull nose), chamfer, engraving (V-bit), T-slot, dovetail cutters | Planned |
-| Spot (centre) drill, step drill, reamer | Planned |
-| Tap and thread mill | Planned |
+| Corner-radius (bull nose), chamfer, engraving (V-bit), T-slot, dovetail cutters | Partial: all but dovetail, with their sizes in the tool form and the simulation |
+| Spot (centre) drill, step drill, reamer | Partial: centre drill and reamer; no step drill |
+| Tap and thread mill | Done (with their pitch) |
 | Number, name, diameter, flute length, number of flutes | Done |
-| Overall length, shank diameter, stick-out | Planned |
-| Holder (geometry for collision checks, gauge length) | Planned |
+| Overall length, shank diameter, stick-out | Done |
+| Holder (geometry for collision checks, gauge length) | Partial: a holder as diameter and length, checked against fixtures; no gauge length |
 | Tool material (HSS, carbide, coated) changing the starting values | Planned |
 | Recommended cutting data per material group | Done |
 | Import and export of the library as a file (own JSON format) | Done |
@@ -149,10 +149,10 @@ Project
 | Facing of the stock in passes, with overrun past its edges | Done |
 | Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
 | Slot along picked edges (open or closed chains) or around contours, wider than the tool with side passes | Done |
-| Chamfer and deburr along edges (chamfer cutter) | Planned |
-| Bore and helical bore | Planned |
-| Thread milling and tapping (rigid or floating) | Planned |
-| Engraving along sketch text and curves | Planned |
+| Chamfer and deburr along edges (chamfer cutter) | Done: `cam.op.chamfer`, width on the face and tip offset, depth from the cutter's angle |
+| Bore and helical bore | Partial: helical bore (`cam.op.helix`); no boring bar |
+| Thread milling and tapping (rigid or floating) | Partial: thread milling (`cam.op.thread`, inside or on a stud, right or left hand) and rigid tapping (`cam.op.tap`: G84, M29+G84, G33.1, G331/G332); no floating tapping |
+| Engraving along sketch text and curves | Done: `cam.op.engrave`, the cutter's tip on picked edges, sketch curves and text |
 | Tabs (bridges) on through contours | Done |
 | Lead-in and lead-out: tangent arc, tangent line, square line or direct/ramp, with overlap | Done |
 | Open contours along an edge chain: side, direction, run-on at both ends | Done |
@@ -173,12 +173,12 @@ Project
 | GRBL (no tool changer, `M6` optional, limited canned cycles) | Done |
 | Mach3 / Mach4 | Partial: Mach3 |
 | Centroid | Done |
-| Fanuc | Planned |
-| Siemens Sinumerik | Planned |
-| Heidenhain (conversational Klartext, not G-code) | Planned |
+| Fanuc | Done: `fanuc` post (`%`/`O` program, two-digit codes, decimal points, canned cycles, rigid tapping) |
+| Siemens Sinumerik | Done: `sinumerik` post (`;` comments, `G71`, `T D1 M6`, `G4 F`, `G331`/`G332` tapping); no `CYCLE8x` |
+| Heidenhain (conversational Klartext, not G-code) | Partial: `heidenhain` post (numbered blocks, `TOOL CALL`, `L`/`FMAX`, `CC`/`C`, cycle 9), read back by its own reader; helices as lines, no tapping (cycle 207) yet; not yet tried on a control |
 | Marlin: only for pen, laser and light routers driven by 3D-printer firmware | Planned, low priority |
 | G-code preview in the panel, with the selected line's move drawn on the model | Done (picking a move in the viewport to find its line: planned) |
-| G-code editor (view, search, edit before export; edits are not read back) | Planned |
+| G-code editor (view, search, edit before export; edits are not read back) | Done: search and edit in the G-code panel, exported as it is with a warning |
 | Post settings in the UI: comments, line numbers, decimals, arcs, canned cycles, tool change, safe start | Done: your own posts (Posts tab, `cam.post.define`), canned drilling cycles `G81`/`G82`/`G83` as a setting, read back by the check |
 
 All posts are written from the controllers' public programming manuals.

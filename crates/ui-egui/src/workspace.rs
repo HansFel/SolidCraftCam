@@ -236,8 +236,8 @@ pub const SECTIONS: &[Section] = &[
         promoted: 3,
         ids: &["cam.setup", "cam.list", "cam.tool.define", "cam.machine.define", "cam.job.create"],
     },
-    Section { tab: "MACHINING", panel: "MILLING", promoted: 4, ids: &["cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.slot"] },
-    Section { tab: "MACHINING", panel: "DRILLING", promoted: 1, ids: &["cam.op.drill"] },
+    Section { tab: "MACHINING", panel: "MILLING", promoted: 4, ids: &["cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.slot", "cam.op.chamfer", "cam.op.engrave"] },
+    Section { tab: "MACHINING", panel: "DRILLING", promoted: 1, ids: &["cam.op.drill", "cam.op.helix", "cam.op.thread", "cam.op.tap"] },
     Section {
         tab: "VIEW",
         panel: "VIEWS",
