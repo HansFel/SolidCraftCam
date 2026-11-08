@@ -23,7 +23,9 @@ macro_rules! planned {
 mod bom;
 pub(crate) mod browser;
 mod cam;
+mod cam_collide;
 mod cam_job;
+mod cam_sheet;
 pub(crate) mod clearance;
 mod clipboard;
 mod clipboard_foreign;
@@ -343,6 +345,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(plastic::COMMANDS.iter());
     v.extend(cam::COMMANDS.iter());
     v.extend(cam_job::COMMANDS.iter());
+    v.extend(cam_sheet::COMMANDS.iter());
     v.extend(frame::COMMANDS.iter());
     v.extend(component::COMMANDS.iter());
     v.extend(component_link::COMMANDS.iter());

@@ -1507,11 +1507,8 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
         let tool = s.doc.cam.tool(op.tool()).cloned().ok_or_else(|| bad(cmd, format!("operation `{}` needs tool {}", op.name(), op.tool())))?;
         let path = build_path(s, &setup, op).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?;
         let live = live_setup(s, &setup).map_err(|e| bad(cmd, e))?;
-        if let Some((fixture, at)) = fixture_hit(s, &live, &tool, &path).map_err(|e| bad(cmd, e))? {
-            return Err(bad(
-                cmd,
-                format!("operation `{}`: the tool or its holder comes near fixture `{fixture}` (at {:.1}, {:.1}, {:.1})", op.name(), at.x, at.y, at.z),
-            ));
+        if let Some(hit) = super::cam_collide::first_collision(s, &live, &tool, &path).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))? {
+            return Err(bad(cmd, format!("operation `{}`: {}", op.name(), super::cam_collide::describe(&hit))));
         }
         move_count = move_count.saturating_add(path.moves.len());
         if move_count > 2_000_000 {
@@ -1586,20 +1583,20 @@ fn resolve_post(cam: &CamSettings, name: &str) -> std::result::Result<Post, Stri
     Post::builtin(name).ok_or_else(|| format!("unknown post `{name}` (built-in: {}; or save one on the design)", Post::BUILTIN.join(", ")))
 }
 
-struct WorkFrame {
-    o: Vec3,
-    x: Vec3,
-    y: Vec3,
-    z: Vec3,
+pub(super) struct WorkFrame {
+    pub(super) o: Vec3,
+    pub(super) x: Vec3,
+    pub(super) y: Vec3,
+    pub(super) z: Vec3,
 }
 
 impl WorkFrame {
-    fn local(&self, p: Vec3) -> Vec3 {
+    pub(super) fn local(&self, p: Vec3) -> Vec3 {
         let d = p - self.o;
         Vec3::new(d.dot(self.x), d.dot(self.y), d.dot(self.z))
     }
 
-    fn model(&self, p: Vec3) -> Vec3 {
+    pub(super) fn model(&self, p: Vec3) -> Vec3 {
         self.o + self.x * p.x + self.y * p.y + self.z * p.z
     }
 }
@@ -1622,7 +1619,7 @@ fn axes(axis: Vec3) -> Option<(Vec3, Vec3, Vec3)> {
     Some((x, z.cross(x), z))
 }
 
-fn work_frame(setup: &CamSetup) -> std::result::Result<WorkFrame, String> {
+pub(super) fn work_frame(setup: &CamSetup) -> std::result::Result<WorkFrame, String> {
     let z = setup.tool_axis_vec().normalized().filter(|z| z.is_finite()).ok_or("the setup's tool axis is not a direction")?;
     let x = match setup.x_axis {
         Some(a) => {
@@ -2808,6 +2805,22 @@ fn engine_pocket(s: &Session, p: &CamPocketParams) -> std::result::Result<Pocket
     })
 }
 
+/// A setup as the model has it now (part zero worked out again when it follows the model) and
+/// its work frame.
+pub(super) fn live_frame(s: &Session, setup: &CamSetup) -> std::result::Result<(WorkFrame, CamSetup), String> {
+    let live = live_setup(s, setup)?.into_owned();
+    Ok((work_frame(&live)?, live))
+}
+
+/// The stock box of a setup in its work coordinates: the box a script gave, else the one worked
+/// out from the model (as the simulation takes it).
+pub(super) fn sheet_stock(s: &Session, setup: &CamSetup, frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
+    match setup.stock {
+        Some(b) => Ok((Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]))),
+        None => stock_extent(s, setup, frame),
+    }
+}
+
 /// `setup` as it stands now: with `zero_follows`, part zero worked out again on its box point
 /// of the model or stock as the model is today.
 fn live_setup<'a>(s: &Session, setup: &'a CamSetup) -> std::result::Result<std::borrow::Cow<'a, CamSetup>, String> {
@@ -2818,44 +2831,6 @@ fn live_setup<'a>(s: &Session, setup: &'a CamSetup) -> std::result::Result<std::
     let mut live = setup.clone();
     live.work_origin = [o.x, o.y, o.z];
     Ok(std::borrow::Cow::Owned(live))
-}
-
-/// The first move of `path` (tool `tool`, holder included) that comes within `CLEAR` of one of
-/// `setup`'s fixtures, as `(fixture, point)`. Each fixture is its body's exact outline box, the
-/// tool a cylinder from its tip up its reach, and the holder one above that; moves are checked
-/// as the boxes they sweep, arcs followed within 0.05 mm.
-fn fixture_hit(s: &Session, setup: &CamSetup, tool: &Tool, path: &solidcraft_cam::Toolpath) -> std::result::Result<Option<(String, Vec3)>, String> {
-    const CLEAR: f64 = 0.5;
-    if setup.fixtures.is_empty() {
-        return Ok(None);
-    }
-    let frame = work_frame(setup)?;
-    let mut boxes = Vec::new();
-    for name in &setup.fixtures {
-        let (lo, hi) = bodies_extent(s, std::slice::from_ref(name), &[], &frame).map_err(|_| format!("fixture `{name}` is not a body of the design"))?;
-        boxes.push((name, lo - Vec3::new(CLEAR, CLEAR, CLEAR), hi + Vec3::new(CLEAR, CLEAR, CLEAR)));
-    }
-    let reach = tool.reach();
-    let holder = tool.holder.as_ref().map(|h| (h.diameter * 0.5, h.length));
-    // (radius, from, to) above the tip: the tool, then the holder.
-    let mut parts = vec![(tool.radius().max(tool.shank_diameter.unwrap_or(0.0) * 0.5), 0.0, reach)];
-    if let Some((r, length)) = holder {
-        parts.push((r, reach, reach + length));
-    }
-    let points = path.checked_points(0.05, 2_000_000).map_err(|e| e.to_string())?;
-    for pair in points.windows(2) {
-        let [(a, _), (b, _)] = pair else { continue };
-        for &(r, from, to) in &parts {
-            let lo = Vec3::new(a.x.min(b.x) - r, a.y.min(b.y) - r, a.z.min(b.z) + from);
-            let hi = Vec3::new(a.x.max(b.x) + r, a.y.max(b.y) + r, a.z.max(b.z) + to);
-            if let Some((name, _, _)) =
-                boxes.iter().find(|(_, flo, fhi)| lo.x < fhi.x && hi.x > flo.x && lo.y < fhi.y && hi.y > flo.y && lo.z < fhi.z && hi.z > flo.z)
-            {
-                return Ok(Some(((*name).clone(), frame.model(*b))));
-            }
-        }
-    }
-    Ok(None)
 }
 
 pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> std::result::Result<solidcraft_cam::Toolpath, String> {
@@ -4354,6 +4329,104 @@ mod tests {
         assert!((z(&s, "Kept") - 8.0).abs() < 1e-6 && (z(&s, "Live") - 20.0).abs() < 1e-6, "{} {}", z(&s, "Kept"), z(&s, "Live"));
         let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
         assert!(cold.cam.setup("Live").is_some_and(|x| x.zero_follows && x.fixtures == ["Jaw"]));
+    }
+
+    #[test]
+    fn the_tool_list_and_setup_sheet_list_every_tool_setup_and_run_time() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        let holder = json!({"description": "ER16", "diameter": 28, "length": 40});
+        run(&mut s, "cam.tool.define", json!({"number": 3, "diameter": 6, "flute_length": 12, "description": "=6 mm, carbide", "stick_out": 30, "holder": holder}));
+        run(&mut s, "cam.tool.define", json!({"number": 7, "kind": "chamfer", "diameter": 10, "flute_length": 5, "tip_angle": 90}));
+        run(&mut s, "cam.tool.define", json!({"number": 9, "diameter": 2, "flute_length": 5}));
+        let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
+        run(&mut s, "cam.setup", json!({"name": "Top", "wcs_origin_mode": "model_box_point", "box_point": corner, "material": "aluminium"}));
+        run(&mut s, "cam.setup", json!({"name": "Bottom"}));
+        let outer = json!([[0, 0], [40, 0], [40, 30], [0, 30]]);
+        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Outline", "tool": 3, "outer": outer, "side": "outside", "bottom": -3, "stepdown": 3}));
+        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Edge", "tool": 7, "outer": outer, "side": "outside", "bottom": -1, "stepdown": 1}));
+        run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Edge", "skip": true}));
+        let sheet = run(&mut s, "cam.sheet", json!({}));
+        // Only the tools a step uses, by number, each with the steps it cuts in.
+        let tools: Vec<_> = sheet["tools"].as_array().unwrap().iter().map(|t| (t["number"].clone(), t["used_in"].clone())).collect();
+        assert_eq!(tools, [(json!(3), json!(["Top / Outline"])), (json!(7), json!(["Top / Edge"]))]);
+        assert_eq!(sheet["tools"][0]["holder"]["description"], "ER16");
+        assert_eq!(sheet["tools"][1]["kind"], "chamfer");
+        let top = &sheet["setups"][0];
+        assert_eq!((top["name"].clone(), top["work_offset"].clone(), top["material"].clone()), (json!("Top"), json!("G54"), json!("aluminium")));
+        assert!(top["part_zero"].as_str().unwrap().contains("model_box_point"), "{}", top["part_zero"]);
+        assert!((top["origin"][2].as_f64().unwrap() - 8.0).abs() < 1e-6);
+        assert!(top["stock"]["size"][0].as_f64().unwrap() >= 40.0, "{}", top["stock"]);
+        let steps: Vec<_> = top["steps"].as_array().unwrap().iter().map(|t| (t["name"].clone(), t["type"].clone(), t["skipped"].clone())).collect();
+        assert_eq!(steps, [(json!("Outline"), json!("contour"), json!(false)), (json!("Edge"), json!("contour"), json!(true))]);
+        // The run time is the program's: the skipped step has none; an empty setup takes none.
+        let seconds = top["seconds"].as_f64().unwrap();
+        assert!(seconds > 0.0 && top["steps"][1]["seconds"].is_null() && top["problem"].is_null(), "{top}");
+        assert_eq!(sheet["setups"][1]["seconds"], json!(0.0));
+        assert!((sheet["seconds"].as_f64().unwrap() - seconds).abs() < 1e-9);
+        // One setup alone.
+        assert_eq!(run(&mut s, "cam.sheet", json!({"setup": "Bottom"}))["setups"].as_array().unwrap().len(), 1);
+        // Written as a page, a CSV tool list and JSON.
+        let folder = std::env::temp_dir().join(format!("solidcraft-cam-sheet-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = |name: &str| folder.join(name).to_string_lossy().into_owned();
+        let labels = json!({"tools": "Werkzeugliste", "kind.chamfer": "Fasenfräser", "op.contour": "Kontur"});
+        run(&mut s, "cam.sheet", json!({"path": file("sheet.html"), "title": "Plate <1>", "labels": labels}));
+        let page = std::fs::read_to_string(file("sheet.html")).unwrap();
+        for text in ["<title>Plate &lt;1&gt;</title>", "Werkzeugliste", "Fasenfräser", "Kontur", "ER16", "G54", "=6 mm, carbide"] {
+            assert!(page.contains(text), "{text} missing in the page");
+        }
+        run(&mut s, "cam.sheet", json!({"path": file("tools.csv")}));
+        let csv = std::fs::read_to_string(file("tools.csv")).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3, "{csv}");
+        // A text that starts like a formula stays text.
+        assert!(lines[1].starts_with("3,flat_endmill,\"'=6 mm, carbide\",6,12,"), "{}", lines[1]);
+        run(&mut s, "cam.sheet", json!({"path": file("sheet.json")}));
+        let json: Value = serde_json::from_str(&std::fs::read_to_string(file("sheet.json")).unwrap()).unwrap();
+        assert_eq!(json["tools"][0]["number"], 3);
+        // Kept unless overwriting; a format it does not write, a missing setup: refused.
+        assert!(s.execute("cam.sheet", &json!({"path": file("sheet.json")})).is_err());
+        run(&mut s, "cam.sheet", json!({"path": file("sheet.json"), "overwrite": true}));
+        assert!(s.execute("cam.sheet", &json!({"path": file("sheet.pdf")})).is_err());
+        assert!(s.execute("cam.sheet", &json!({"setup": "Nope"})).is_err());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn the_shank_and_holder_are_checked_against_the_parts_exact_faces() {
+        let mut s = Session::default();
+        let block = |s: &mut Session, p0: [f64; 2], p1: [f64; 2], height: f64, name: &str| {
+            run(s, "sketch.create", json!({"plane": "XY"}));
+            run(s, "sketch.rectangle.two_point", json!({"p0": p0, "p1": p1}));
+            run(s, "sketch.finish", json!({}));
+            run(s, "solid.extrude", json!({"distance": height, "operation": "new", "body_name": name}));
+        };
+        block(&mut s, [0.0, 0.0], [40.0, 30.0], 8.0, "Plate");
+        block(&mut s, [30.0, 0.0], [40.0, 30.0], 40.0, "Wall");
+        run(&mut s, "cam.setup", json!({"name": "Top"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10}));
+        // Round the plate's left part, 3 mm off it: the cutter's centre runs at x = 23, 7 mm from the wall.
+        let outer = json!([[0, 0], [20, 0], [20, 30], [0, 30]]);
+        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Near", "tool": 1, "outer": outer, "side": "outside", "clearance": 60, "retract": 10, "top": 8, "bottom": 5, "stepdown": 3}));
+        let post = |s: &mut Session| s.execute("cam.post", &json!({"setup": "Top"})).map(|_| ()).map_err(|e| e.to_string());
+        // A 30 mm holder 25 mm above the tip reaches over the wall, which stands 10 mm higher.
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 25, "holder": {"diameter": 30, "length": 40}}));
+        let refused = post(&mut s);
+        assert!(refused.as_ref().is_err_and(|e| e.contains("tool holder runs into body `Wall`")), "{refused:?}");
+        // Sticking out 45 mm it clears the wall; the 6 mm shank keeps 4 mm off it.
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "holder": {"diameter": 30, "length": 40}}));
+        assert_eq!(post(&mut s), Ok(()));
+        // A 20 mm shank above the flutes does not.
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "shank_diameter": 20}));
+        let refused = post(&mut s);
+        assert!(refused.as_ref().is_err_and(|e| e.contains("shank runs into body `Wall`")), "{refused:?}");
+        // The part named alone leaves the wall out of the check.
+        run(&mut s, "cam.setup", json!({"name": "Top", "model_bodies": ["Plate"]}));
+        assert_eq!(post(&mut s), Ok(()));
     }
 
     #[test]

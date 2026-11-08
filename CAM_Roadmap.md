@@ -65,7 +65,7 @@ machine the bottom).
 | Work coordinate system shown in the viewport (axes at part zero) | Done |
 | Machine coordinate system and work offset G54–G59 | Partial: work offset done; the setup names its machine; machine zero is set at the machine |
 | Stock assigned to the setup, rotated and shifted | Partial: box around the model, fixed box and round bar in the setup form; no rotation or shift |
-| Fixtures assigned (bodies the tool must not touch) | Done: `fixtures` on the setup; posting refuses a step whose tool or holder comes within 0.5 mm of a fixture's box, and fixtures stay out of the part's box |
+| Fixtures assigned (bodies the tool must not touch) | Done: `fixtures` on the setup; posting refuses a step whose tool, shank or holder comes within 0.5 mm of a fixture (exact faces), and fixtures stay out of the part's box |
 | Setup preview: model, stock, fixtures and part zero together | Partial: stock box and part zero; no fixtures |
 | Stock continues from the preceding setup | Partial: `from_preceding` in the data model; needs simulation for the real rest |
 
@@ -124,7 +124,7 @@ Project
 | Tap and thread mill | Done (with their pitch) |
 | Number, name, diameter, flute length, number of flutes | Done |
 | Overall length, shank diameter, stick-out | Done |
-| Holder (geometry for collision checks, gauge length) | Partial: a holder as diameter and length, checked against fixtures; no gauge length |
+| Holder (geometry for collision checks, gauge length) | Partial: a holder as diameter and length, checked against the part and fixtures; no gauge length |
 | Tool material (HSS, carbide, coated) changing the starting values | Planned |
 | Recommended cutting data per material group | Done |
 | Import and export of the library as a file (own JSON format) | Done |
@@ -192,8 +192,8 @@ All posts are written from the controllers' public programming manuals.
 | Every step's toolpath shown while the CAM window is open | Done |
 | Tool motion along the path (play, step, speed) | Done (in the G-code panel, along the program as written) |
 | Rapid moves shown apart from cutting moves | Done (preview) |
-| Material removal (dexel or voxel stock, shown in the viewport) | Partial: height-field stock for box and round bar, flat, ball and drill tools; `cam.simulate` and **Simulate material removal** in the G-code panel draw the stock left and report rapids through stock and cuts above the flutes; no undercuts, not yet along the playback |
-| Collision of tool, holder and fixtures with stock and model | Planned |
+| Material removal (dexel or voxel stock, shown in the viewport) | Partial: height-field stock for box and round bar; flat, ball, bull-nose and cone tools (drill, centre drill, chamfer, V-bit), T-slot, reamer, tap and thread mill as flat; `cam.simulate` and **Simulate material removal** in the G-code panel draw the stock left and report rapids through stock and cuts above the flutes; no undercuts, not yet along the playback |
+| Collision of tool, holder and fixtures with stock and model | Partial: posting refuses a step whose shank or holder meets the part, whose tool meets it at a rapid across the axis, or which comes within 0.5 mm of a fixture: the tool's parts swept along the path and intersected with the bodies' exact faces (`crates/engine/src/cmd/cam_collide.rs`); not the stock, not a T-slot cutter's undercut |
 | Machine kinematics (axes, travels) | Partial: travels checked by reach on export |
 | Machining time with accelerations, rapids and tool changes | Partial: `estimate`/`move_times` in `crates/cam/src/time.rs` (trapezoid per run, axis limits, stops at corners over 10°, arcs held to their bend, tool changes); shown in the G-code panel and returned by `cam.post` (`time`); acceleration and tool-change time not yet set per machine |
 
@@ -206,7 +206,7 @@ Before each export:
 | Read-back of the program against the planned toolpaths | Done |
 | Rest material shown on the model | Partial: rest against a target height (`RestMap`) in the CAM crate; not shown yet |
 | Areas no tool can reach marked | Planned |
-| Collisions marked | Planned |
+| Collisions marked | Partial: the refusal names the tool's part, the body and the place; not marked in the viewport |
 | A warning list per setup (shown in the panel, returned by `cam.post`) | Partial: rapids through stock and cuts above the flutes, per step, from `cam.simulate` |
 
 ### 9. Machine library
@@ -266,15 +266,15 @@ Before each export:
 
 ## Phase 6: manufacturing documents
 
-Generated from the design, also as PDF:
+Generated from the design, as a printable HTML page (printed to PDF from the browser), CSV and JSON:
 
 | Document | Status |
 |---|---|
-| Tool list (number, type, diameter, lengths, holder, used in which steps) | Planned |
-| Setup sheet (part zero, orientation, stock, fixtures, picture per setup) | Planned |
-| Setup list and fixture overview | Planned |
-| Run time per setup and in total | Partial: per setup in the G-code panel and `cam.post` (per step in its JSON); no total over setups yet |
-| Material list (stock size and material group) | Planned |
+| Tool list (number, type, diameter, lengths, holder, used in which steps) | Done: `cam.sheet`, **Tool list and setup sheet…** in the job list (HTML, CSV, JSON) |
+| Setup sheet (part zero, orientation, stock, fixtures, picture per setup) | Partial: everything but the picture, one printable page per setup |
+| Setup list and fixture overview | Done: in the setup sheet |
+| Run time per setup and in total | Done: per step, per setup and in total in the setup sheet |
+| Material list (stock size and material group) | Done: stock kind, size and material per setup in the setup sheet |
 
 ## Turning and mill-turn
 

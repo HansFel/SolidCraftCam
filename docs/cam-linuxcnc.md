@@ -36,8 +36,9 @@ The program retracts between operations, stops the spindle and coolant, and ends
 with M30. Drilling is expanded to G0/G1 moves and G4 dwell, without modal canned cycles.
 
 Every generated program is read back and its cutting geometry compared with the
-planned toolpaths before it can be exported. This checks numerical postprocessing;
-it is **not** a fixture or collision check. The preview is a tool-centre path; the
+planned toolpaths before it can be exported. This checks numerical postprocessing.
+Posting also checks the tool against the model and the fixtures (see **Collisions** below);
+it does not check the stock or the machine itself. The preview is a tool-centre path; the
 material-removal simulation (below) works on heights over the work plane only. Inspect the program in LinuxCNC's
 preview and verify tool table, work zero and clearance for the actual machine.
 
@@ -194,9 +195,39 @@ rather than writing a tap as plain moves.
 
 A setup's **Fixtures** are the bodies that hold the part (vice jaws, clamps). They never count
 as part of the model's box, so the stock and a box-point part zero ignore them, and posting
-refuses a step whose tool or holder comes within 0.5 mm of a fixture's box. **Part zero follows
+refuses a step whose tool, shank or holder comes within 0.5 mm of a fixture. **Part zero follows
 later model changes** works a box-point part zero out again from the model as it is each time,
 instead of keeping where it was when the setup was saved.
+
+## Collisions
+
+Posting refuses a step whose tool runs into the part or a fixture, and says which part of the
+tool, which body and where (in model coordinates):
+
+- the **shank** above the flutes (its **Shank diameter**, else the cutting diameter, up to the
+  **Stick-out**) and the **holder** (its diameter and length above that), at every move;
+- the **whole tool** at a rapid move across the tool axis (straight in and out along the axis
+  it moves through what it cut itself);
+- **every part** of the tool, flutes too, within 0.5 mm of a fixture, at every move.
+
+The flutes cut the part on purpose, so they are not checked against it at feed. A shank or
+holder may skim the part by 0.02 mm. The check sweeps each part of the tool along the path into
+a solid and intersects it with the bodies on their exact faces; it never uses the display mesh.
+The model must hold the finished part: holes, pockets and chamfers the program cuts but the
+model lacks are material in the way. A tool without a stick-out is taken to stick out its flute
+length, so give tools their stick-out and holder for the check to see them. A T-slot cutter's
+undercut and the stock are not checked yet.
+
+## Tool list and setup sheet
+
+**Tool list and setup sheet…** under the job list saves the manufacturing documents of every
+setup: the tool list (each tool the steps use, with its kind, sizes, stick-out, holder and the
+steps that cut with it) and a sheet per setup (work offset, part zero and how it is found, axes,
+material, stock size and box in work coordinates, fixtures, model bodies, machine, post, the
+steps in order with their tools and run times, and the setup's run time), then the total run
+time. Save it as **HTML**, a printable page (print it to PDF from the browser; each setup starts
+a new page), as a **CSV** tool list, or as **JSON**. A setup whose program cannot be posted has
+no run time; the sheet says why.
 
 ## Drilling at picked bores
 
@@ -383,7 +414,7 @@ they use the virtual filesystem and the host's download handling.
 
 The lower-level commands `cam.tool.define`, `cam.setup`, `cam.op.contour`,
 `cam.op.pocket`, `cam.op.drill`, `cam.op.remove`, `cam.tool.remove`, `cam.machine.define`,
-`cam.machine.remove`, `cam.post.define`, `cam.post.remove`, `cam.list`, `cam.post` and `cam.simulate` are also available through scripts, CLI and the control channel. Contour
+`cam.machine.remove`, `cam.post.define`, `cam.post.remove`, `cam.list`, `cam.post`, `cam.simulate` and `cam.sheet` are also available through scripts, CLI and the control channel. Contour
 and pocket commands additionally accept sketch profiles, planar faces and polygon
 regions with islands, and expression-based depths and feeds. Use `cam.post` with
 `post: "linuxcnc"` for LinuxCNC output; its existing default remains `rs274`.
@@ -434,6 +465,10 @@ the guided job and export fall back to `linuxcnc`.
 grid size in mm, is optional) and returns `removed` (mm³), the `cell` used, per step `removed`,
 `rapid_hits` and `too_deep` (move indices, the first 100) and `warnings` as text. A stock box
 given to `cam.setup` as `stock` is used as it is; otherwise the setup's stock around the model.
+`cam.sheet {"setup": "Top", "path": "sheet.html"}` returns the tool list and setup sheets as
+data (`tools`, `setups`, `seconds`) and, given a `path`, writes them as `html`, `csv` (the tool
+list) or `json` (`format`, else from the extension; `overwrite`, `title` and `labels` for the
+page's headings are optional).
 `cam.machine.define` adds or replaces the design's machine of that name, `cam.machine.remove`
 removes one no setup names, and `cam.setup` takes `machine` as a name, a whole machine
 (copied into the design) or null; with a whole machine, `machine_post` copies the post it

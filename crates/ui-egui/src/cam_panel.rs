@@ -983,6 +983,8 @@ enum Action {
     Post(Box<Post>),
     /// Takes a post off the personal list.
     Unpost(String),
+    /// Saves the tool list and setup sheet.
+    Sheet,
 }
 
 /// Export setup `setup`'s program: straight into its machine's folder when one is set (an
@@ -1405,6 +1407,84 @@ fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut V
         ui.separator();
         setup_rows(app, ui, d, setup, actions);
     }
+    if setups.iter().any(|s| !s.operations.is_empty()) {
+        ui.separator();
+        if ui_kit::button(ui, tr("ui.cam.sheet.export"), ui_kit::Button::Normal).on_hover_text(tr("ui.cam.sheet.hint")).clicked() {
+            actions.push(Action::Sheet);
+        }
+    }
+}
+
+/// The setup sheet's headings by `cam.sheet` key, and their messages.
+const SHEET_HEADINGS: &[(&str, &str)] = &[
+    ("axes", "ui.cam.sheet.axes"),
+    ("bodies", "ui.cam.sheet.bodies"),
+    ("description", "ui.cam.sheet.description"),
+    ("diameter", "ui.cam.sheet.diameter"),
+    ("fixtures", "ui.cam.sheet.fixtures"),
+    ("flute_length", "ui.cam.sheet.flute_length"),
+    ("flutes", "ui.cam.sheet.flutes"),
+    ("holder", "ui.cam.sheet.holder"),
+    ("kind", "ui.cam.sheet.kind"),
+    ("machine", "ui.cam.sheet.machine"),
+    ("material", "ui.cam.sheet.material"),
+    ("none", "ui.cam.sheet.none"),
+    ("number", "ui.cam.sheet.number"),
+    ("origin", "ui.cam.sheet.origin"),
+    ("part_zero", "ui.cam.sheet.part_zero"),
+    ("post", "ui.cam.sheet.post"),
+    ("problem", "ui.cam.sheet.problem"),
+    ("run_time", "ui.cam.sheet.run_time"),
+    ("setups", "ui.cam.sheet.setups"),
+    ("sizes", "ui.cam.sheet.sizes"),
+    ("skipped", "ui.cam.sheet.skipped"),
+    ("step", "ui.cam.sheet.step"),
+    ("steps", "ui.cam.sheet.steps"),
+    ("stick_out", "ui.cam.sheet.stick_out"),
+    ("stock", "ui.cam.sheet.stock"),
+    ("tool", "ui.cam.sheet.tool"),
+    ("tools", "ui.cam.sheet.tools"),
+    ("total", "ui.cam.sheet.total"),
+    ("used_in", "ui.cam.sheet.used_in"),
+    ("work_offset", "ui.cam.sheet.work_offset"),
+];
+
+/// The step types of the setup sheet, and the names their commands have.
+const SHEET_STEPS: &[(&str, &str)] = &[
+    ("chamfer", "cmd.cam.op.chamfer"),
+    ("contour", "cmd.cam.op.contour"),
+    ("drill", "cmd.cam.op.drill"),
+    ("engrave", "cmd.cam.op.engrave"),
+    ("face", "cmd.cam.op.face"),
+    ("helical_bore", "cmd.cam.op.helix"),
+    ("pocket", "cmd.cam.op.pocket"),
+    ("slot", "cmd.cam.op.slot"),
+    ("thread_mill", "cmd.cam.op.thread"),
+];
+
+/// The stock kinds of the setup sheet, and their names in the setup form.
+const SHEET_STOCKS: &[(&str, &str)] = &[
+    ("box", "ui.cam.stock_box"),
+    ("cylinder", "ui.cam.stock_round"),
+    ("relative_box", "ui.cam.stock_around"),
+];
+
+/// The setup sheet's words in the language shown: headings, tool kinds, step types, stocks.
+fn sheet_labels() -> Value {
+    let mut labels = serde_json::Map::new();
+    for (key, id) in SHEET_HEADINGS {
+        labels.insert((*key).to_string(), json!(tr(id)));
+    }
+    for &kind in KINDS {
+        labels.insert(format!("kind.{}", kind.key()), json!(tr(kind_key(kind))));
+    }
+    for (key, id) in SHEET_STEPS {
+        labels.insert(format!("op.{key}"), json!(tr(id)));
+    }
+    for (key, id) in SHEET_STOCKS {
+        labels.insert(format!("stock.{key}"), json!(tr(id)));
+    }
+    Value::Object(labels)
 }
 
 fn cutting_rows(ui: &mut egui::Ui, edit: &mut ToolEdit) {
@@ -1893,6 +1973,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 app.cam_window = Some(std::mem::take(&mut d));
                 import_library(app);
                 d = app.cam_window.take().unwrap_or_default();
+                Ok(())
+            }
+            Action::Sheet => {
+                let params = json!({"labels": sheet_labels(), "title": tr("ui.cam.sheet.title"), "overwrite": true});
+                app.pick_save_command("setup-sheet.html", &["html", "csv", "json"], "cam.sheet", params);
                 Ok(())
             }
             Action::ExportText(setup, text) => {

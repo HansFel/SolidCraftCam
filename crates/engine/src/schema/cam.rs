@@ -697,6 +697,108 @@ pub struct ExportParams {
     pub text: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SheetParams {
+    /// One setup; absent: every setup.
+    pub setup: Option<String>,
+    /// Write the sheet to this file.
+    pub path: Option<String>,
+    /// `html`, `csv` (the tool list) or `json`; absent: from the path's extension.
+    pub format: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+    /// The HTML page's heading.
+    pub title: Option<String>,
+    /// Headings for the HTML page by key (`tools`, `number`, …, `kind.<tool kind>`, `op.<step type>`, `stock.<stock kind>`).
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetHolder {
+    pub description: String,
+    pub diameter: f64,
+    pub length: f64,
+}
+
+/// A tool the setups use.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetTool {
+    pub number: u32,
+    pub kind: String,
+    pub description: String,
+    pub diameter: f64,
+    pub flute_length: f64,
+    pub flutes: u32,
+    pub corner_radius: Option<f64>,
+    pub tip_angle: Option<f64>,
+    pub tip_diameter: Option<f64>,
+    pub pitch: Option<f64>,
+    pub shank_diameter: Option<f64>,
+    pub overall_length: Option<f64>,
+    pub stick_out: Option<f64>,
+    pub holder: Option<SheetHolder>,
+    /// The steps that cut with it, as `setup / step`.
+    pub used_in: Vec<String>,
+}
+
+/// A setup's stock box in its work coordinates (mm).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetStock {
+    pub kind: String,
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    pub size: [f64; 3],
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetStep {
+    pub name: String,
+    /// The step's type (`contour`, `pocket`, `drill`, …).
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub tool: u32,
+    pub skipped: bool,
+    /// Its run time with the tool change before it (seconds); absent when not posted.
+    pub seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetSetup {
+    pub name: String,
+    pub work_offset: String,
+    /// Part zero in model coordinates.
+    pub origin: [f64; 3],
+    pub tool_axis: [f64; 3],
+    pub x_axis: Option<[f64; 3]>,
+    /// How part zero is found.
+    pub part_zero: String,
+    pub material: Option<String>,
+    pub machine: Option<String>,
+    pub post: String,
+    pub fixtures: Vec<String>,
+    pub model_bodies: Vec<String>,
+    pub stock: Option<SheetStock>,
+    pub steps: Vec<SheetStep>,
+    /// The program's run time (seconds); absent when it cannot be posted.
+    pub seconds: Option<f64>,
+    /// Why something is missing.
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetResult {
+    pub tools: Vec<SheetTool>,
+    pub setups: Vec<SheetSetup>,
+    /// All setups' run time (seconds); absent when one of them has none.
+    pub seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<usize>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ExportResult {
     pub path: String,
