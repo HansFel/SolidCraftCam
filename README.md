@@ -1,153 +1,168 @@
 <p align="center">
-  <img src="assets/icons/app/linux/exports/hicolor/256x256/apps/io.tangencylabs.solidcraft.png" width="96" height="96" alt="SolidCraft" />
+  <img src="https://raw.githubusercontent.com/tangency-labs/solidcraft/main/assets/icons/app/linux/exports/hicolor/256x256/apps/io.tangencylabs.solidcraft.png" width="96" height="96" alt="SolidCraft CAM" />
 </p>
 
-<h1 align="center">SolidCraft</h1>
+<h1 align="center">SolidCraft CAM for LinuxCNC</h1>
 
 <p align="center">
-  <strong>An open-source parametric 3D CAD application built in pure Rust.</strong><br />
-  Sketch, constrain, and build solids with a parametric feature timeline. Change a dimension
-  and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
-  model through the built-in MCP server.
+  <strong>2.5D CAM toolpath generator for SolidCraft parametric 3D CAD</strong><br />
+  Generate professional toolpaths for LinuxCNC from your SolidCraft designs.
+  Fork of SolidCraft with integrated CAM functionality for CNC machining automation.
 </p>
 
 <div align="center">
 
-[![Download for Windows][badge-windows]][windows-msi]
-[![Download for macOS][badge-macos]][macos-dmg]
-[![Download for Linux][badge-linux]][linux-appimage]
-[![Get it from the Snap Store][badge-snap]][snap-store]
-[![Try it in your browser][badge-web]][web-app]
+[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue?style=flat-square)](LICENSE)
+[![Repository](https://img.shields.io/badge/GitHub-HansFel%2FSolidCraftCam-black?style=flat-square&logo=github)](https://github.com/HansFel/SolidCraftCam)
+[![Discord](https://img.shields.io/badge/Discord-SolidCraft-5865F2?logo=discord&logoColor=white&style=flat-square)](https://discord.gg/FtU4NQNVDH)
 
 </div>
 
-<p align="center">
-  <a href="https://solidcraft.io">Website</a> ·
-  <a href="https://solidcraft.io/download">Download</a> ·
-  <a href="https://solidcraft.io/app">Try it in the browser</a> ·
-  <a href="https://docs.solidcraft.io/">Documentation</a> ·
-  <a href="https://www.blacksmith.sh"><img src="https://img.shields.io/badge/CI-Blacksmith-000000?logo=githubactions&logoColor=white" alt="CI powered by Blacksmith" /></a>
-  <a href="https://discord.gg/FtU4NQNVDH">Discord</a> ·
-  <a href="https://github.com/bherbruck/solidcore">SolidCore</a>
-</p>
+## About
 
-<p align="center">
-  <a href="https://github.com/tangency-labs/solidcraft/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/tangency-labs/solidcraft/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
-  <a href="https://github.com/tangency-labs/solidcraft/releases/latest"><img src="https://img.shields.io/github/v/release/tangency-labs/solidcraft?label=release" alt="Latest release" /></a>
-  <a href="https://github.com/tangency-labs/solidcraft/releases"><img src="https://img.shields.io/github/downloads/tangency-labs/solidcraft/total?label=downloads" alt="Downloads" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/tangency-labs/solidcraft" alt="Licence" /></a>
-  <a href="https://discord.gg/FtU4NQNVDH"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://remade.wiki/projects/solidcraft/"><img src="https://remade.wiki/badges/listed-on-remade-classic.svg" alt="Listed on Remade" /></a>
-  <a href="https://github.com/tangency-labs/solidcraft/stargazers"><img src="https://img.shields.io/github/stars/tangency-labs/solidcraft?style=flat" alt="Stars" /></a>
-</p>
+**SolidCraft CAM** extends [SolidCraft](https://github.com/tangency-labs/solidcraft) – an open-source parametric 3D CAD application built in pure Rust – with **2.5D CAM (Computer-Aided Manufacturing)** capabilities for [LinuxCNC](http://linuxcnc.org/).
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/296178?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-296178" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/296178/daily" alt="tangency-labs%2Fsolidcraft | Trendshift" width="250" height="55"/></a>
-  <a href="https://trendshift.io/repositories/296178?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-296178" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/296178/daily?language=Rust" alt="tangency-labs%2Fsolidcraft | Trendshift (Rust)" width="250" height="55"/></a>
-</p>
+This project enables you to:
+- Design parts parametrically in SolidCraft
+- Generate 2.5D toolpaths directly from your designs
+- Export G-code compatible with LinuxCNC and other CNC controllers
+- Integrate CAM workflows into your manufacturing pipeline
 
-![SolidCraft: model a Raspberry Pi 4 case from an empty design: a sketch dimensioned with parameters, extrude, fillets and shell, a rim rounded in one pick, standoffs patterned on the board's mounting holes, port cut-outs, vent slots, "Pi 4" engraved in a font, a PETG material with its mass in Properties, and a height change in Parameters](docs/screenshots/demo.gif)
+## Features
 
-*A Raspberry Pi 4 case from an empty design: a sketch dimensioned with the board's parameters, extrude, fillet, shell, the rim rounded in one pick, an M2.5 standoff patterned on the 58 × 49 mm hole rectangle, port cut-outs, vent slots, "Pi 4" engraved in DejaVu Sans Bold and a PETG material defined in the design, with its mass in Properties, then height 24 → 32 mm in Parameters and it all rebuilds. 6× playback with the idle pauses cut. [Full video](https://github.com/tangency-labs/solidcraft/raw/refs/heads/main/docs/screenshots/demo.mp4), recorded with the [demo script](examples/demo/record_ui.sh).*
+- **2.5D Toolpath Generation** – Create toolpaths for pocket, facing, and contouring operations
+- **LinuxCNC Integration** – Export G-code ready for LinuxCNC controllers
+- **Parametric CAM** – Update toolpaths automatically when design parameters change
+- **SolidCraft Foundation** – All SolidCraft features: sketches, constraints, features, assemblies
+- **Open Source** – MIT or Apache-2.0, fully transparent development
 
-## Download
+## Getting Started
 
-- **Windows:** the [installer][windows-msi].
-- **macOS:** the [disk image][macos-dmg] (Apple silicon and Intel).
-- **Linux:** the [AppImage][linux-appimage], or `sudo snap install solidcraft` ([Snap Store][snap-store]).
-- **Web:** [try it in your browser][web-app], no install.
+### Prerequisites
 
-ARM64 and 32-bit builds, portable zip, .deb, .rpm, Flatpak and the other packages are on the
-[downloads page](docs/downloads.md). The macOS app is signed with a Developer ID and notarized by
-Apple. The Windows downloads aren't signed yet: choose **More info**, then **Run anyway** in
-SmartScreen. On SolidCraft 0.11 to 0.14, download once by hand; see
-[updating](https://docs.solidcraft.io/guide/updates.html#updating-from-011-to-014).
+- Rust toolchain (latest stable)
+- SolidCraft dependencies (see [SolidCraft docs](https://docs.solidcraft.io/))
+- LinuxCNC (for testing G-code output, optional for CAM generation)
 
-## What works
+### Installation
 
-Early but usable for simple parts: 75 of 76 public reference parts match their analytic or
-FreeCAD-computed volume, area, centre of mass and bounding box ([oracle](docs/oracle.md)); the
-other is a tracked bug.
+```bash
+# Clone this repository
+git clone https://github.com/HansFel/SolidCraftCam.git
+cd SolidCraftCam
 
-- **Sketches and constraints:** lines, arcs, splines, text and more, solved by our own constraint solver, with parameter-driven dimensions.
-- **Features:** extrude, revolve, sweep, loft, fillet, chamfer, shell, draft, holes, threads, patterns, mirror, split and combine on an editable parametric timeline.
-- **Parameters and configurations** with unit-aware expressions.
-- **Assemblies** with joints, motion studies, contact sets, interference and mass properties.
-- **Sheet metal** with flanges, hems, fold/unfold and flat patterns, and plastic enclosure features.
-- **Files:** STEP, IGES, 3MF, STL, OBJ and glTF in and out where supported, URDF export, `.sc` designs (`.solidcraft` files from earlier releases still open).
-- **Desktop app, browser app, headless CLI and MCP server**, all running the same commands.
+# Build the CAM branch
+git checkout cam-linuxcnc
+cargo build --release
 
-The full list is in [docs/capabilities.md](docs/capabilities.md) and [docs/features.md](docs/features.md);
-status and plans are in [ROADMAP.md](ROADMAP.md). See also [what people built](docs/showcase.md),
-[3D mouse support](docs/3d-mouse.md) and the [architecture](docs/architecture.md).
-
-## Build from source
-
-```sh
-cargo run --release -p solidcraft -- --sample      # desktop app with a sample part
-cargo run --release -p solidcraft-cli -- commands  # the command registry
-cargo run --release -p solidcraft-cli -- run examples/bracket.json --out bracket.step
-cargo xtask ci                                     # fmt, clippy, tests, icons, assets, layers, wasm
+# Run the desktop app
+cargo run --release -p solidcraft -- --sample
 ```
 
-More commands, the Windows cross-build and the browser build are in [docs/building.md](docs/building.md).
+### Basic CAM Workflow
 
-## AI agents (MCP)
+1. **Design your part** in SolidCraft (sketches, features, parameters)
+2. **Switch to CAM mode** (cam-linuxcnc branch features)
+3. **Define toolpath operations** – select faces, set tool diameter, depth of cut
+4. **Generate G-code** – export ready-to-run toolpaths
+5. **Run on LinuxCNC** – load the G-code into your CNC controller
 
-`solidcraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Headless it
-runs its own design session, or with `--connect` it drives the running app so you can watch.
-Claude Code: `claude mcp add solidcraft -- solidcraft-cli mcp`. If a terminal doesn't find
-`solidcraft-cli` (older Windows installers don't put it on `PATH`), give its full path (by default
-`"C:\\Program Files\\SolidCraft\\solidcraft-cli.exe"`). Tools, access rules and an example session:
-[docs/mcp.md](docs/mcp.md).
+### Example
 
-## Scripts
+```bash
+# Generate G-code from a design
+cargo run --release -p solidcraft-cli -- cam examples/bracket.sc \
+  --tool-diameter 3.175 \
+  --output bracket.ngc
+```
 
-A script is a JSON list of the same commands the UI runs, executed with `solidcraft-cli run`.
-Format and example: [docs/scripts.md](docs/scripts.md). Pages can also be driven through the
-[browser command API](docs/browser-api.md).
+## Architecture
+
+SolidCraft CAM is built on top of SolidCraft's modular architecture:
+
+- **`crates/solidcraft-kernel`** – Core CAD geometry and modeling
+- **`crates/solidcraft-cam`** – CAM-specific toolpath generation (this project's main contribution)
+- **`crates/solidcraft-cli`** – Command-line interface for batch CAM operations
+- **`apps/solidcraft`** – Desktop application with integrated CAM UI
+
+## Project Status
+
+🚀 **In Active Development** – The cam-linuxcnc branch is currently under development with core 2.5D CAM functionality. More advanced features (3D toolpaths, multi-axis) are planned.
+
+See [CAM_Roadmap.md](CAM_Roadmap.md) for detailed feature roadmap and development plans.
 
 ## Contributing
 
-Help is welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to build and test, the code map,
-the clean-room and licence rules, and where help is wanted most. Open work is in
-[GitHub issues](https://github.com/tangency-labs/solidcraft/issues); chat is on
-[Discord](https://discord.gg/FtU4NQNVDH).
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+- Building and testing
+- Code style and conventions
+- Clean-room contribution rules
+- Where help is most needed
 
-## Sponsors
+**Areas looking for contributions:**
+- Advanced toolpath strategies (finishing passes, adaptive feeds)
+- Tool library management
+- G-code post-processors for other CNC controllers
+- Documentation and examples
+- Testing and bug reports
 
-[![CI powered by Blacksmith](docs/sponsors/blacksmith-ci-powered.png)](https://www.blacksmith.sh)
+## Community
 
-SolidCraft's continuous integration runs on [Blacksmith](https://www.blacksmith.sh), which
-sponsors its CI minutes.
+- **Discord:** [Join the SolidCraft Discord](https://discord.gg/FtU4NQNVDH) – Ask questions, share work, discuss features
+- **Issues:** [GitHub Issues](https://github.com/HansFel/SolidCraftCam/issues) – Report bugs and request features
+- **Discussions:** [GitHub Discussions](https://github.com/tangency-labs/solidcraft/discussions) – General discussions
+
+## Development
+
+### Build from Source
+
+```bash
+# Full build and test suite
+cargo xtask ci
+
+# Build just the CAM CLI
+cargo build --release -p solidcraft-cli
+
+# Run tests
+cargo test --all
+
+# Check code style
+cargo fmt --check
+cargo clippy --all
+```
+
+### Understanding the Code
+
+Start with [CLAUDE.md](CLAUDE.md) for AI-assisted development guidance, and see the SolidCraft [architecture documentation](https://github.com/tangency-labs/solidcraft/blob/main/docs/architecture.md).
+
+## Related Projects
+
+- **[SolidCraft](https://github.com/tangency-labs/solidcraft)** – The parametric CAD foundation
+- **[SolidCore](https://github.com/bherbruck/solidcore)** – Alternative Rust CAD kernel
+- **[LinuxCNC](http://linuxcnc.org/)** – Open-source CNC control software
+- **[Machine-neutral CAM Companion](https://github.com/mountainarcwelding/campanion)** – Another SolidCraft CAM project
+
+## License
+
+This project is licensed under **MIT OR Apache-2.0**, at your option.
+
+- All SolidCraft files retain their original licenses
+- See [DISCLAIMER.md](DISCLAIMER.md) for additional terms
+- Third-party code and assets retain their documented licenses (see [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt))
 
 ## Disclaimer
 
-The files in this repository are provided as is, without warranty, liability or indemnity, and
-Tangency Labs and the contributors accept no responsibility for any harmful or unlawful use of
-them: read [DISCLAIMER.md](DISCLAIMER.md).
+The files in this repository are provided as is, without warranty, liability or indemnity. Use at your own risk, especially when running CNC operations. Test all toolpaths on scrap material first.
 
-## Licence
+## Support
 
-MIT OR Apache-2.0, at your option. Developed under the
-[clean-room contribution rules](AGENTS.md); third-party code and assets retain their
-documented licences and attribution.
+- 🐛 **Found a bug?** Open an [issue](https://github.com/HansFel/SolidCraftCam/issues)
+- 💡 **Have an idea?** Start a [discussion](https://github.com/tangency-labs/solidcraft/discussions)
+- 🤝 **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)
+- 💬 **Need help?** Join the [Discord community](https://discord.gg/FtU4NQNVDH)
 
-SolidCraft is independent. Behaviour is designed from public documentation, general CAD
-conventions and user feedback. Reference tests use analytic values and open-source tools.
-SolidCraft is not affiliated with, sponsored by or endorsed by Autodesk, Dassault Systèmes, PTC,
-Siemens or any other CAD vendor. Fusion, AutoCAD, Inventor, SolidWorks, Onshape, Creo, Blender and
-Tinkercad are trademarks of their respective owners, named only to describe compatibility
-(see [NOTICE](NOTICE)).
+---
 
-[badge-windows]: https://img.shields.io/badge/Windows-Download-0078D6?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8%2BPC9zdmc%2B
-[badge-macos]: https://img.shields.io/badge/macOS-Download-333333?style=for-the-badge&logo=apple&logoColor=white
-[badge-linux]: https://img.shields.io/badge/Linux-AppImage-E95420?style=for-the-badge&logo=linux&logoColor=white
-[badge-snap]: https://img.shields.io/badge/Snap-Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white
-[badge-web]: https://img.shields.io/badge/Web-Try_in_browser-2EA44F?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIvPjxwYXRoIGQ9Ik0yIDEyaDIwTTEyIDJhMTUgMTUgMCAwIDEgMCAyME0xMiAyYTE1IDE1IDAgMCAwIDAgMjAiLz48L3N2Zz4%3D
-[windows-msi]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-windows-x64.msi
-[macos-dmg]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-macos-universal.dmg
-[linux-appimage]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-x86_64.AppImage
-[snap-store]: https://snapcraft.io/solidcraft
-[web-app]: https://solidcraft.io/app
+**Made with ❤️ for the maker and CNC community**
 
+*Developed under the SolidCraft [clean-room contribution rules](AGENTS.md)*
