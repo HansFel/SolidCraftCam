@@ -439,6 +439,16 @@ pub(crate) fn list_picker(ui: &mut Ui, key: &str, text: &str, selected: bool) ->
     response
 }
 
+/// [`list_picker`] with its text at the start of the row instead of the middle, for rows
+/// read down a column (a tool list) beside buttons of their own.
+pub(crate) fn list_picker_start(ui: &mut Ui, key: &str, text: &str, selected: bool) -> egui::Response {
+    let size = egui::vec2(super::metrics::dimension(ui.available_width()), super::row_height());
+    // The growing atom after the text takes the room the text leaves, so the text starts the row.
+    let response = ui.add_sized(size, egui::Button::selectable(selected, text).right_text(""));
+    crate::scenario::publish_target(&format!("dialog:list:{key}"), response.rect);
+    response
+}
+
 /// Intrinsic-width selection chip for horizontal lists, sharing list-picker styling.
 pub(crate) fn choice_chip(ui: &mut Ui, key: &str, text: &str, selected: bool) -> egui::Response {
     crate::prefs_search::note_unlabelled(ui, &[text]);

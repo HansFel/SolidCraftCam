@@ -584,6 +584,12 @@ pub struct CamPanel {
     pub(crate) gcode: Option<GcodeView>,
     /// A tool library file read and waiting for the user to say which of its tools to take.
     pub(crate) import: Option<Vec<Tool>>,
+    /// The setups whose toolpaths are not drawn, by name: with several setups the paths lie
+    /// over each other and hide the model. A view choice of this window, not of the design.
+    pub(crate) hidden: Vec<String>,
+    /// The window is folded to its title and the setups' eyes, so the model behind it is free;
+    /// the toolpaths stay drawn.
+    pub(crate) folded: bool,
 }
 
 /// The tool library file's name offered when it is exported.
@@ -910,10 +916,28 @@ fn op_kind(op: &CamOperation) -> &'static str {
     }
 }
 
+/// Shows the setup's toolpaths if they are hidden, hides them if they are shown.
+fn toggle_paths(d: &mut CamPanel, setup: &str) {
+    if d.hidden.iter().any(|n| n == setup) {
+        d.hidden.retain(|n| n != setup);
+    } else {
+        d.hidden.push(setup.to_string());
+    }
+}
+
 fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSetup, actions: &mut Vec<Action>) {
     let t = Tokens::get();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(&setup.name).strong());
+        // The eye shows or hides the setup's toolpaths in the view, as the browser's eyes do bodies.
+        let shown = !d.hidden.contains(&setup.name);
+        let side = ui_kit::row_height();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+        let (icon, label) = if shown { ("eye", tr("ui.cam.hide_paths")) } else { ("suppress", tr("ui.cam.show_paths")) };
+        // Every setup's eye has its own id: the icon and label alone are the same for all.
+        if ui.push_id(("cam-eye", &setup.name), |ui| ui_kit::quiet_icon_button_at(ui, rect, icon, label)).inner.clicked() {
+            toggle_paths(d, &setup.name);
+        }
+        ui.label(RichText::new(&setup.name).strong().color(if shown { t.text } else { t.text_dim }));
         if ui_kit::button(ui, tr("ui.cam.edit_setup"), ui_kit::Button::Small).clicked() {
             actions.push(Action::EditSetup(setup.name.clone()));
         }
@@ -1250,7 +1274,7 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
                     actions.push(Action::Run("cam.tool.define", define_params(tool)));
                 }
                 let picked = d.editing.as_ref().is_some_and(|(n, _)| *n == Some(tool.number));
-                if ui_kit::list_picker(ui, &format!("cam-tool-{}", tool.number), &tool_label(tool), picked).clicked() {
+                if ui_kit::list_picker_start(ui, &format!("cam-tool-{}", tool.number), &tool_label(tool), picked).clicked() {
                     d.editing = Some((Some(tool.number), ToolEdit::from_tool(tool)));
                 }
             });
@@ -1556,25 +1580,68 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut actions = Vec::new();
-    let height = Tokens::get().form_card_width * 2.0;
-    let closed = ui_kit::Window::new(egui::Id::unique("sc_cam"), "cut", tr("ui.cam.panel_title")).cards(3.0).resizable(height).show_body(ctx, |ui| {
-        let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts")];
-        ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
-        ui.separator();
-        // The window is sized by the user; its tabs scroll inside it.
-        egui::ScrollArea::vertical().id_salt("cam-body").auto_shrink([false, false]).show(ui, |ui| {
-            match d.tab {
-                0 => jobs_tab(app, ui, &mut d, &mut actions),
-                1 => tools_tab(app, ui, &mut d, &mut actions),
-                2 => machines_tab(app, ui, &mut d, &mut actions),
-                _ => posts_tab(app, ui, &mut d, &mut actions),
+    let t = Tokens::get();
+    let height = t.form_card_width * 2.0;
+    // At the right edge of the view, below the ribbon, so the model in the middle stays free
+    // (the browser has the left); it can still be moved.
+    let corner = app
+        .viewport
+        .rect
+        .map(|r| crate::shell::content_rect(app, r).right_top() + egui::vec2(-t.space_16, t.space_16))
+        .unwrap_or_else(|| ctx.content_rect().right_top() + egui::vec2(-t.space_24, t.space_24 * 6.0));
+    if d.folded {
+        // Folded: a narrow card with the setups' eyes and the way back; the toolpaths stay drawn.
+        let setups: Vec<String> = app.session.doc.cam.setups.iter().map(|s| s.name.clone()).collect();
+        let closed = ui_kit::Window::new(egui::Id::unique("sc_cam_folded"), "cut", tr("ui.cam.panel_title"))
+            .cards(1.2)
+            .placed(egui::Align2::RIGHT_TOP, corner)
+            .show_body(ctx, |ui| {
+                if ui_kit::button(ui, tr("ui.cam.unfold"), ui_kit::Button::Small).clicked() {
+                    d.folded = false;
+                }
+                for name in &setups {
+                    ui.horizontal(|ui| {
+                        let shown = !d.hidden.contains(name);
+                        let side = ui_kit::row_height();
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                        let (icon, label) = if shown { ("eye", tr("ui.cam.hide_paths")) } else { ("suppress", tr("ui.cam.show_paths")) };
+                        if ui.push_id(("cam-eye-folded", name), |ui| ui_kit::quiet_icon_button_at(ui, rect, icon, label)).inner.clicked() {
+                            toggle_paths(&mut d, name);
+                        }
+                        ui.label(RichText::new(name).color(if shown { t.text } else { t.text_dim }));
+                    });
+                }
+            });
+        if !closed {
+            app.cam_window = Some(d);
+        }
+        return;
+    }
+    let closed = ui_kit::Window::new(egui::Id::unique("sc_cam"), "cut", tr("ui.cam.panel_title"))
+        .cards(3.0)
+        .resizable(height)
+        .placed(egui::Align2::RIGHT_TOP, corner)
+        .show_body(ctx, |ui| {
+            let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts")];
+            if ui_kit::button(ui, tr("ui.cam.fold"), ui_kit::Button::Small).clicked() {
+                d.folded = true;
             }
-            if let Some(e) = &d.error {
-                // The window truncates text; a refusal is read in full.
-                ui_kit::text(ui, e, ui_kit::Text::Error("cam"));
-            }
+            ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
+            ui.separator();
+            // The window is sized by the user; its tabs scroll inside it.
+            egui::ScrollArea::vertical().id_salt("cam-body").auto_shrink([false, false]).show(ui, |ui| {
+                match d.tab {
+                    0 => jobs_tab(app, ui, &mut d, &mut actions),
+                    1 => tools_tab(app, ui, &mut d, &mut actions),
+                    2 => machines_tab(app, ui, &mut d, &mut actions),
+                    _ => posts_tab(app, ui, &mut d, &mut actions),
+                }
+                if let Some(e) = &d.error {
+                    // The window truncates text; a refusal is read in full.
+                    ui_kit::text(ui, e, ui_kit::Text::Error("cam"));
+                }
+            });
         });
-    });
     for action in actions {
         let result = match action {
             Action::Run(id, params) => app.run(id, params).map(|_| ()),
@@ -1733,9 +1800,14 @@ pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::vie
         draw_stock(painter, proj, sim, t.preview_new, t.body_edge);
     }
     let selected = window.gcode.as_ref().and_then(GcodeView::selected_move);
-    // Going through a setup's G-code shows that setup's toolpaths only.
+    // Going through a setup's G-code shows that setup's toolpaths only; otherwise the setups
+    // whose eye is closed in the job list are left out.
     let only = window.gcode.as_ref().map(|g| g.setup.as_str());
-    for path in paths.iter().filter(|p| only.is_none_or(|s| s == p.setup)) {
+    let shown = |p: &&solidcraft_engine::cmd::CamToolpath| match only {
+        Some(s) => s == p.setup,
+        None => !window.hidden.contains(&p.setup),
+    };
+    for path in paths.iter().filter(shown) {
         let Ok(points) = &path.points else { continue };
         let cut = if path.skipped { egui::Stroke::new(1.0, t.text_dim) } else { egui::Stroke::new(2.0, t.preview_sketch) };
         let rapid = egui::Stroke::new(1.0, t.text_dim);
