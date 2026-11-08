@@ -1,6 +1,6 @@
 //! Guided rectangle milling and hole-pattern CAM. The form invokes the same engine commands
 //! as scripts; the preview worker never changes the open document.
-use crate::selection::{EDGES, EXTERNAL_POINTS, PLANAR_FACES, PROFILES, SelInput, SelectionExt as _, VERTICES};
+use crate::selection::{EDGES, EXTERNAL_POINTS, PLANAR_FACES, POINTS, PROFILES, SelInput, SelectionExt as _, VERTICES};
 use crate::viewport::Proj;
 use crate::{SolveApp, theme::Tokens, ui_kit};
 use egui::{Sense, Stroke, pos2, vec2};
@@ -28,6 +28,9 @@ pub struct Milling {
     geometry: Value,
     /// Where a contour starts (model coordinates): a picked corner or the middle of an edge.
     start: Option<[f64; 3]>,
+    /// Facing: where the tool goes down before the cut (model coordinates): a picked sketch
+    /// point in the air beside the area, so it plunges outside the material and feeds in flat.
+    entry: Option<[f64; 3]>,
     /// The library tool chosen: copied into the design (with its cutting data) when the job runs.
     library_tool: Option<Tool>,
     /// The setup's material group; None keeps the setup's own.
@@ -36,6 +39,7 @@ pub struct Milling {
     /// new is picked.
     kept: Value,
     kept_start: Option<[f64; 3]>,
+    kept_entry: Option<[f64; 3]>,
     /// The last final-depth pick taken into the field; a new pick sets the field once.
     bottom_pick: Option<[f64; 3]>,
     /// The same for the start depth.
@@ -107,14 +111,18 @@ fn free_name(app: &SolveApp, setup: &str, base: &str) -> String {
 }
 
 /// The form's picks: contours to machine (edges, planar faces, sketch profiles; a click adds
-/// or removes one), the contour's start point, and the heights the final and the start depth
-/// are taken from.
+/// or removes one), the contour's start point, the heights the final and the start depth
+/// are taken from, and the facing's entry point (a sketch point or corner in the air).
 pub fn inputs() -> Vec<SelInput> {
     vec![
         SelInput::new("Contours", PROFILES | PLANAR_FACES | EDGES | EXTERNAL_POINTS, true),
         SelInput::new("Start point", VERTICES | EDGES, false),
         SelInput::new("Final depth", VERTICES | EDGES | PLANAR_FACES, false),
         SelInput::new("Start depth", VERTICES | EDGES | PLANAR_FACES, false),
+        // POINTS is what lets the viewport hit-test points of sketches other than the active
+        // one (viewport::pick_hits); EXTERNAL_POINTS then names the picked sketch, and wins the
+        // mapping in SelInput::accepts, so the entry keeps a reference to its sketch and point.
+        SelInput::new("Entry point", POINTS | EXTERNAL_POINTS | VERTICES, false),
     ]
 }
 
@@ -221,10 +229,12 @@ impl Milling {
             source: None,
             geometry: Value::Null,
             start: None,
+            entry: None,
             library_tool: None,
             material: setup.and_then(|s| s.material.clone()),
             kept: Value::Null,
             kept_start: None,
+            kept_entry: None,
             bottom_pick: None,
             top_pick: None,
             editing: false,
@@ -531,8 +541,12 @@ impl Milling {
         if let CamOperation::Contour { params, .. } | CamOperation::Plasma { params, .. } = op {
             form.kept_start = params.start;
         }
+        if let CamOperation::Face { params, .. } = op {
+            form.kept_entry = params.entry;
+        }
         form.chain = matches!(op.geometry(), solidcraft_engine::doc::cam::CamGeometry::Edges { .. });
         (form.geometry, form.start) = (form.kept.clone(), form.kept_start);
+        form.entry = form.kept_entry;
         form.kind = kind;
         form.setup = setup.name.clone();
         form.name = op.name().to_string();
@@ -692,6 +706,10 @@ impl Milling {
         }
         if let (true, Some(start)) = (self.outlined(), self.start) {
             p["start"] = json!(start);
+        }
+        // Facing enters at the picked point: down in the air, then into the cut horizontally.
+        if let (3, Some(entry)) = (self.kind, self.entry) {
+            p["entry"] = json!(entry);
         }
         if self.outlined() {
             p["side"] = json!(SIDES.get(self.side).copied().unwrap_or("auto"));
@@ -1011,6 +1029,21 @@ fn start(inputs: &[SelInput]) -> Option<[f64; 3]> {
     }
 }
 
+/// The picked facing entry point: a sketch point or corner, in model coordinates.
+fn entry_point(app: &SolveApp, inputs: &[SelInput]) -> Option<[f64; 3]> {
+    let at = match crate::selection::items(inputs, 4).first()? {
+        Sel::Vertex { point, .. } => *point,
+        Sel::ExternalSketchPoint { sketch, id } => {
+            let st = app.session.world_state().ok()?;
+            let solved = st.sketch(*sketch)?;
+            let p = solved.sketch.point_index(id).and_then(|i| solved.sketch.point(i))?;
+            solved.plane.to_world(p)
+        }
+        _ => return None,
+    };
+    Some([at.x, at.y, at.z])
+}
+
 /// How many contours `items` are: the pieces of one pick (both halves of a round rim) count once.
 pub(crate) fn pick_count(session: &solidcraft_engine::Session, items: &[Sel]) -> usize {
     let mut seen: Vec<Sel> = Vec::new();
@@ -1132,6 +1165,19 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
+    if form.kind == 3 {
+        // Where the facing goes down: at the near end of a lane until a point is picked.
+        let entry_label = if form.entry.is_some() { tr("ui.cam.entry_set") } else { tr("ui.cam.entry_hint") };
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(entry_label).wrap());
+            if form.entry.is_some() && ui_kit::button(ui, tr("ui.cam.remove"), ui_kit::Button::Small).clicked() {
+                form.kept_entry = None;
+                if let Some(input) = inputs.get_mut(4) {
+                    input.items.clear();
+                }
+            }
+        });
+    }
     // Where the tool rides and which way it turns, right with the contours they apply to.
     if form.outlined() {
         let sides = [tr("ui.cam.side_auto"), tr("ui.cam.side_outside"), tr("ui.cam.side_inside"), tr("ui.cam.side_on")];
@@ -1200,6 +1246,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     let picked = geometry(app, inputs, form.at_holes());
     form.geometry = if picked.is_null() { form.kept.clone() } else { picked };
     form.start = start(inputs).or(form.kept_start);
+    form.entry = entry_point(app, inputs).or(form.kept_entry);
     // A picked face, edge or corner gives the final depth; the field stays free to change.
     let depth = match crate::selection::items(inputs, 2).first() {
         Some(Sel::Vertex { point, .. } | Sel::Edge { point, .. } | Sel::Face { point, .. }) => Some(*point),
@@ -1444,6 +1491,9 @@ pub fn overlay(painter: &egui::Painter, proj: &Proj, form: &Milling) {
     let points: Vec<_> = points.iter().filter_map(at).collect();
     let t = Tokens::get();
     if let Some(p) = form.start.and_then(|[x, y, z]| proj.to_screen(Vec3::new(x, y, z))) {
+        painter.circle_stroke(p, 6.0, Stroke::new(2.0, t.preview_sketch));
+    }
+    if let Some(p) = form.entry.and_then(|[x, y, z]| proj.to_screen(Vec3::new(x, y, z))) {
         painter.circle_stroke(p, 6.0, Stroke::new(2.0, t.preview_sketch));
     }
     for pair in points.windows(2) {

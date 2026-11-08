@@ -21,8 +21,11 @@
 //! the operations' order is the machining order. A contour's `side` is `auto` (around an outline,
 //! inside a hole picked as its own contour), `outside`, `inside` or `on`; contours and pockets
 //! can leave stock on the walls (`stock_to_leave`) and on the floor (`floor_stock`). A facing
-//! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) or a rectangle
-//! with a `stepover` and an `overrun` past the stock's edges. A slot operation (`slot`) runs the tool centre along each picked edge chain
+//! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) as a rectangle with a
+//! `stepover` and an `overrun` past the stock's edges; picked faces, sketch contours and explicit
+//! polylines are faced as their exact outlines, inner loops standing as islands the tool keeps out.
+//! A facing can name an `entry` point (model coordinates) in air beside the area: the tool goes
+//! down there and feeds into the cut horizontally. A slot operation (`slot`) runs the tool centre along each picked edge chain
 //! (open or closed) or contour, `width` wide (absent: the tool's diameter) with side passes `stepover`
 //! apart, `stock_to_leave` on both walls, `tolerance` and `ramp_angle` as for pockets. A tool's `kind` can also be
 //! `bull_nose` (with `corner_radius`), `chamfer` and `v_bit` (`tip_angle`, `tip_diameter`), `t_slot`,

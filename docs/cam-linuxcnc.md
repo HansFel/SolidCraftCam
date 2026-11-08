@@ -184,8 +184,9 @@ setup not made yet).
 
 **Facing** (Machining tab, Milling) faces an area flat in three choices:
 
-- **Where:** pick a flat face, and the box round its outline is faced; the base (bottom face)
-  faces the whole footprint. Without a pick, the setup's whole stock.
+- **Where:** pick a flat face, and exactly its outline is faced; holes in the face stay
+  standing as islands the tool keeps out of. The base (bottom face) faces the whole
+  footprint. Without a pick, the setup's whole stock.
 - **Finished height Z:** where the faced surface ends up (part zero by default). Type it, or
   pick a face, edge or corner under **Final depth**.
 - **Allowance Z:** the material above the finished height. It starts as what the stock has
@@ -196,7 +197,18 @@ Facing starts at finished height + allowance; the retract and clearance heights 
 along X, back and forth, no further apart than the stepover; every lane starts and ends with
 the tool clear of the area by **Overrun** (default 2 mm), and the first and last lanes put the
 tool's edge that far past its sides, so no rim is left. The tool goes down beside the area,
-never into it.
+never into it: by default at the near end of the first lane it can reach there.
+
+Pick a sketch point or a corner in the air beside the area under **Entry point** to choose
+where the going-down happens: the tool moves to that point, descends through the air to the
+cut height, and feeds into the cut horizontally. When the point is beyond an end of the area,
+the tool first grazes that edge on extra lanes outside the outline, one stepover apart, while
+its disc still meets the area, cutting the outermost first: the first bite takes a sliver of
+the edge and every pass takes one stepover more until the lanes of the pattern cover the
+area, instead of the first lane engaging the tool's whole width. The sweep then starts at the
+entry's end. An entry beside the area joins the first lane outside the outline, as before.
+A pick inside the area or over an island is refused, because the tool would plunge into
+material.
 
 ## Slots
 
@@ -544,12 +556,17 @@ a name another setup has is refused). `cam.setup` also takes picks on the model:
 `{"kind": "box", "width", "depth", "height"}` or `{"kind": "cylinder", "diameter", "height"}`).
 `cam.edges.chain` (`setup`, `edges: [{body, at}]`) suggests the chain through picked edges:
 `edges: [{body, at, index}]` in order and `closed`; it changes nothing.
-`cam.op.face` faces a picked face's outline (`faces` or `edges`), an `outer` rectangle or the
-stock with `stepover` (default 70 % of the diameter), `overrun` (default 2 mm), `bottom` (the
-finished height, default part zero) and `allowance` (the material above it; without it, `top`
-or the stock's top); retract and clearance heights below the start are raised above it. The
-guided job takes `kind: "face"` with `overrun` and the picks; its `top - bottom` is the
-allowance. `cam.op.slot` runs the tool centre along picked `edges` (always the edges
+`cam.op.face` faces a picked face exactly to its outline, holes left as islands (`faces`,
+`edges` or `sketch`), an `outer` rectangle or the stock with `stepover` (default 70 % of the
+diameter), `overrun` (default 2 mm), `bottom` (the finished height, default part zero) and
+`allowance` (the material above it; without it, `top` or the stock's top); retract and
+clearance heights below the start are raised above it. `entry: [x, y, z]` — or `entry_at:
+{sketch, point}`, a sketch point — is a point in the air beside the area where the tool goes
+down before feeding into the cut horizontally, grazing the near edge on extra lanes one
+stepover apart when it stands beyond an end of the area; a point over material is refused.
+The
+guided job takes `kind: "face"` with `overrun`, `entry` (a model point) and the picks; its
+`top - bottom` is the allowance. `cam.op.slot` runs the tool centre along picked `edges` (always the edges
 themselves, open or closed chains) or around the contours of `faces`, a `sketch` or an
 `outer` polygon, with `width` (default the tool's diameter), `stepover` (side passes,
 default half the diameter), `stock_to_leave`, `tolerance` and `ramp_angle`; the guided job

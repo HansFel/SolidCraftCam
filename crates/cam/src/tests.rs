@@ -278,6 +278,33 @@ fn cutting_points(path: &Toolpath, below: f64) -> Vec<Vec3> {
     path.points(0.005).into_iter().filter(|(p, cutting)| *cutting && p.z < below).map(|(p, _)| p).collect()
 }
 
+/// The positions along the tool's side cuts (straight feeds that change no height), no more
+/// than `s` apart: where the tool's disc swept the plane it was cutting.
+fn feed_xy(path: &Toolpath, s: f64) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    let mut pos: Option<Vec3> = None;
+    for m in &path.moves {
+        if let Move::Feed { to, .. } = *m
+            && let Some(p) = pos
+        {
+            let (a, b) = (Vec2::new(p.x, p.y), Vec2::new(to.x, to.y));
+            if a.dist(b) > 1e-9 && (p.z - to.z).abs() < 1e-9 {
+                let n = (a.dist(b) / s).ceil().max(1.0) as usize;
+                for i in 0..=n {
+                    out.push(a.lerp(b, i as f64 / n as f64));
+                }
+            }
+        }
+        pos = m.target().or(pos);
+    }
+    out
+}
+
+/// Whether each of the given points lies within `d` (XY) of some sample.
+fn all_covered(samples: &[Vec2], pts: &[(f64, f64)], d: f64) -> Vec<(f64, f64)> {
+    pts.iter().filter(|(x, y)| !samples.iter().any(|q| q.dist(Vec2::new(*x, *y)) <= d)).copied().collect()
+}
+
 /// Distance in XY from `q` to the nearest cut made entirely below `below`.
 fn dist_to_cuts(path: &Toolpath, below: f64, q: Vec2) -> f64 {
     let flat = |p: Vec3| Vec3::new(p.x, p.y, 0.0);
@@ -1493,6 +1520,155 @@ fn facing_clears_the_whole_stock_in_passes_and_goes_down_in_the_air() {
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &FaceParams { stepover: 7.0, ..params }, &c).is_err());
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &FaceParams { overrun: -1.0, ..params }, &c).is_err());
     assert!(face(v(0.0, 0.0), v(40.0, 30.0), &tool(6.0), &params, &cut(0.0, 0.0, 1.0)).is_err());
+}
+
+#[test]
+fn facing_exact_regions_covers_the_outline_and_goes_down_in_the_air() {
+    let c = cut(2.0, 0.0, 1.0);
+    let params = FaceParams { stepover: 4.0, overrun: 2.0 };
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let path = face_regions(&regions, &tool(6.0), &params, &c, None).unwrap();
+    // Without an entry the first pass starts as `face` does: 5 mm clear of the outline at
+    // the near end of the lowest lane.
+    let to = path.moves[0].target().unwrap();
+    close(to.x, -5.0, 1e-9);
+    close(to.y, 1.0, 1e-9);
+    close(to.z, 10.0, 1e-9);
+    // The disc sweeps every point of the outline: a 1 mm grid lies within the radius of a cut.
+    let swept = feed_xy(&path, 0.25);
+    let grid: Vec<(f64, f64)> = (1..=39).flat_map(|x| (1..=29).map(move |y| (x as f64, y as f64))).collect();
+    assert_eq!(all_covered(&swept, &grid, 3.3), Vec::new(), "points left standing");
+    // The lanes end with the tool's edge 2 mm past the outline.
+    assert!(swept.iter().any(|p| (p.x + 5.0).abs() < 1e-6) && swept.iter().any(|p| (p.x - 45.0).abs() < 1e-6));
+    // Bad input is refused, including entries that are not in air.
+    assert!(face_regions(&[], &tool(6.0), &params, &c, None).is_err());
+    assert!(face_regions(&regions, &tool(6.0), &FaceParams { stepover: 7.0, ..params }, &c, None).is_err());
+    assert!(face_regions(&regions, &tool(6.0), &params, &cut(0.0, 0.0, 1.0), None).is_err());
+    assert!(face_regions(&regions, &tool(6.0), &params, &c, Some(v(20.0, 15.0))).is_err());
+    assert!(face_regions(&regions, &tool(6.0), &params, &c, Some(v(41.5, 15.0))).is_err());
+}
+
+#[test]
+fn facing_exact_entry_plunges_in_air_and_feeds_onto_the_first_lane() {
+    let c = cut(2.0, 0.0, 1.0);
+    let params = FaceParams { stepover: 4.0, overrun: 2.0 };
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(50.0, 40.0))).unwrap();
+    // Rapid to the entry, down in the air, then the first motion of the cut is horizontal.
+    let first = path.moves[0].target().unwrap();
+    close(first.x, 50.0, 1e-9);
+    close(first.y, 40.0, 1e-9);
+    let plunge = path.moves[2].target().unwrap();
+    close(plunge.x, 50.0, 1e-9);
+    close(plunge.y, 40.0, 1e-9);
+    assert!(plunge.z < 2.0, "the plunge stays above the cut: {plunge:?}");
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, 45.0, 1e-9);
+    close(onto.y, 29.0, 1e-9);
+    close(onto.z, plunge.z, 1e-9);
+    // An entry above the outline starts the sweep at the far end of the nearest lane (the
+    // stepover here leaves no room for a grazing lane outside it); an entry right of the
+    // outline at lane height starts at the far end of the lowest lane, a left one at the near end.
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(50.0, 15.0))).unwrap();
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, 45.0, 1e-9);
+    close(onto.y, 1.0, 1e-9);
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(-10.0, 15.0))).unwrap();
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, -5.0, 1e-9);
+    close(onto.y, 1.0, 1e-9);
+    // An entry facing no material is refused: on the outline, and inside its tool radius.
+    assert!(face_regions(&regions, &tool(6.0), &params, &c, Some(v(40.0, 15.0))).is_err());
+}
+
+#[test]
+fn facing_exact_entry_beyond_an_edge_ramps_in_at_the_stepover() {
+    let c = cut(2.0, 0.0, 1.0);
+    let params = FaceParams { stepover: 2.0, overrun: 2.0 };
+    let regions = [rect(0.0, 0.0, 40.0, 30.0)];
+    let cut_ys = |path: &Toolpath| -> Vec<f64> {
+        path.moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::Feed { feed, .. } if (*feed - 200.0).abs() > 1e-9 => Some(m.target().unwrap().y),
+                _ => None,
+            })
+            .collect()
+    };
+    // Below: one grazing lane at the lowest lane's y minus the stepover (-1; a tool of radius
+    // 3 centred below -3 meets no material, so it is the only grazing lane here).
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(25.0, -15.0))).unwrap();
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, 45.0, 1e-9);
+    close(onto.y, -1.0, 1e-9);
+    // Nothing feeds closer to the outline than that grazing lane, and the pattern's own
+    // lowest lane follows it.
+    let ys = cut_ys(&path);
+    assert!(ys.iter().all(|y| *y > -1.0 - 1e-9), "something grazes closer than the outer lane");
+    assert!(ys.iter().any(|y| (y + 1.0).abs() < 1e-9) && ys.iter().any(|y| (y - 1.0).abs() < 1e-9));
+    // Grazing costs coverage nothing: the disc still sweeps the whole outline.
+    let swept = feed_xy(&path, 0.25);
+    let grid: Vec<(f64, f64)> = (1..=39).flat_map(|x| (1..=29).map(move |y| (x as f64, y as f64))).collect();
+    assert_eq!(all_covered(&swept, &grid, 3.3), Vec::new(), "points left standing");
+    // Above: the sweep starts at the entry's end, on the grazing lane over the high edge.
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(25.0, 45.0))).unwrap();
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, 45.0, 1e-9);
+    close(onto.y, 31.0, 1e-9);
+    // Beside the area the feeds stay on the pattern's own lanes: no grazing.
+    let path = face_regions(&regions, &tool(6.0), &params, &c, Some(v(50.0, 15.0))).unwrap();
+    assert_eq!(cut_ys(&path).into_iter().fold(f64::INFINITY, f64::min), 1.0);
+}
+
+#[test]
+fn facing_exact_islands_split_lanes_and_the_tool_never_touches_one() {
+    let c = cut(0.0, -2.0, 2.0);
+    let params = FaceParams { stepover: 3.0, overrun: 1.0 };
+    let mut region = rect(0.0, 0.0, 40.0, 30.0);
+    region.holes = vec![Loop2::polygon(&[v(15.0, 10.0), v(25.0, 10.0), v(25.0, 20.0), v(15.0, 20.0)])];
+    let regions = [region];
+    let path = face_regions(&regions, &tool(6.0), &params, &c, None).unwrap();
+    let wall = |p: Vec2| {
+        let dx = (15.0 - p.x).max(p.x - 25.0).max(0.0);
+        let dy = (10.0 - p.y).max(p.y - 20.0).max(0.0);
+        (dx * dx + dy * dy).sqrt()
+    };
+    // No side cut puts the tool's disc on the island, and no link feeds through it either.
+    let swept = feed_xy(&path, 0.25);
+    assert!(swept.iter().all(|p| wall(*p) >= 3.0 - 0.3), "a lane touched the island");
+    // The disc still sweeps the material away from the island's own tool radius.
+    let grid: Vec<(f64, f64)> = (1..=39)
+        .flat_map(|x| (1..=29).map(move |y| (x as f64, y as f64)))
+        .filter(|(x, y)| !(*x >= 15.0 && *x <= 25.0 && *y >= 10.0 && *y <= 20.0) && wall(Vec2::new(*x, *y)) > 1.2)
+        .collect();
+    assert_eq!(all_covered(&swept, &grid, 3.4), Vec::new(), "points left standing");
+    // Lanes broken by the island re-plunge: more than one plunge for one depth pass.
+    assert!(path.moves.iter().filter(|m| matches!(m, Move::Feed { feed, .. } if (*feed - 200.0).abs() < 1e-9)).count() > 2);
+    // An entry inside an island is refused.
+    assert!(face_regions(&regions, &tool(6.0), &params, &c, Some(v(20.0, 15.0))).is_err());
+}
+
+#[test]
+fn facing_exact_l_shape_enters_at_the_chosen_point_and_covers_both_legs() {
+    let c = cut(0.0, -2.0, 2.0);
+    let params = FaceParams { stepover: 3.0, overrun: 1.0 };
+    let l = polygon(&[(0.0, 0.0), (40.0, 0.0), (40.0, 12.0), (12.0, 12.0), (12.0, 30.0), (0.0, 30.0)]);
+    let path = face_regions(std::slice::from_ref(&l), &tool(6.0), &params, &c, Some(v(50.0, 6.0))).unwrap();
+    // Down in the air beside the low leg, then a horizontal feed onto the first lane's far end.
+    let first = path.moves[0].target().unwrap();
+    close(first.x, 50.0, 1e-9);
+    close(first.y, 6.0, 1e-9);
+    let onto = path.moves[3].target().unwrap();
+    close(onto.x, 44.0, 1e-9);
+    close(onto.y, 2.0, 1e-9);
+    // The disc sweeps both legs up to the outline; the bay's grid points are not required.
+    let shape = Shape::from_regions(std::slice::from_ref(&l), 0.005).unwrap();
+    let swept = feed_xy(&path, 0.25);
+    let grid: Vec<(f64, f64)> =
+        (1..=39).flat_map(|x| (1..=29).map(move |y| (x as f64, y as f64))).filter(|(x, y)| shape.inside(Vec2::new(*x, *y), 0.05)).collect();
+    assert_eq!(all_covered(&swept, &grid, 3.4), Vec::new(), "points left standing");
+    // An entry in the bay's air works too.
+    assert!(face_regions(&[l], &tool(6.0), &params, &c, Some(v(30.0, 20.0))).is_ok());
 }
 
 /// An open path of straight segments through `pts`.

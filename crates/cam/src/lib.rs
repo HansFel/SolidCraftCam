@@ -46,7 +46,7 @@ pub use offset::offset_regions;
 pub use open::{OpenContourParams, OpenPath, OpenSide};
 pub use ops::{
     ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, contour_with_tabs, drill,
-    face, pocket, tap,
+    face, face_regions, pocket, tap,
 };
 pub use path::{CompRun, CompSide, DrillCycle, Move, PathStats, Toolpath, arc_sweep};
 pub use plasma::{PlasmaParams, plasma};

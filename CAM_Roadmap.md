@@ -147,7 +147,9 @@ Project
 | Pocket | Done |
 | Drill (peck, dwell), at picked round edges, every round hole of a picked face, sketch circles and sketch points | Done |
 | Facing of the stock in passes, with overrun past its edges | Done |
-| Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
+| Facing a picked face to a finished height with a Z allowance, safety heights worked out | Done |
+| Facing exactly to a picked face's outline, its holes left standing as islands the tool keeps out of | Done |
+| Facing entry point picked in the air beside the area: down in air, horizontal feed in, ramping in over extra lanes one stepover apart | Done |
 | Slot along picked edges (open or closed chains) or around contours, wider than the tool with side passes | Done |
 | Chamfer and deburr along edges (chamfer cutter) | Done: `cam.op.chamfer`, width on the face and tip offset, depth from the cutter's angle |
 | Bore and helical bore | Partial: helical bore (`cam.op.helix`) in a hole or round a boss, with its own rise per turn; no boring bar |

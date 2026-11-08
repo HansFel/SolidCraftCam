@@ -114,6 +114,9 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     if let (Some(start), JobKind::Contour | JobKind::Plasma) = (a.start, &a.kind) {
         op["start"] = json!(start);
     }
+    if let (Some(entry), JobKind::Face) = (a.entry, &a.kind) {
+        op["entry"] = json!(entry);
+    }
     if matches!(a.kind, JobKind::Contour | JobKind::Pocket | JobKind::Slot) {
         if let (Some(side), JobKind::Contour) = (&a.side, &a.kind) {
             op["side"] = json!(side);
