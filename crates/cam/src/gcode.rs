@@ -390,7 +390,13 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
             rpm = None;
             tool = Some(op.tool.number);
         }
-        if rpm.as_ref() != Some(&speed) {
+        // A torch is lit at each pierce and put out before each rapid, below; a spindle runs throughout.
+        let torch = op.tool.kind == crate::ToolKind::Plasma;
+        if torch && rpm.is_some() {
+            // A spindle left running by the step before stops before the torch is lit.
+            w.template(&post.spindle_off, &values)?;
+            rpm = None;
+        } else if !torch && rpm.as_ref() != Some(&speed) {
             w.template(&post.spindle_on, &values)?;
             rpm = Some(speed);
         }
@@ -402,9 +408,20 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
         // Tapped holes are always written as their cycle; drilled ones when the post has canned cycles.
         let mut cycles = op.path.cycles.iter().filter(|c| post.canned_cycles || c.tap.is_some()).peekable();
         let mut skip_to = 0usize;
+        let mut lit = false;
         for (index, m) in op.path.moves.iter().enumerate() {
             if index < skip_to {
                 continue;
+            }
+            if torch {
+                let rapid = matches!(m, Move::Rapid { .. });
+                if !rapid && !lit {
+                    w.template(&post.spindle_on, &values)?;
+                    lit = true;
+                } else if rapid && lit {
+                    w.template(&post.spindle_off, &values)?;
+                    lit = false;
+                }
             }
             while cycles.next_if(|c| c.start < index).is_some() {}
             if let Some(c) = cycles.next_if(|c| c.start == index) {
@@ -429,6 +446,9 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
                 return Err(CamError::Unsafe(format!("operation `{}`: a tapped hole cannot be written move by move", plain(&op.name))));
             }
             write_move(&mut w, &mut values, &op.name, m)?;
+        }
+        if lit {
+            w.template(&post.spindle_off, &values)?;
         }
     }
     if coolant {

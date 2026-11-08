@@ -30,6 +30,8 @@ pub struct Milling {
     start: Option<[f64; 3]>,
     /// The library tool chosen: copied into the design (with its cutting data) when the job runs.
     library_tool: Option<Tool>,
+    /// The step's tool is a plasma torch (worked out as the form is shown).
+    torch: bool,
     /// The setup's material group; None keeps the setup's own.
     pub(crate) material: Option<String>,
     /// An edited step's stored geometry (`{"geometry": …}`) and start point, used while nothing
@@ -169,6 +171,8 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("tip_offset", "ui.cam.tip_offset", "0.5"),
     ("hole_diameter", "ui.cam.hole_diameter", "10"),
     ("pitch", "ui.cam.pitch", ""),
+    ("slow_hole_diameter", "ui.cam.slow_hole_diameter", ""),
+    ("slow_hole_share", "ui.cam.slow_hole_share", "60"),
     ("feed", "ui.cam.feed", "600"),
     ("plunge_feed", "ui.cam.plunge", "150"),
     ("spindle_rpm", "ui.cam.rpm", "6000"),
@@ -205,6 +209,7 @@ impl Milling {
             geometry: Value::Null,
             start: None,
             library_tool: None,
+            torch: false,
             material: setup.and_then(|s| s.material.clone()),
             kept: Value::Null,
             kept_start: None,
@@ -395,6 +400,13 @@ impl Milling {
                     CamOpenSide::On => 2,
                 };
                 form.reverse = params.reverse;
+                if let Some(slow) = &params.slow_holes {
+                    for (key, text) in [("slow_hole_diameter", plain(&slow.diameter)), ("slow_hole_share", number(slow.share * 100.0))] {
+                        if let Some(field) = FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| form.values.get_mut(i)) {
+                            *field = text;
+                        }
+                    }
+                }
                 if let Some(tabs) = &params.tabs {
                     form.tabs = true;
                     let count = tabs.count.to_string();
@@ -517,6 +529,10 @@ impl Milling {
             if *key == "slot_width" && (self.kind != 4 || value.trim().is_empty()) {
                 continue;
             }
+            // A torch's small holes are one setting, below.
+            if matches!(*key, "slow_hole_diameter" | "slow_hole_share") {
+                continue;
+            }
             // Each step's own sizes only; an empty pitch is the thread mill's.
             if (matches!(*key, "chamfer_width" | "tip_offset") && self.kind != 5)
                 || (*key == "hole_diameter" && !matches!(self.kind, 7 | 8))
@@ -539,6 +555,20 @@ impl Milling {
             } else {
                 json!(number)
             };
+        }
+        // Small holes cut slower by a torch: up to the diameter given, at the share given (%).
+        let field = |key: &str| FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| self.values.get(i)).map(|v| v.trim().replace(',', "."));
+        if self.kind == 0
+            && self.torch
+            && let Some(text) = field("slow_hole_diameter").filter(|t| !t.is_empty())
+        {
+            let bad = || crate::i18n::tr("ui.cam.invalid_number").to_string();
+            let diameter: f64 = text.parse().map_err(|_| bad())?;
+            let share: f64 = field("slow_hole_share").unwrap_or_default().trim_end_matches('%').trim().parse().map_err(|_| bad())?;
+            if !(diameter > 0.0 && diameter.is_finite()) || !(share > 0.0 && share <= 100.0) {
+                return Err(bad());
+            }
+            p["slow_holes"] = json!({"diameter": diameter, "share": share / 100.0});
         }
         let mut points = Vec::new();
         if self.at_holes() {
@@ -692,6 +722,7 @@ impl Milling {
         let wanted = match tool.as_ref().map(|t| t.kind) {
             Some(ToolKind::Tap) => Some(9),
             Some(ToolKind::ThreadMill) => Some(8),
+            Some(ToolKind::Plasma) => Some(0),
             Some(k) if k.cuts_down() && self.kind != 2 => Some(2),
             _ => None,
         };
@@ -1045,8 +1076,24 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui.add(egui::Label::new(egui::RichText::new(tr("ui.cam.name_taken")).color(Tokens::get().warning)).wrap());
     }
     tool_rows(app, ui, form);
+    // The tool picked from the library, else the design's tool of that number.
+    let number = FIELDS.iter().position(|(k, _, _)| *k == "tool").and_then(|i| form.values.get(i)).and_then(|v| v.trim().parse::<u32>().ok());
+    let kind = form.library_tool.as_ref().map(|t| t.kind).or_else(|| number.and_then(|n| app.session.doc.cam.tool(n)).map(|t| t.kind));
+    form.torch = kind == Some(ToolKind::Plasma);
+    let torch = form.torch;
     let picked = form.picked();
     for ((key, label, _), value) in FIELDS.iter().zip(&mut form.values) {
+        // A torch cuts once through: no depth passes, no floor stock; its small holes slower.
+        if matches!(*key, "slow_hole_diameter" | "slow_hole_share") {
+            if form.kind == 0 && torch {
+                let hint = if *key == "slow_hole_diameter" { tr("ui.cam.slow_hole_hint") } else { "" };
+                ui_kit::text_row(ui, tr(label), value, hint);
+            }
+            continue;
+        }
+        if torch && matches!(*key, "stepdown" | "floor_stock" | "stock_to_leave" | "spindle_rpm") {
+            continue;
+        }
         if (picked || form.kind == 3) && matches!(*key, "x" | "y" | "width" | "height") {
             continue;
         }

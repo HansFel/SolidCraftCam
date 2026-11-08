@@ -217,6 +217,9 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
         if op.path.cycles.iter().any(|c| c.tap.is_some()) {
             return invalid(format!("post `{}` cannot write a tapped hole yet (cycle 207)", plain(&post.name)));
         }
+        if op.tool.kind == crate::ToolKind::Plasma {
+            return invalid(format!("post `{}` writes no plasma cuts: use a G-code post such as `plasma`", plain(&post.name)));
+        }
         let speed = format!("{:.0}", op.spindle_rpm);
         w.comment(&format!("{}: T{} D{:.3} {}", op.name, op.tool.number, op.tool.diameter, op.tool.kind.label()));
         if tool != Some(op.tool.number) || rpm.as_ref() != Some(&speed) {

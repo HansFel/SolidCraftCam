@@ -431,7 +431,7 @@ fn surface(tool: &Tool, tip: f64, d: f64) -> f64 {
             let x = d - (tool.radius() - rc);
             if x <= 0.0 { tip } else { tip + rc - (rc * rc - x * x).max(0.0).sqrt() }
         }
-        ToolKind::TSlot | ToolKind::Reamer | ToolKind::Tap | ToolKind::ThreadMill => tip,
+        ToolKind::TSlot | ToolKind::Reamer | ToolKind::Tap | ToolKind::ThreadMill | ToolKind::Plasma => tip,
     }
 }
 

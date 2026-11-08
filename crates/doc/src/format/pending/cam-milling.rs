@@ -33,5 +33,8 @@
 //! centres, `params: {diameter, pitch, internal, left_hand}`); a drill operation whose tool is a tap taps.
 //! A setup can name `fixtures` (bodies the tools keep clear of, never part of the model's box) and
 //! `zero_follows` (a box-point part zero worked out again from the model as it is). A post can say how it
-//! writes a tapped hole (`tapping`: `none`, `g84`, `g84_rigid`, `g33_1`, `g331`). Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
+//! writes a tapped hole (`tapping`: `none`, `g84`, `g84_rigid`, `g33_1`, `g331`). A tool's `kind` can be
+//! `plasma` (a torch: `diameter` the kerf, `flute_length` the thickest sheet, with `pierce_height`,
+//! `cut_height` and `pierce_delay`); a contour cut by one can slow its small holes (`params.slow_holes`:
+//! `{diameter, share}`). Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
 //! means no setups. The last release refuses a design saved with this (the newer format number).

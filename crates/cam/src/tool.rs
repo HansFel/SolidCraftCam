@@ -37,6 +37,10 @@ pub enum ToolKind {
     Tap,
     /// A thread mill: cuts a thread of `pitch` by running a helix round the hole.
     ThreadMill,
+    /// A plasma torch: cuts through a sheet from above it, `diameter` the width of its cut
+    /// (kerf) and `flute_length` the thickest sheet it cuts, piercing at `pierce_height` for
+    /// `pierce_delay` and cutting at `cut_height` above the sheet.
+    Plasma,
 }
 
 impl ToolKind {
@@ -53,6 +57,7 @@ impl ToolKind {
         ToolKind::CentreDrill,
         ToolKind::Reamer,
         ToolKind::Tap,
+        ToolKind::Plasma,
     ];
 
     pub fn label(self) -> &'static str {
@@ -68,6 +73,7 @@ impl ToolKind {
             ToolKind::Reamer => "reamer",
             ToolKind::Tap => "tap",
             ToolKind::ThreadMill => "thread mill",
+            ToolKind::Plasma => "plasma torch",
         }
     }
 
@@ -85,6 +91,7 @@ impl ToolKind {
             ToolKind::Reamer => "reamer",
             ToolKind::Tap => "tap",
             ToolKind::ThreadMill => "thread_mill",
+            ToolKind::Plasma => "plasma",
         }
     }
 
@@ -186,6 +193,15 @@ pub struct Tool {
     pub stick_out: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<ToolHolder>,
+    /// Plasma torch: how high above the sheet it pierces (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pierce_height: Option<f64>,
+    /// Plasma torch: how high above the sheet it cuts (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_height: Option<f64>,
+    /// Plasma torch: how long it waits at the pierce height with the arc on (seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pierce_delay: Option<f64>,
 }
 
 fn two() -> u32 {
@@ -215,6 +231,9 @@ impl Tool {
             overall_length: None,
             stick_out: None,
             holder: None,
+            pierce_height: None,
+            cut_height: None,
+            pierce_delay: None,
         }
     }
 
@@ -306,6 +325,22 @@ impl Tool {
         }
         if self.kind == ToolKind::TSlot && self.shank_diameter.is_some_and(|neck| neck >= self.diameter) {
             return invalid("a T-slot cutter's neck is thinner than its disc");
+        }
+        let torch = [self.pierce_height, self.cut_height, self.pierce_delay];
+        if self.kind != ToolKind::Plasma {
+            if torch.iter().any(Option::is_some) {
+                return invalid("a pierce height, cut height and pierce delay belong to a plasma torch");
+            }
+            return Ok(());
+        }
+        let (Some(pierce), Some(cut), Some(delay)) = (self.pierce_height, self.cut_height, self.pierce_delay) else {
+            return invalid("a plasma torch needs its pierce height, cut height and pierce delay");
+        };
+        if !(cut > 0.0 && cut <= 100.0) || !(pierce >= cut && pierce <= 100.0) {
+            return invalid("a plasma torch cuts above 0 and up to 100 mm over the sheet, and pierces no lower than it cuts");
+        }
+        if !(0.0..=60.0).contains(&delay) {
+            return invalid("a plasma torch's pierce delay is from 0 to 60 seconds");
         }
         Ok(())
     }

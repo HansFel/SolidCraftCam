@@ -1637,6 +1637,14 @@ mod tests {
         h.step(&json!({"widget": "Hide simulation"})).unwrap();
         h.frames(2);
         assert!(view(&h).is_some_and(|v| v.sim.is_none()));
+        // A long program edited by hand scrolls inside the panel, which stays on the screen.
+        view_mut(&mut h).edited = Some((1..=5000).map(|n| format!("G1 X{n} Y0 F600
+")).collect());
+        h.frames(4);
+        let panel = h.ctx.memory(|m| m.area_rect(egui::Id::unique("sc_cam_gcode"))).unwrap();
+        assert!(panel.max.y <= h.ctx.content_rect().max.y + 1.0, "the panel runs off the screen: {panel:?}");
+        view_mut(&mut h).edited = None;
+        h.frames(2);
         // Only the small G-code panel is shown meanwhile; closing it brings the window back.
         assert!(h.widget("G-code: Top").is_some());
         assert!(h.widget("Show G-code").is_none());

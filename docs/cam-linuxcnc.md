@@ -218,6 +218,28 @@ model lacks are material in the way. A tool without a stick-out is taken to stic
 length, so give tools their stick-out and holder for the check to see them. A T-slot cutter's
 undercut and the stock are not checked yet.
 
+## Plasma cutting
+
+A **Plasma torch** in the tool library is a tool like any other: its **Kerf width** is its
+diameter, its **Thickest sheet** what it can cut through, and it needs its **Pierce height**,
+**Cut height** (both mm above the sheet) and **Pierce delay** (seconds), and a feed. A
+**Contour** step with a torch cuts the sheet once, from above it:
+
+- at each cut the torch comes down at rapid to the pierce height, is lit, waits the pierce
+  delay, feeds down to the cut height (at the plunge feed) and cuts the lead-in, the loop, the
+  overlap and the lead-out there; it is put out before it rapids up to the retract height;
+- holes are cut before the outline round them, so a part is never cut free before its holes;
+- **Small holes up to** a diameter can be cut at **Their feed** (a share of the feed); leave it
+  empty to cut them all at the feed;
+- the step's top is the sheet's top; depth passes, ramps and floor stock do not apply, and
+  holding tabs are refused.
+
+The posts light the torch with their spindle-on block and put it out with their spindle-off
+block, at every cut; the torch gets `S1`. The built-in **plasma** post writes no tool change and
+no tool length offset (`M3 S1`, `M5`, pierce delays as `G4 P` in seconds); height control is
+left to the table's controller. Heidenhain refuses plasma cuts. The simulation cuts the kerf
+through the whole stock. Only contours are cut with a torch; other steps with one are refused.
+
 ## Tool list and setup sheet
 
 **Tool list and setup sheet…** under the job list saves the manufacturing documents of every

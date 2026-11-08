@@ -1554,9 +1554,9 @@ fn tapped_holes_are_written_as_rigid_tapping_or_refused() {
         let post = Post::builtin(name).unwrap();
         let written = emit(&program, &post);
         let Ok(text) = written else {
-            // GRBL has no tapping cycle, Heidenhain's 207 is not written yet: the program is
-            // refused, never written as plain moves.
-            assert!(matches!(*name, "grbl" | "heidenhain") && post.tapping == Tapping::None, "{name}: {written:?}");
+            // GRBL and plasma tables have no tapping cycle, Heidenhain's 207 is not written yet:
+            // the program is refused, never written as plain moves.
+            assert!(matches!(*name, "grbl" | "heidenhain" | "plasma") && post.tapping == Tapping::None, "{name}: {written:?}");
             continue;
         };
         let back = readback(&text, &program, &post).unwrap();
@@ -2174,4 +2174,66 @@ fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
     // Another work offset than the control's preset is refused, as is a tapped hole.
     program.work_offset = Some(2);
     assert!(emit(&program, &post).is_err());
+}
+
+#[test]
+fn a_plasma_torch_cuts_holes_first_and_is_lit_only_from_pierce_to_rapid() {
+    let mut torch = Tool::new(1, ToolKind::Plasma, 1.5, 10.0);
+    (torch.pierce_height, torch.cut_height, torch.pierce_delay) = (Some(3.8), Some(1.5), Some(0.5));
+    let c = Cut { heights: Heights { clearance: 10.0, retract: 5.0, top: 0.0, bottom: -3.0 }, feeds: Feeds { cut: 2000.0, plunge: 500.0 }, stepdown: 3.0 };
+    let outside = ContourParams { side: Side::Outside, climb: false, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let inside = ContourParams { side: Side::Inside, ..outside };
+    // The outline first, then a 4 mm hole in it: the torch cuts the hole first, at half the feed.
+    let mut moves = contour(&[rect(0.0, 0.0, 40.0, 30.0)], &torch, &outside, &c).unwrap().moves;
+    moves.extend(contour(&[rect(10.0, 10.0, 14.0, 14.0)], &torch, &inside, &c).unwrap().moves);
+    let p = PlasmaParams { top: 0.0, travel: 5.0, clearance: 10.0, plunge_feed: 500.0, slow_holes: Some((5.0, 0.5)) };
+    let path = plasma(&Toolpath::new(moves), &torch, &p).unwrap();
+    let dwells: Vec<f64> = path.moves.iter().filter_map(|m| if let Move::Dwell { seconds } = m { Some(*seconds) } else { None }).collect();
+    assert_eq!(dwells, [0.5, 0.5], "one pierce a cut");
+    // Never into the sheet: every cut at the cut height, every rapid at the pierce height or above.
+    for m in &path.moves {
+        match m {
+            Move::Feed { to, .. } | Move::Arc { to, .. } => close(to.z, 1.5, 1e-9),
+            Move::Rapid { to } => assert!(to.z >= 3.8 - 1e-9, "{m:?}"),
+            Move::Dwell { .. } => {}
+        }
+    }
+    let cuts: Vec<(Vec3, f64)> = path.moves.iter().filter_map(|m| if let Move::Feed { to, feed } = m { Some((*to, *feed)) } else { None }).collect();
+    let first = cuts.iter().find(|(_, f)| *f != 500.0).unwrap();
+    assert!((9.0..15.0).contains(&first.0.x) && (9.0..15.0).contains(&first.0.y), "the hole comes first: {first:?}");
+    assert!(cuts.iter().filter(|(to, _)| to.x < 9.0 || to.x > 15.0).all(|(_, f)| *f == 2000.0 || *f == 500.0), "the outline at the full feed");
+    assert!(cuts.iter().any(|(_, f)| *f == 1000.0), "the small hole at half the feed");
+    // The post lights the torch before each pierce and puts it out before each rapid.
+    let program = Program {
+        name: "Sheet".into(),
+        operations: vec![Operation { name: "Cut".into(), tool: torch.clone(), spindle_rpm: 1.0, coolant: false, path: path.clone() }],
+        work_offset: None,
+    };
+    let post = Post::builtin("plasma").unwrap();
+    let text = emit(&program, &post).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.iter().filter(|l| l.trim() == "M3 S1").count(), 2, "{text}");
+    for (i, l) in lines.iter().enumerate() {
+        if l.starts_with("G4 ") {
+            assert_eq!(lines.get(i.wrapping_sub(1)).map(|p| p.trim()), Some("M3 S1"), "lit right before the pierce:\n{text}");
+        }
+        if l.starts_with("G0") && lines[..i].iter().rev().find(|p| p.trim() == "M3 S1" || p.trim() == "M5").is_some_and(|p| p.trim() == "M3 S1") {
+            panic!("a rapid with the torch lit at line {}:\n{text}", i + 1);
+        }
+    }
+    assert!(!text.contains("M6") && !text.contains("G43"), "a torch is not changed:\n{text}");
+    let back = readback(&text, &program, &post).unwrap();
+    assert!(back.within(), "{back:?}\n{text}");
+    // Heidenhain writes no plasma cuts; a torch needs its heights and delay; a mill is no torch.
+    assert!(emit(&program, &Post::builtin("heidenhain").unwrap()).is_err());
+    let mut bare = torch.clone();
+    bare.pierce_delay = None;
+    assert!(bare.validate().is_err());
+    let mut low = torch.clone();
+    low.pierce_height = Some(1.0);
+    assert!(low.validate().is_err(), "a torch pierces no lower than it cuts");
+    let mut mill = tool(6.0);
+    assert!(plasma(&path, &mill, &p).is_err());
+    mill.cut_height = Some(1.5);
+    assert!(mill.validate().is_err(), "a cut height belongs to a torch");
 }

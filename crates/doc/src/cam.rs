@@ -714,6 +714,17 @@ pub struct CamContourParams {
     /// Closed contours: holding tabs left on each loop so the part stays in the stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<Box<CamTabs>>,
+    /// Plasma: closed cuts at most `diameter` wide (small holes) cut at `share` of the feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_holes: Option<Box<CamSlowHoles>>,
+}
+
+/// Small holes cut slower by a plasma torch: those at most `diameter` wide, at `share` (above
+/// 0, at most 1) of the feed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamSlowHoles {
+    pub diameter: Expr,
+    pub share: f64,
 }
 
 /// Holding tabs (bridges) on a closed contour: `count` round each loop, else one every
@@ -1219,6 +1230,12 @@ impl CamOperation {
                 if let Some(tabs) = &params.tabs {
                     tabs.validate()?;
                 }
+                if let Some(slow) = &params.slow_holes {
+                    check_expr(&slow.diameter, "slow_holes.diameter")?;
+                    if !(slow.share > 0.0 && slow.share <= 1.0) {
+                        return Err(DocError::Invalid("small holes are cut at a share of the feed above 0 and at most 1".into()));
+                    }
+                }
                 if params.start.iter().flatten().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                     return Err(DocError::Invalid("the start point must be finite and within 1e6 mm".into()));
                 }
@@ -1298,6 +1315,7 @@ pub fn default_contour_params() -> CamContourParams {
         extend_start: zero_mm(),
         extend_end: zero_mm(),
         tabs: None,
+        slow_holes: None,
     }
 }
 

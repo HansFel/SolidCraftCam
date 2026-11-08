@@ -35,6 +35,10 @@ pub struct ToolParams {
     pub stick_out: Option<f64>,
     /// The holder: `{description?, diameter, length}` (mm), or null for none.
     pub holder: Option<HolderParams>,
+    /// Plasma torch: how high above the sheet it pierces and cuts (mm), and how long it pierces (s).
+    pub pierce_height: Option<f64>,
+    pub cut_height: Option<f64>,
+    pub pierce_delay: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -277,6 +281,8 @@ pub struct MillingParams {
     pub extend_end: Option<NumberExpr>,
     /// Closed contours: holding tabs `{count?, spacing?, width, height}`, or null for none.
     pub tabs: Option<serde_json::Value>,
+    /// Plasma: small holes `{diameter, share}` cut at `share` of the feed, or null for none.
+    pub slow_holes: Option<serde_json::Value>,
     pub outer: Option<Vec<[f64; 2]>>,
     pub holes: Option<Vec<Vec<[f64; 2]>>>,
     pub regions: Option<serde_json::Value>,
@@ -604,6 +610,9 @@ pub struct JobParams {
     pub extend_end: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<serde_json::Value>,
+    /// Plasma: small holes `{diameter, share}` cut slower, as `cam.op.contour` takes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_holes: Option<serde_json::Value>,
     /// A step's stored geometry, unchanged: what an edit keeps when nothing new is picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<serde_json::Value>,

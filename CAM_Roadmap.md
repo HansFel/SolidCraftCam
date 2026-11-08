@@ -276,6 +276,21 @@ Generated from the design, as a printable HTML page (printed to PDF from the bro
 | Run time per setup and in total | Done: per step, per setup and in total in the setup sheet |
 | Material list (stock size and material group) | Done: stock kind, size and material per setup in the setup sheet |
 
+## Plasma cutting
+
+| Item | Status |
+|---|---|
+| Torch as a tool: kerf, thickest sheet, pierce height, cut height, pierce delay | Done: `kind: plasma` |
+| Contours cut once from above: pierce, cut height, holes before the outline, small holes slower | Done: a contour step with a torch (`slow_holes`) |
+| Torch on and off at every cut in every G-code post; a built-in `plasma` post | Done |
+| Cut charts per material and sheet thickness (feed, kerf, heights, amperage) | Planned |
+| Height control (THC) on and off, off on small holes and corners | Planned |
+| Micro-joints (short uncut bridges) instead of holding tabs | Planned |
+| Lead-ins from the waste side picked automatically; overcut on holes | Planned |
+| Marking (low current, no pierce) along lines and text | Planned |
+| Parts on a sheet: rectangular arrangement, then true nesting | Planned |
+| Kerf shown in the preview | Partial: the simulation cuts the kerf through the stock |
+
 ## Turning and mill-turn
 
 Lathe setups (`SetupOperationType::Turning`) are in the data model only. Facing,

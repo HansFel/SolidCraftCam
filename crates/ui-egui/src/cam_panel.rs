@@ -325,6 +325,7 @@ fn kind_key(kind: ToolKind) -> &'static str {
         ToolKind::Reamer => "ui.cam.kind.reamer",
         ToolKind::Tap => "ui.cam.kind.tap",
         ToolKind::ThreadMill => "ui.cam.kind.thread_mill",
+        ToolKind::Plasma => "ui.cam.kind.plasma",
     }
 }
 
@@ -339,7 +340,15 @@ const SIZES: &[(usize, &str, fn(ToolKind) -> bool)] = &[
     (4, "ui.cam.shank_diameter", |_| true),
     (5, "ui.cam.overall_length", |_| true),
     (6, "ui.cam.stick_out", |_| true),
+    (7, "ui.cam.pierce_height", |k| k == ToolKind::Plasma),
+    (8, "ui.cam.cut_height", |k| k == ToolKind::Plasma),
+    (9, "ui.cam.pierce_delay", |k| k == ToolKind::Plasma),
 ];
+
+/// The sizes a kind cannot do without: shown without the "optional" hint.
+fn required_size(i: usize) -> bool {
+    (7..=9).contains(&i)
+}
 
 /// A size as typed: empty is none, else a number (a comma is a decimal point).
 fn optional(text: &str) -> Result<Option<f64>, String> {
@@ -362,8 +371,9 @@ struct ToolEdit {
     flute_length: String,
     description: String,
     cutting: Vec<[String; 4]>,
-    /// Corner radius, tip angle, tip diameter, pitch, shank diameter, overall length, stick-out.
-    sizes: [String; 7],
+    /// Corner radius, tip angle, tip diameter, pitch, shank diameter, overall length, stick-out,
+    /// and a torch's pierce height, cut height and pierce delay.
+    sizes: [String; 10],
     /// The holder's description, diameter and length; no diameter: no holder.
     holder: [String; 3],
 }
@@ -393,6 +403,9 @@ impl ToolEdit {
                 tool.shank_diameter,
                 tool.overall_length,
                 tool.stick_out,
+                tool.pierce_height,
+                tool.cut_height,
+                tool.pierce_delay,
             ]
             .map(|v| v.map(number).unwrap_or_default()),
             holder: match &tool.holder {
@@ -415,7 +428,7 @@ impl ToolEdit {
         tool.flutes = self.flutes.trim().parse().map_err(|_| bad())?;
         tool.description = self.description.trim().chars().take(256).collect();
         // Sizes the kind does not use are dropped, so changing the kind never leaves one behind.
-        let mut sizes = [None; 7];
+        let mut sizes = [None; 10];
         for &(i, _, used) in SIZES {
             if used(kind)
                 && let Some(text) = self.sizes.get(i)
@@ -423,7 +436,18 @@ impl ToolEdit {
                 sizes[i] = optional(text)?;
             }
         }
-        [tool.corner_radius, tool.tip_angle, tool.tip_diameter, tool.pitch, tool.shank_diameter, tool.overall_length, tool.stick_out] = sizes;
+        [
+            tool.corner_radius,
+            tool.tip_angle,
+            tool.tip_diameter,
+            tool.pitch,
+            tool.shank_diameter,
+            tool.overall_length,
+            tool.stick_out,
+            tool.pierce_height,
+            tool.cut_height,
+            tool.pierce_delay,
+        ] = sizes;
         tool.holder = match (optional(&self.holder[1])?, optional(&self.holder[2])?) {
             (None, None) => None,
             (Some(diameter), Some(length)) => {
@@ -768,7 +792,7 @@ pub(crate) struct GcodeView {
     /// The text searched for in the lines.
     search: String,
     /// The program as edited by hand, while it is; exported as it is, never read back.
-    edited: Option<String>,
+    pub(crate) edited: Option<String>,
 }
 
 /// Playback speeds (mm of tool travel per second).
@@ -1194,7 +1218,13 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView, actions: 
             }
             done = ui_kit::button(ui, tr("ui.cam.edit_discard"), ui_kit::Button::Small).clicked();
         });
-        ui_kit::text_area(ui, tr("ui.cam.edit_gcode"), egui::Id::unique(("cam-gcode-edit", &view.setup)), text, 16, 64 * 1024 * 1024);
+        // A long program scrolls inside the panel, which keeps its size.
+        egui::ScrollArea::both().id_salt(("cam-gcode-edit-scroll", &view.setup)).max_height(ui.available_height()).auto_shrink([false, false]).show(
+            ui,
+            |ui| {
+                ui_kit::text_area(ui, tr("ui.cam.edit_gcode"), egui::Id::unique(("cam-gcode-edit", &view.setup)), text, 16, 64 * 1024 * 1024);
+            },
+        );
         if done {
             view.edited = None;
         }
@@ -1600,23 +1630,31 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     let kinds: Vec<&str> = KINDS.iter().map(|k| tr(kind_key(*k))).collect();
     ui_kit::text_row(ui, tr("ui.cam.tool"), &mut edit.number, "");
     ui_kit::choice_row(ui, tr("ui.cam.kind"), "cam-tool-kind", &mut edit.kind, &kinds);
-    ui_kit::text_row(ui, tr("ui.cam.diameter"), &mut edit.diameter, "");
-    ui_kit::text_row(ui, tr("ui.cam.flutes"), &mut edit.flutes, "");
-    ui_kit::text_row(ui, tr("ui.cam.flute"), &mut edit.flute_length, "");
+    // A torch's diameter is the width of its cut, its length the thickest sheet it cuts.
+    let kind = KINDS.get(edit.kind).copied().unwrap_or(ToolKind::FlatEndmill);
+    let torch = kind == ToolKind::Plasma;
+    ui_kit::text_row(ui, tr(if torch { "ui.cam.kerf" } else { "ui.cam.diameter" }), &mut edit.diameter, "");
+    if !torch {
+        ui_kit::text_row(ui, tr("ui.cam.flutes"), &mut edit.flutes, "");
+    }
+    ui_kit::text_row(ui, tr(if torch { "ui.cam.max_thickness" } else { "ui.cam.flute" }), &mut edit.flute_length, "");
     ui_kit::text_row(ui, tr("ui.cam.description"), &mut edit.description, "");
     // The kind's own sizes, then lengths and the holder every tool can have.
-    let kind = KINDS.get(edit.kind).copied().unwrap_or(ToolKind::FlatEndmill);
     for &(i, key, used) in SIZES {
         if used(kind)
             && let Some(text) = edit.sizes.get_mut(i)
         {
-            ui_kit::text_row(ui, tr(key), text, tr("ui.cam.optional"));
+            ui_kit::text_row(ui, tr(key), text, if required_size(i) { "" } else { tr("ui.cam.optional") });
         }
     }
     ui_kit::text_row(ui, tr("ui.cam.holder"), &mut edit.holder[0], tr("ui.cam.optional"));
     ui_kit::text_row(ui, tr("ui.cam.holder_diameter"), &mut edit.holder[1], tr("ui.cam.optional"));
     ui_kit::text_row(ui, tr("ui.cam.holder_length"), &mut edit.holder[2], tr("ui.cam.optional"));
-    cutting_rows(ui, edit);
+    if torch {
+        ui.add(egui::Label::new(RichText::new(tr("ui.cam.plasma_hint")).color(Tokens::get().text_dim)).wrap());
+    } else {
+        cutting_rows(ui, edit);
+    }
     if ui_kit::button(ui, tr("ui.cam.save_tool"), ui_kit::Button::Primary).clicked() {
         let base = original.and_then(|n| library.find(n));
         match edit.tool(base) {

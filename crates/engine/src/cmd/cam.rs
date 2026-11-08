@@ -28,12 +28,12 @@ use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.tool.define", "Define Tool", crate::checked!("cam.tool.define", tool_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ToolResult>).icon("hole").params(
-        "number (1…9999); kind?: flat_endmill|ball_endmill|bull_nose|chamfer|v_bit|t_slot|thread_mill|drill|centre_drill|reamer|tap \
+        "number (1…9999); kind?: flat_endmill|ball_endmill|bull_nose|chamfer|v_bit|t_slot|thread_mill|drill|centre_drill|reamer|tap|plasma \
          (default flat_endmill); diameter (mm); flute_length (mm); description?; flutes?; spindle_rpm?; feed?; plunge_feed?; \
          stepdown?; stepover?; cutting?: {material: {vc m/min, fz mm/tooth (drill: per rev), ap × D, ae × D}}; \
          corner_radius? (bull_nose, required); tip_angle?: included degrees (chamfer 90, v_bit 60, centre_drill 90, drill 118); \
          tip_diameter? (chamfer, v_bit); pitch? (tap, thread_mill, required); shank_diameter? (t_slot: the neck); overall_length?; \
-         stick_out?; holder?: {description?, diameter, length} or null. Omitted sizes are kept from a tool of the same kind.",
+         stick_out?; holder?: {description?, diameter, length} or null; plasma (diameter: the kerf, flute_length: the thickest          sheet): pierce_height, cut_height (mm above the sheet), pierce_delay (s), all required. Omitted sizes are kept from a tool of the same kind.",
     ),
     CommandSpec::new("cam.tool.remove", "Remove Tool", crate::checked!("cam.tool.remove", tool_remove)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolRemoveParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>).icon("delete").params("number"),
     CommandSpec::new("cam.machine.define", "Define Machine", crate::checked!("cam.machine.define", machine_cmd))
@@ -406,6 +406,9 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     tool.shank_diameter = size("shank_diameter", old.as_ref().and_then(|t| t.shank_diameter))?;
     tool.overall_length = size("overall_length", old.as_ref().and_then(|t| t.overall_length))?;
     tool.stick_out = size("stick_out", old.as_ref().and_then(|t| t.stick_out))?;
+    tool.pierce_height = size("pierce_height", old.as_ref().and_then(|t| t.pierce_height))?;
+    tool.cut_height = size("cut_height", old.as_ref().and_then(|t| t.cut_height))?;
+    tool.pierce_delay = size("pierce_delay", old.as_ref().and_then(|t| t.pierce_delay))?;
     tool.holder = match p.get("holder") {
         None => s.doc.cam.tool(number).and_then(|t| t.holder.clone()),
         Some(Value::Null) => None,
@@ -1119,6 +1122,15 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
             Some(Value::Null) => params.tabs = None,
             Some(v) => params.tabs = Some(Box::new(tabs_param(cmd, v)?)),
         }
+        match p.get("slow_holes") {
+            None => {}
+            Some(Value::Null) => params.slow_holes = None,
+            Some(v) => {
+                let diameter = expr(v, "diameter").ok_or_else(|| bad(cmd, "`slow_holes` needs `diameter`"))?;
+                let share = num(v, "share").ok_or_else(|| bad(cmd, "`slow_holes` needs `share`, the share of the feed"))?;
+                params.slow_holes = Some(Box::new(solidcraft_doc::cam::CamSlowHoles { diameter, share }));
+            }
+        }
         CamOperation::Contour { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     } else {
         let stepover = match expr(p, "stepover") {
@@ -1514,10 +1526,14 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
         if move_count > 2_000_000 {
             return Err(bad(cmd, "setup exceeds 2000000 toolpath moves; split the job"));
         }
-        let (spindle_rpm, coolant) = (op.spindle_rpm().or(tool.spindle_rpm).unwrap_or(6000.0), op.coolant());
+        // A torch has no spindle: it is lit with S1.
+        let torch = tool.kind == ToolKind::Plasma;
+        let spindle_rpm = if torch { 1.0 } else { op.spindle_rpm().or(tool.spindle_rpm).unwrap_or(6000.0) };
+        let coolant = op.coolant() && !torch;
         if let Some(machine) = &machine {
+            let checked_rpm = if torch { spindle_rpm.clamp(machine.spindle_min, machine.spindle_max.max(machine.spindle_min)) } else { spindle_rpm };
             machine
-                .check_operation(spindle_rpm, &path)
+                .check_operation(checked_rpm, &path)
                 .map_err(|e| bad(cmd, format!("operation `{}` on machine `{}`: {e}", op.name(), machine.name)))?;
             if let Some((lo, hi)) = solidcraft_cam::reach(&path) {
                 reach = Some(match reach {
@@ -2517,7 +2533,16 @@ impl Session {
         let mut operations = Vec::new();
         for op in found.operations.iter().filter(|op| !found.skipped.iter().any(|n| n == op.name())) {
             let tool = self.doc.cam.tool(op.tool()).ok_or_else(|| format!("operation `{}` needs tool {}", op.name(), op.tool()))?;
-            let path = build_path(self, found, op).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
+            let mut path = build_path(self, found, op).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
+            // A torch cuts above the sheet but through it: its cuts go through the stock.
+            if tool.kind == ToolKind::Plasma {
+                let through = lo.z - 0.01;
+                for m in &mut path.moves {
+                    if let solidcraft_cam::Move::Feed { to, .. } | solidcraft_cam::Move::Arc { to, .. } = m {
+                        to.z = through;
+                    }
+                }
+            }
             // The tool starts where the step's first move goes, so nothing is swept before it.
             let Some(start) = path.moves.iter().find_map(|m| m.target()) else { continue };
             let report = stock.cut(tool, &path, start).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
@@ -2856,6 +2881,9 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
     if !matches!(op, CamOperation::ThreadMill { .. }) && cut.heights.top - cut.heights.bottom > tool.flute_length {
         return Err("cutting depth exceeds the tool's flute length".into());
     }
+    if tool.kind == ToolKind::Plasma {
+        return plasma_path(s, setup, op, tool, cut);
+    }
     if let CamOperation::Drill { geometry: CamGeometry::Points { points }, dwell, .. } = op {
         let points: Vec<_> = points.iter().map(|p| Vec2::new(p[0], p[1])).collect();
         // A hole step with a tap taps: one pitch a turn at the step's spindle speed.
@@ -3016,6 +3044,35 @@ fn contour_path(
     let path = solidcraft_cam::Toolpath::new(moves);
     solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// A contour cut by a plasma torch: the contour's loops cut once (no depth passes, no ramp, no
+/// tabs), then turned into torch cuts ([`solidcraft_cam::plasma`]): pierced at the torch's
+/// heights over the step's top, the holes first, small holes slower when the step says so.
+fn plasma_path(s: &Session, setup: &CamSetup, op: &CamOperation, tool: &Tool, mut cut: Cut) -> std::result::Result<solidcraft_cam::Toolpath, String> {
+    let CamOperation::Contour { geometry, params, .. } = op else {
+        return Err("a plasma torch cuts contours only: make the step a contour".into());
+    };
+    if params.tabs.is_some() {
+        return Err("a plasma cut leaves no holding tabs: take them off the step".into());
+    }
+    let mut params = params.clone();
+    params.ramp_angle = Expr::new("0 deg");
+    params.floor_stock = Expr::new("0 mm");
+    cut.stepdown = (cut.heights.top - cut.heights.bottom).max(1e-3);
+    let once = contour_path(s, setup, geometry, &params, tool, &cut)?;
+    let slow_holes = match &params.slow_holes {
+        Some(h) => Some((eval_len(s, &h.diameter, "slow_holes.diameter")?, h.share)),
+        None => None,
+    };
+    let p = solidcraft_cam::PlasmaParams {
+        top: cut.heights.top,
+        travel: cut.heights.retract,
+        clearance: cut.heights.clearance,
+        plunge_feed: cut.feeds.plunge,
+        slow_holes,
+    };
+    solidcraft_cam::plasma(&once, tool, &p).map_err(|e| e.to_string())
 }
 
 /// A chamfer with a cone (chamfer or engraving cutter): the tip runs `tip_offset` below where the
@@ -4257,11 +4314,11 @@ mod tests {
         let listed = run(&mut s, "cam.list", json!({}));
         let kinds: Vec<&str> = listed["setups"][0]["operations"].as_array().unwrap().iter().map(|o| o["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["chamfer", "engrave", "helical_bore", "thread_mill", "drill"]);
-        // Every built-in post that can tap writes and reads the whole setup back; GRBL and
-        // Heidenhain (no cycle 207 yet) refuse the tap.
+        // Every built-in post that can tap writes and reads the whole setup back; GRBL, plasma
+        // tables and Heidenhain (no cycle 207 yet) refuse the tap.
         for post in solidcraft_cam::Post::BUILTIN {
             let posted = s.execute("cam.post", &json!({"setup": "Top", "post": post}));
-            if matches!(*post, "grbl" | "heidenhain") {
+            if matches!(*post, "grbl" | "heidenhain" | "plasma") {
                 assert!(posted.is_err(), "{post} has no tapping cycle");
                 continue;
             }
@@ -4329,6 +4386,69 @@ mod tests {
         assert!((z(&s, "Kept") - 8.0).abs() < 1e-6 && (z(&s, "Live") - 20.0).abs() < 1e-6, "{} {}", z(&s, "Kept"), z(&s, "Live"));
         let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
         assert!(cold.cam.setup("Live").is_some_and(|x| x.zero_follows && x.fixtures == ["Jaw"]));
+    }
+
+    #[test]
+    fn a_plasma_torch_cuts_a_sheet_holes_first_and_posts_torch_on_and_off() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [60, 40]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 3, "operation": "new", "body_name": "Sheet"}));
+        let torch = json!({"number": 1, "kind": "plasma", "diameter": 1.5, "flute_length": 6, "feed": 2500, "plunge_feed": 1000,
+            "pierce_height": 3.8, "cut_height": 1.5, "pierce_delay": 0.5});
+        run(&mut s, "cam.tool.define", torch);
+        let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
+        run(&mut s, "cam.setup", json!({"name": "Table", "wcs_origin_mode": "model_box_point", "box_point": corner, "post": "plasma"}));
+        let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
+        let holes = json!([[[20, 15], [20, 19], [24, 19], [24, 15]]]);
+        let part = json!({"setup": "Table", "name": "Part", "tool": 1, "outer": outer, "holes": holes, "top": 0, "bottom": -3, "stepdown": 1,
+            "clearance": 20, "retract": 6, "slow_holes": {"diameter": 6, "share": 0.5}});
+        run(&mut s, "cam.op.contour", part.clone());
+        let posted = run(&mut s, "cam.post", json!({"setup": "Table"}));
+        let gcode = posted["gcode"].as_str().unwrap();
+        let lines: Vec<&str> = gcode.lines().map(str::trim).collect();
+        // Lit right before each of the two pierces, out before every rapid; never changed, never offset.
+        assert_eq!(lines.iter().filter(|l| **l == "M3 S1").count(), 2, "{gcode}");
+        assert_eq!(lines.iter().filter(|l| l.starts_with("G4 P0.5")).count(), 2, "{gcode}");
+        assert!(!gcode.contains("M6") && !gcode.contains("G43") && !gcode.contains("M8"), "{gcode}");
+        let mut lit = false;
+        for l in &lines {
+            match *l {
+                "M3 S1" => lit = true,
+                "M5" => lit = false,
+                l if l.starts_with("G0 ") || l == "G0" => assert!(!lit, "a rapid with the torch lit:\n{gcode}"),
+                _ => {}
+            }
+        }
+        // The hole (the slow feed, 1250) is cut before the outline (2500).
+        let first_slow = lines.iter().position(|l| l.contains("F1250")).unwrap();
+        let first_full = lines.iter().position(|l| l.contains("F2500")).unwrap();
+        assert!(first_slow < first_full, "{gcode}");
+        assert!(posted["readback"]["within"].as_bool().unwrap());
+        // Kept in the design as it was given.
+        let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(cold.cam.tool(1).map(|t| (t.kind, t.pierce_height, t.cut_height, t.pierce_delay)), Some((ToolKind::Plasma, Some(3.8), Some(1.5), Some(0.5))));
+        let CamOperation::Contour { params, .. } = &cold.cam.setup("Table").unwrap().operations[0] else { panic!("a contour") };
+        assert_eq!(params.slow_holes.as_ref().map(|h| h.share), Some(0.5));
+        // The simulation cuts through the sheet, with nothing to warn of.
+        let sim = s.cam_simulate("Table", Some(0.5)).unwrap();
+        assert!(sim.removed > 0.0, "the kerf takes material");
+        assert!(sim.operations.iter().all(|o| o.report.rapid_hits.is_empty() && o.report.too_deep.is_empty()));
+        // A torch cuts contours only, without tabs; Heidenhain writes no plasma cuts.
+        let refused = s.execute("cam.op.pocket", &json!({"setup": "Table", "name": "Pocket", "tool": 1, "outer": [[5, 5], [15, 5], [15, 15], [5, 15]], "bottom": -1}));
+        if refused.is_ok() {
+            assert!(s.execute("cam.post", &json!({"setup": "Table"})).is_err_and(|e| e.to_string().contains("contours only")));
+            run(&mut s, "cam.op.remove", json!({"setup": "Table", "name": "Pocket"}));
+        }
+        let mut tabbed = part.clone();
+        tabbed["tabs"] = json!({"count": 2, "width": 3, "height": 1});
+        assert!(s.execute("cam.op.contour", &tabbed).is_err_and(|e| e.to_string().contains("tabs")));
+        run(&mut s, "cam.op.contour", part);
+        assert!(s.execute("cam.post", &json!({"setup": "Table", "post": "heidenhain"})).is_err());
+        // A torch without its heights is no tool.
+        assert!(s.execute("cam.tool.define", &json!({"number": 2, "kind": "plasma", "diameter": 1.5, "flute_length": 6})).is_err());
+        assert_eq!(run(&mut s, "cam.sheet", json!({}))["tools"][0]["kind"], "plasma");
     }
 
     #[test]

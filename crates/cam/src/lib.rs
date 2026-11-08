@@ -25,6 +25,7 @@ mod open;
 mod ops;
 mod path;
 mod piece;
+mod plasma;
 mod post;
 mod readback;
 mod sim;
@@ -46,6 +47,7 @@ pub use ops::{
     face, pocket, tap,
 };
 pub use path::{DrillCycle, Move, PathStats, Toolpath, arc_sweep};
+pub use plasma::{PlasmaParams, plasma};
 pub use post::{CommentStyle, Language, LineNumbers, Post, Tapping, Units};
 pub use readback::{Readback, allowed_deviation, readback};
 pub use sim::{RestMap, SimReport, StockMap};

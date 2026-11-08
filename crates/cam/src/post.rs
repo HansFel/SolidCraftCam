@@ -184,6 +184,22 @@ impl Post {
         }
     }
 
+    /// A plasma table (RS-274): no tool change and no tool length offset (the torch stays),
+    /// the torch lit with `M3` and put out with `M5` at every cut, pierce delays as `G4 P` in
+    /// seconds. Height control is left to the table's controller.
+    pub fn plasma() -> Post {
+        let mut post = Self::rs274();
+        post.name = "plasma".into();
+        post.header = lines(&["G17 {units} G40 G49 {work_offset} G80 G90 G94", "M5"]);
+        post.tool_change = Vec::new();
+        post.tool_change_first = false;
+        post.spindle_on = lines(&["M3 S{rpm}"]);
+        post.coolant_on = Vec::new();
+        post.coolant_off = Vec::new();
+        post.tapping = Tapping::None;
+        post
+    }
+
     /// The built-in post called `name`.
     /// LinuxCNC: incremental arc centres and exact paths are explicitly established,
     /// independent of the previously loaded program's modal state.
@@ -363,13 +379,14 @@ impl Post {
             "heidenhain" => Some(Post::heidenhain()),
             "linuxcnc" => Some(Post::linuxcnc()),
             "mach3" => Some(Post::mach3()),
+            "plasma" => Some(Post::plasma()),
             "rs274" => Some(Post::rs274()),
             "sinumerik" => Some(Post::sinumerik()),
             _ => None,
         }
     }
 
-    pub const BUILTIN: &'static [&'static str] = &["centroid", "fanuc", "grbl", "heidenhain", "linuxcnc", "mach3", "rs274", "sinumerik"];
+    pub const BUILTIN: &'static [&'static str] = &["centroid", "fanuc", "grbl", "heidenhain", "linuxcnc", "mach3", "plasma", "rs274", "sinumerik"];
 
     /// Reads `text`, written through this post, back into moves with their line numbers (from 1).
     pub fn read_back(&self, text: &str) -> Result<Vec<(usize, crate::Move)>> {
