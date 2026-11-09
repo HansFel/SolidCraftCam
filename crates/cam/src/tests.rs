@@ -761,8 +761,9 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
 #[test]
 fn open_pocket_enters_through_the_air_and_feeds_one_way() {
     // A 20 × 10 pocket open on its left side, entered from the lower left along one line.
-    // Every pass goes down in the air outside the opening and runs along the opening's
-    // length, and nothing ever feeds the other way.
+    // The passes nest against the closed wall, deepest first; every one descends in the
+    // air outside the opening, and the level feeds as one unbroken path because the way
+    // from a pass's end to the next pass's beginning crosses the mouth in the air.
     let regions = [rect(0.0, 0.0, 20.0, 10.0)];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-12.0, -2.0);
@@ -779,8 +780,9 @@ fn open_pocket_enters_through_the_air_and_feeds_one_way() {
     ];
     let mut pos = v(0.0, 0.0);
     let (mut side, mut down, mut air_entries) = (0usize, 0usize, 0usize);
-    // The side feeds made so far and the height each ran at: a feed that runs the other
-    // way is a link along the groove, allowed only over the floor those feeds cut.
+    // The feeds made so far and the height each ran at: a feed that runs against the
+    // entry direction is a pass turning back along a wall or a link crossing the mouth,
+    // allowed only where the disc stands over ground those feeds have already cut.
     let mut feeds: Vec<(Vec2, Vec2, f64)> = Vec::new();
     for m in &path.moves {
         if let Move::Rapid { to } = *m {
@@ -793,20 +795,17 @@ fn open_pocket_enters_through_the_air_and_feeds_one_way() {
             }
             if q.dist(pos) < 1e-9 {
                 down += 1;
-                // Passes go down through the air on the open side: a chained level begins
-                // with its disc at the mouth, tangent to the walls beside it, where it
-                // touches nothing on the way down; anywhere else a plunge stands a whole
-                // radius clear of the pocket's outline, as a band entering past the
-                // opening's corners still does when the chain breaks.
+                // A level goes down in the air in front of the mouth; nothing stands
+                // under the tool on the way there.
                 if q.x <= 1e-6 || shape.dist(q) >= 0.5 - 1e-6 {
                     air_entries += 1;
                 }
             } else {
                 side += 1;
                 if (q - pos).normalized().unwrap().dot(d) <= 1e-6 {
-                    // A cut never feeds the other way, so this is a pass beginning while
-                    // the last one's floor is still under the tool: check it runs over
-                    // that floor, within the tool's radius of a feed at its own height.
+                    // A pass never feeds against the entry with metal beside it, so this
+                    // is a turn or a crossing: check the disc runs over ground already
+                    // cut at this very height, within its own radius of a feed there.
                     for i in 0..=4 {
                         let p = pos.lerp(q, i as f64 / 4.0);
                         assert!(
@@ -828,9 +827,9 @@ fn open_pocket_enters_through_the_air_and_feeds_one_way() {
         }
     }
     assert!(side > 50 && down > 0, "{side} side feeds and {down} plunges");
-    // The level's bands follow one another at depth: plunges are the start of a chain,
-    // not the start of every band.
-    assert!(down * 8 <= side, "{down} plunges for {side} side feeds");
+    // One chain per depth: the whole level feeds at one height, and the tool's only
+    // plunges are the level's own.
+    assert_eq!(down, 2, "{down} plunges for {side} side feeds");
     assert!(air_entries * 10 >= down * 9, "{air_entries} of {down} passes enter through the air");
     // Both depth passes reach the floor and it is cleared wherever the tool can reach.
     assert_eq!(path.stats().lowest_z, Some(-3.0));
@@ -867,9 +866,9 @@ fn open_pocket_leaves_the_stock_on_the_closed_walls() {
             assert!(w.dist(v(p.x, p.y)) >= 0.75 - 1e-6, "the stock on a closed wall is broken at ({}, {})", p.x, p.y);
         }
     }
-    // The first band's centre sits one tool radius less one stepover outside the opening's
-    // plane, so every band's disc crosses that plane: the opening is cut flush, with no
-    // ledge standing at its face.
+    // Every pass begins on a lead-in outside the opening's plane, and the wall's own pass
+    // ends with its disc crossing that plane: the opening is cut flush, with no ledge
+    // standing at its face.
     assert!(cutting_points(&path, 0.0).iter().any(|p| p.x < -1e-6), "no pass crosses the opening's plane");
     // Everything deeper than the stock is cleared.
     for i in 0..=40 {
@@ -906,9 +905,10 @@ fn open_pocket_refuses_an_entry_that_is_not_air_or_not_facing() {
 
 #[test]
 fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
-    // A 40 × 10 pocket open on its left with a hole standing in the middle; the entry faces
-    // square onto the opening, so the bands run along it and every pass feeds +y. An island
-    // across a band splits it: the far stretch is descended into, and it too feeds +y.
+    // A 40 × 10 pocket open on its left with a hole standing in the middle. The passes
+    // nest against the closed wall and, as rings, against the hole too; every one is fed
+    // the one way round the metal it hugs, and the floor behind the island is cleared as
+    // well as the floor in front of it.
     let regions = [Region2 { outer: rect(0.0, 0.0, 40.0, 10.0).outer, holes: vec![Loop2::circle(v(20.0, 5.0), 2.0)] }];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-12.0, 5.0);
@@ -919,16 +919,16 @@ fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
     let d = v(0.0, 1.0);
     let mut pos = v(0.0, 0.0);
     let mut side = 0usize;
-    // The disc may stand past the opening's plane, where the first band cuts the pocket
-    // flush; it may never come nearer to a closed wall or the island than its own radius.
+    // The disc may stand past the opening's plane, where a pass cuts the pocket flush;
+    // it may never come nearer to a closed wall or the island than its own radius.
     let walls = [
         Piece::Line { a: v(40.0, 0.0), b: v(40.0, 10.0) },
         Piece::Line { a: v(0.0, 10.0), b: v(40.0, 10.0) },
         Piece::Line { a: v(0.0, 0.0), b: v(40.0, 0.0) },
     ];
     let island = v(20.0, 5.0);
-    // The side feeds made so far and the height each ran at: a feed that runs the other way
-    // is a link between passes, allowed only over the floor those feeds cut.
+    // The feeds made so far and the height each ran at: a feed that runs the other way
+    // is a turn or a crossing, allowed only over the ground those feeds already cut.
     let mut feeds: Vec<(Vec2, Vec2, f64)> = Vec::new();
     let mut down = 0usize;
     for m in &path.moves {
@@ -944,9 +944,9 @@ fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
             } else {
                 side += 1;
                 if (q - pos).normalized().unwrap().dot(d) <= 1e-6 {
-                    // The pass that follows runs back along its own groove's floor: the link
-                    // must stay within the tool's radius of a feed at its own height, so it
-                    // bites nothing on the way.
+                    // Whatever this feed is, the disc must bite nothing on the way: the
+                    // ground under it stands within the tool's radius of a feed at its
+                    // own height.
                     for i in 0..=4 {
                         let p = pos.lerp(q, i as f64 / 4.0);
                         assert!(
@@ -968,7 +968,8 @@ fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
         }
     }
     assert!(side > 50, "{side} side feeds");
-    // Chains of passes follow one another at depth: plunges are the start of a chain.
+    // The wall's passes chain at the mouth; only the island's rings break the chain,
+    // each entered by its own descent, so plunges stay a small share of the path.
     assert!(down * 8 <= side, "{down} plunges for {side} side feeds");
     // The floor behind the island is cut too.
     for i in 0..=80 {
@@ -984,10 +985,10 @@ fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
 
 #[test]
 fn open_pocket_finishes_along_its_curved_wall() {
-    // A half-disc pocket, open across its flat side and entered square onto it. The bands
-    // of passes run along the opening until the wall curves away from them; what the last
-    // band leaves standing beside the wall goes as a ring offset from it, so the last cut
-    // runs along the curved inside itself, one long pass instead of a dozen short chords.
+    // A half-disc pocket, open across its flat side and entered square onto it. Every
+    // pass is an offset of the curved wall itself, a stepover nearer the centre than the
+    // one before it, and they run deepest first: the cut that finishes the pocket is the
+    // pass tangent to the wall, one long arc rather than a dozen short chords.
     let regions = [Region2 {
         outer: Loop2 {
             segs: vec![
@@ -1018,8 +1019,9 @@ fn open_pocket_finishes_along_its_curved_wall() {
                 assert!(pos.x <= 1e-6, "the chain comes down at ({}, {}), inside the pocket", pos.x, pos.y);
             } else {
                 side += 1;
-                // The bands feed +y along the opening; anything the other way is a link
-                // back along a groove already cut.
+                // An arc rounds the far side and comes back, and the links cross the
+                // mouth: wherever a feed faces into the pocket, the disc must stand over
+                // ground its own path already cut.
                 if (q - pos).normalized().unwrap().dot(v(0.0, 1.0)) <= 1e-6 {
                     for i in 0..=4 {
                         let p = pos.lerp(q, i as f64 / 4.0);
@@ -1042,11 +1044,11 @@ fn open_pocket_finishes_along_its_curved_wall() {
         }
     }
     assert!(side > 200, "{side} side feeds");
-    // One chain of passes per depth level: the bands and the wall's ring feed one into
-    // the next wherever the way stays over ground already cut.
-    assert!(down <= 2, "{down} plunges for one wall ring and a dozen bands");
+    // One depth, one plunge: the offsets feed one into the next across the mouth without
+    // the tool ever coming up.
+    assert_eq!(down, 1, "{down} plunges for a chain of wall offsets");
     // The pocket ends along its wall: many a pass's centre runs the offset the disc cuts
-    // flush to, in a stretch of arc no chord band at that reach ever reached.
+    // flush to, along the arc itself, one long cut rather than a sequence of short chords.
     assert!(along > 40, "{along} feeds run along the curved wall");
     // And the last cut of all is that arc: the path ends on the wall, not on a chord.
     let last = path.moves.iter().rev().find_map(|m| match *m {
@@ -1061,6 +1063,103 @@ fn open_pocket_finishes_along_its_curved_wall() {
             if shape.clear(q, 1.0 + 1e-3) {
                 let dd = dist_to_cuts(&path, -2.0 + 1e-6, q);
                 assert!(dd <= 1.0 + 0.01, "{q:?} is {dd} from the nearest pass");
+            }
+        }
+    }
+}
+
+#[test]
+fn open_pocket_roughs_in_nested_offsets_and_turns_at_the_mouth() {
+    // A half-disc pocket roughed adaptively: every in-pocket pass runs along an offset of
+    // the wall, one stepover inside the last, so the disc bites no more than a stepover's
+    // width anywhere; the level is one continuous feed, with every reversal of direction
+    // taken in the air where the links cross the mouth; and the wall's own pass finishes
+    // the pocket last.
+    let regions = [Region2 {
+        outer: Loop2 {
+            segs: vec![
+                Seg2::Line { a: v(0.0, 12.0), b: v(0.0, -12.0) },
+                Seg2::Arc { center: v(0.0, 0.0), radius: 12.0, start: -PI / 2.0, sweep: PI },
+            ],
+        },
+        holes: vec![],
+    }];
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let entry = v(-20.0, 0.0);
+    let params = PocketParams { stepover: 1.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let c = cut(0.0, -2.0, 1.0);
+    let r = 0.76;
+    let path = pocket(&regions, &tool(2.0 * r), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    // The pass radii, wall first and deepest last: the wall's own offset, then a stepover
+    // in, until the disc would show past the centre.
+    let rings: Vec<f64> = (0..8).map(|m| 12.0 - r - 1.5 * m as f64).collect();
+    let on_a_ring = |p: Vec2| rings.iter().any(|&q| (p.len() - q).abs() <= 0.01);
+    let mut pos = v(0.0, 0.0);
+    let mut dir: Option<Vec2> = None;
+    let (mut down, mut level_max, mut cur_z) = (0usize, 0.0f64, f64::NAN);
+    let wall = Piece::Arc { c: v(0.0, 0.0), r: 12.0, a0: -PI / 2.0, sweep: PI };
+    for m in &path.moves {
+        if let Move::Rapid { to } = *m {
+            // The tool comes up clear of the work between levels and never rapid below
+            // the retract height: all depth is taken feeding.
+            assert!(to.z >= 2.0 - 1e-9, "a rapid runs down to {} inside the pocket", to.z);
+            pos = v(to.x, to.y);
+            dir = None;
+        }
+        if let Move::Feed { to, .. } = *m {
+            let q = v(to.x, to.y);
+            assert!(wall.dist(q) >= r - 1e-6, "the disc breaks the wall at ({}, {})", to.x, to.y);
+            if q.dist(pos) < 1e-9 {
+                down += 1;
+                assert!(q.x <= 1e-6, "the level begins at ({}, {}), not in the air off the mouth", q.x, q.y);
+            } else {
+                // Wherever the pass runs inside the pocket it runs a ring; where it turns
+                // it turns in the air.
+                if q.x > 0.0 && pos.x > 0.0 {
+                    assert!(on_a_ring(q) && on_a_ring(pos), "a feed crosses the pocket off any ring: ({}, {}) to ({}, {})", pos.x, pos.y, q.x, q.y);
+                }
+                if let Some(t) = (q - pos).normalized() {
+                    // A turn at depth is the arc's own gentle bend; the sharpest corners
+                    // in this path are the plunges' corners, which no feed sees.
+                    if let Some(p) = dir {
+                        let mut a = p.angle() - t.angle();
+                        while a > PI {
+                            a -= 2.0 * PI;
+                        }
+                        while a < -PI {
+                            a += 2.0 * PI;
+                        }
+                        assert!(a.abs() <= 80.0f64.to_radians(), "a feed turns {} degrees at ({}, {})", a.to_degrees(), q.x, q.y);
+                    }
+                    dir = Some(t);
+                }
+                if (to.z - cur_z).abs() > 1e-9 {
+                    if !cur_z.is_nan() {
+                        assert!(level_max >= 12.0 - r - 0.01, "a level ended {level_max} shy of its wall");
+                    }
+                    cur_z = to.z;
+                    level_max = 0.0;
+                }
+                if q.x > 0.0 {
+                    level_max = level_max.max(q.len());
+                }
+            }
+            pos = q;
+        }
+    }
+    // Two depths, two plunges: each level feeds all the way through in one descent.
+    assert_eq!(down, 2, "{down} plunges for two levels");
+    // Each level ends on the wall's own ring: the finishing pass is tangent to the wall.
+    assert!(level_max >= 12.0 - r - 0.01, "the last level ended {level_max} shy of its wall");
+    // The floor is cleared wherever the disc can reach: rings a stepover apart leave the
+    // standing metal no wider than the tool's radius beyond the nearest pass.
+    for i in 0..=40 {
+        for j in 0..=80 {
+            let q = v(0.05 + i as f64 * 0.3, -12.0 + j as f64 * 0.3);
+            if shape.clear(q, r + 1e-3) {
+                let dd = dist_to_cuts(&path, -2.0 + 1e-6, q);
+                assert!(dd <= r + 0.01, "{q:?} is {dd} from the nearest pass");
             }
         }
     }

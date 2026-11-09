@@ -4544,8 +4544,8 @@ mod tests {
         for (x, y) in a.iter().zip(&b) {
             assert!((x.0.x - 5.0 - y.0.x).abs() < 1e-6 && (x.0.y - 5.0 - y.0.y).abs() < 1e-6 && (x.0.z - y.0.z).abs() < 1e-6, "{x:?} {y:?}");
         }
-        // The bands run along the opening, and every pass feeds the same way along them,
-        // so no pass is ever conventional.
+        // The passes nest against the closed wall, and every one is fed the one way round
+        // the metal it hugs, so no pass is ever conventional.
         let pts = point_at(&s, "Plain");
         let d = {
             let (x, y) = (22.0f64, 7.0);
@@ -4574,10 +4574,10 @@ mod tests {
             let (dx, dy) = (q.x - p.x, q.y - p.y);
             let l = dx.hypot(dy);
             if (dx / l) * d.0 + (dy / l) * d.1 <= 1e-6 {
-                // A cut never feeds the other way, so this is the next band beginning
-                // while the ground the bands have just cut is still under the tool: every
-                // sample of the link must stand within the tool's radius of a cut at its
-                // own height, where it bites nothing on the way.
+                // A cut never feeds the other way, so this is a pass turning back or a
+                // link crossing the mouth while the ground the passes have just cut is
+                // still under the tool: every sample of it must stand within the tool's
+                // radius of a cut at its own height, where it bites nothing on the way.
                 for w in &own {
                     assert!(
                         cuts.iter().any(|c| (c.z - w.z).abs() <= 1e-9 && (c.x - w.x).hypot(c.y - w.y) <= 1.0 + 1e-6),
@@ -4588,11 +4588,15 @@ mod tests {
             cuts.extend(own.iter().copied());
         }
         assert!(side > 10, "{side} side feeds");
-        // The bands and the wall's ring follow one another at depth: the level is a few
-        // chains of passes, not a plunge for every band.
+        // One chain of nested offsets per depth level: the passes feed one into the next
+        // across the mouth, so each level's only descent is the one that begins it. A
+        // descent begins where a cutting sample stands at the xy of the rapid above it.
         let levels = 1usize;
-        let plunges = pts.windows(2).filter(|w| w[0].0.dist(w[1].0) < 1e-6 && w[1].1 && (w[0].0.z - w[1].0.z).abs() > 1e-9).count();
-        assert!(plunges <= 4 * levels, "{plunges} plunges for a whole level of bands");
+        let plunges = pts
+            .windows(2)
+            .filter(|w| (w[0].0.x - w[1].0.x).hypot(w[0].0.y - w[1].0.y) < 1e-6 && !w[0].1 && w[1].1 && (w[0].0.z - w[1].0.z).abs() > 1e-9)
+            .count();
+        assert_eq!(plunges, levels, "{plunges} plunges for a whole level of wall offsets");
         // The opening is cut flush: a pass runs past its plane, and the floor is cleared.
         assert!(cuts.iter().any(|p| p.x < -0.05), "no pass crosses the opening's plane");
         for x in 2..20 {
