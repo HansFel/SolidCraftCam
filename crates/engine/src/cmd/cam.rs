@@ -228,9 +228,14 @@ fn hole_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
 fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<Value> {
     let args: crate::schema::cam::HoleMillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, format!("no tool {} (cam.tool.define first)", args.tool)))?;
-    let points = hole_points(s, cmd, p, &args.setup)?;
-    let geometry = CamGeometry::Points { points: points.iter().map(|p| [p.x, p.y]).collect() };
-    let diameter = req_expr(cmd, p, "diameter")?;
+    let circles = hole_circles(s, cmd, p, &args.setup)?;
+    let geometry = CamGeometry::Points { points: circles.iter().map(|(p, _)| [p.x, p.y]).collect() };
+    // Without a diameter, a helix takes the picked circles': round a boss's rim, or a hole's wall.
+    let diameter = match expr(p, "diameter") {
+        Some(d) => d,
+        None if !thread => Expr::new(format!("{} mm", picked_diameter(cmd, &circles)?)),
+        None => req_expr(cmd, p, "diameter")?,
+    };
     // A thread rises one pitch a turn over its whole depth: one pass from the bottom.
     let mut p = p.clone();
     if thread && p.get("stepdown").is_none() {
@@ -260,6 +265,19 @@ fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<
         CamOperation::HelicalBore { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
     };
     store_op(s, cmd, &args.setup, op)
+}
+
+/// The one diameter of the picked circles, for a step given none.
+fn picked_diameter(cmd: &str, circles: &[(Vec2, Option<f64>)]) -> Result<f64> {
+    let radii: Vec<f64> = circles.iter().filter_map(|(_, r)| *r).collect();
+    let Some(first) = radii.first().copied() else {
+        return Err(bad(cmd, "give the `diameter`, or pick a round edge, a face's round holes or a sketch circle"));
+    };
+    if radii.len() < circles.len() || radii.iter().any(|r| (r - first).abs() > 1e-6 * first.max(1.0)) {
+        return Err(bad(cmd, "the picked circles differ in size: give the `diameter`"));
+    }
+    // To a micrometre, as typed diameters are.
+    Ok((2.0 * first * 1000.0).round() / 1000.0)
 }
 
 pub(super) fn helix_cmd(s: &mut Session, p: &Value) -> Result<Value> {
@@ -322,7 +340,14 @@ pub(super) fn engrave_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 /// Hole centres in work XY from `points` and `holes` picks (a round edge's centre, every round
 /// hole of a flat face, a sketch point, or the circles of a sketch profile), each once.
 fn hole_points(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<Vec2>> {
-    let mut points = if p.get("points").is_some() { vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)? } else { Vec::new() };
+    Ok(hole_circles(s, cmd, p, setup_name)?.into_iter().map(|(c, _)| c).collect())
+}
+
+/// [`hole_points`] with the radius of each picked circle where the pick is one (a round edge,
+/// a round hole of a face, a sketch circle); typed centres and sketch points have none.
+fn hole_circles(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<(Vec2, Option<f64>)>> {
+    let mut points: Vec<(Vec2, Option<f64>)> =
+        if p.get("points").is_some() { vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)?.into_iter().map(|c| (c, None)).collect() } else { Vec::new() };
     // Picked bores: a round edge's centre, every round hole of a picked flat face, a sketch
     // point, or the circles of a sketch profile, in work XY.
     if let Some(holes) = p.get("holes") {
@@ -333,27 +358,21 @@ fn hole_points(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Ve
         let setup = s.doc.cam.setup(setup_name).ok_or_else(|| bad(cmd, "create the setup first"))?;
         let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
         for pick in holes {
-            if pick.get("sketch").is_some() {
-                for c in sketch_hole_centres(s, cmd, pick)? {
-                    let w = frame.local(c);
-                    let w = Vec2::new(w.x, w.y);
-                    if !points.iter().any(|q| q.dist(w) < 1e-6) {
-                        points.push(w);
-                    }
-                }
-                continue;
-            }
-            let (body, at) = pick_param(cmd, pick, "holes")?;
-            let centres = if bool_(pick, "edge") == Some(true) {
-                vec![edge_centre(s, &body, at).map_err(|e| bad(cmd, e))?]
+            let centres = if pick.get("sketch").is_some() {
+                sketch_hole_centres(s, cmd, pick)?
             } else {
-                face_hole_centres(s, &body, at).map_err(|e| bad(cmd, e))?
+                let (body, at) = pick_param(cmd, pick, "holes")?;
+                if bool_(pick, "edge") == Some(true) {
+                    vec![edge_circle(s, &body, at).map_err(|e| bad(cmd, e))?]
+                } else {
+                    face_hole_centres(s, &body, at).map_err(|e| bad(cmd, e))?
+                }
             };
-            for c in centres {
+            for (c, r) in centres {
                 let w = frame.local(c);
                 let w = Vec2::new(w.x, w.y);
-                if !points.iter().any(|q| q.dist(w) < 1e-6) {
-                    points.push(w);
+                if !points.iter().any(|(q, _)| q.dist(w) < 1e-6) {
+                    points.push((w, r));
                 }
             }
         }
@@ -2353,6 +2372,11 @@ fn edge_direction(s: &Session, body_name: &str, at: Vec3, z: Vec3) -> std::resul
 /// Part zero on the edge of `body_name` nearest `at`: a round edge's centre (a bore's axis), else
 /// the edge's middle.
 fn edge_centre(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Vec3, String> {
+    edge_circle(s, body_name, at).map(|(c, _)| c)
+}
+
+/// [`edge_centre`] with the radius when the edge is round.
+fn edge_circle(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<(Vec3, Option<f64>), String> {
     let state = s.model.state();
     let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
     let tol = (body.body.size() * 1e-3).max(1e-3);
@@ -2360,18 +2384,18 @@ fn edge_centre(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Ve
     let (index, d) = body.body.nearest_edge(at, tol).map_err(|e| e.to_string())?.ok_or("the body has no edges")?;
     let edge = edges.iter().find(|e| e.index == index).filter(|_| d <= ON_CONTOUR).ok_or("the picked point is on no edge")?;
     let n = edge.points.len();
-    let (Some(a), Some(b), Some(c)) = (edge.points.first(), edge.points.get(n / 3), edge.points.get(2 * n / 3)) else { return Ok(edge.mid) };
+    let (Some(a), Some(b), Some(c)) = (edge.points.first(), edge.points.get(n / 3), edge.points.get(2 * n / 3)) else { return Ok((edge.mid, None)) };
     // The circle through three of its points; every point on it within the meshing tolerance.
     let (ab, ac) = (*b - *a, *c - *a);
     let normal = ab.cross(ac);
     let n2 = normal.dot(normal);
     if !(n2 > 1e-18) {
-        return Ok(edge.mid);
+        return Ok((edge.mid, None));
     }
     let centre = *a + (normal.cross(ab) * ac.dot(ac) + ac.cross(normal) * ab.dot(ab)) * (0.5 / n2);
     let r = centre.dist(*a);
     let round = r.is_finite() && edge.points.iter().all(|q| (q.dist(centre) - r).abs() <= 2.0 * tol + 1e-6 * r);
-    Ok(if round { centre } else { edge.mid })
+    Ok(if round { (centre, Some(r)) } else { (edge.mid, None) })
 }
 
 /// The centre and radius of a loop made only of arcs about one centre: a circle.
@@ -2391,7 +2415,7 @@ fn circle_of(lp: &Loop2) -> Option<(Vec2, f64)> {
 /// Hole centres from a sketch, in model coordinates: a sketch point (`point`, its id), or the
 /// circles of a profile (`profile`, its index): its outline when that is a circle, and every
 /// round hole in it.
-fn sketch_hole_centres(s: &Session, cmd: &str, pick: &Value) -> Result<Vec<Vec3>> {
+fn sketch_hole_centres(s: &Session, cmd: &str, pick: &Value) -> Result<Vec<(Vec3, Option<f64>)>> {
     let key = super::sketch_key(pick.get("sketch")).ok_or_else(|| bad(cmd, "`sketch` must be a sketch id or name"))?;
     let id = match s.doc.find_feature(&key) {
         Some(f) if matches!(f.kind, FeatureKind::Sketch { .. }) => f.id,
@@ -2405,7 +2429,7 @@ fn sketch_hole_centres(s: &Session, cmd: &str, pick: &Value) -> Result<Vec<Vec3>
             .point_index(point)
             .and_then(|i| solved.sketch.point(i))
             .ok_or_else(|| bad(cmd, format!("sketch `{key}` has no point `{point}`")))?;
-        return Ok(vec![solved.plane.to_world(p)]);
+        return Ok(vec![(solved.plane.to_world(p), None)]);
     }
     let index = pick
         .get("profile")
@@ -2413,18 +2437,18 @@ fn sketch_hole_centres(s: &Session, cmd: &str, pick: &Value) -> Result<Vec<Vec3>
         .and_then(|i| usize::try_from(i).ok())
         .ok_or_else(|| bad(cmd, "a hole from a sketch needs `point` (a point id) or `profile` (a profile index)"))?;
     let profile = solved.profiles.get(index).ok_or_else(|| bad(cmd, format!("sketch `{key}` has no profile {index}")))?;
-    let mut centres: Vec<Vec3> = Vec::new();
-    for (c, _) in std::iter::once(&profile.region.outer).chain(&profile.region.holes).filter_map(circle_of) {
+    let mut centres: Vec<(Vec3, Option<f64>)> = Vec::new();
+    for (c, r) in std::iter::once(&profile.region.outer).chain(&profile.region.holes).filter_map(circle_of) {
         let c = solved.plane.to_world(c);
-        if !centres.iter().any(|q| q.dist(c) < 1e-6) {
-            centres.push(c);
+        if !centres.iter().any(|(q, _)| q.dist(c) < 1e-6) {
+            centres.push((c, Some(r)));
         }
     }
     if centres.is_empty() { Err(bad(cmd, "the picked sketch profile has no circle: pick a circle or a sketch point")) } else { Ok(centres) }
 }
 
 /// The centres of the round holes in the flat face of `body_name` that `at` lies on.
-fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Vec<Vec3>, String> {
+fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Vec<(Vec3, Option<f64>)>, String> {
     let state = s.model.state();
     let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
     let mut best: Option<(f64, usize, Plane)> = None;
@@ -2438,7 +2462,7 @@ fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Res
     let (_, index, plane) = best.ok_or("the picked point is on no flat face")?;
     let resolved = resolve_face_indices(&state, &plane, LinkKind::Project, body_name, &[index]).map_err(|e| e.to_string())?;
     let region = outline(&resolved.geom)?;
-    let centres: Vec<Vec3> = region
+    let centres: Vec<(Vec3, Option<f64>)> = region
         .holes
         .iter()
         .filter_map(circle_of)
@@ -2449,7 +2473,7 @@ fn face_hole_centres(s: &Session, body_name: &str, at: Vec3) -> std::result::Res
             let probe = plane.to_world(*c + Vec2::new(r - inset, 0.0)) + plane.normal() * 0.1;
             !matches!(body.body.classify_point(probe), Ok(solidcraft_kernel::PointClass::Inside))
         })
-        .map(|(c, _)| plane.to_world(c))
+        .map(|(c, r)| (plane.to_world(c), Some(r)))
         .collect();
     if centres.is_empty() { Err("the picked face has no round holes".into()) } else { Ok(centres) }
 }
@@ -3998,6 +4022,29 @@ mod tests {
         assert_eq!(x_words(&mut s, json!({"side": "outside"})), auto);
         let inside = x_words(&mut s, json!({"side": "inside"}));
         assert!(inside.contains(&1800) && inside.contains(&2200), "{inside:?}");
+        // A helix round the boss, picked at its rim and given no diameter, goes round that 10 mm
+        // circle: the 6 mm tool's centre 8 mm from the axis, never nearer, and out straight up
+        // where it is, not over the boss's middle.
+        let helix = json!({"setup": "Top", "name": "Helix", "tool": 1, "bottom": -6, "stepdown": 2, "internal": false,
+            "holes": [{"body": "Plate", "at": [20, 20, 14], "edge": true}]});
+        run(&mut s, "cam.op.helix", helix);
+        let Some(CamOperation::HelicalBore { params, .. }) = s.doc.cam.setup("Top").unwrap().operations.iter().find(|o| o.name() == "Helix") else {
+            panic!("the helix")
+        };
+        assert_eq!((params.diameter.as_str(), params.outside), ("10 mm", true));
+        let paths = s.cam_toolpaths();
+        let points = paths.iter().find(|p| p.operation == "Helix").unwrap().points.as_ref().unwrap().clone();
+        let from_axis = |p: &Vec3| (p.x - 20.0).hypot(p.y - 15.0);
+        // The view's points are in the model's frame: part zero is the boss's top, 14 up.
+        assert!(points.iter().any(|(p, cutting)| *cutting && p.z < 8.1));
+        assert!(points.iter().filter(|(p, _)| p.z < 14.0).all(|(p, _)| from_axis(p) > 8.0 - 1e-6), "never into the boss");
+        assert!(points.iter().filter(|(p, _)| p.z < 14.0).any(|(p, _)| (from_axis(p) - 8.0).abs() < 1e-6));
+        let last = points.last().unwrap().0;
+        assert!((from_axis(&last) - 8.0).abs() < 1e-6 && last.z > 14.0, "out straight up: {last:?}");
+        // Picked circles of different sizes need a diameter given.
+        let mixed = json!({"setup": "Top", "name": "Mixed", "tool": 1, "bottom": -6, "internal": false,
+            "holes": [{"body": "Plate", "at": [20, 20, 14], "edge": true}], "points": [[5, 5]]});
+        assert!(s.execute("cam.op.helix", &mixed).is_err());
     }
 
     #[test]

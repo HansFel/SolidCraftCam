@@ -503,8 +503,8 @@ pub struct HoleMillParams {
     pub points: Vec<[f64; 2]>,
     /// Picked bores, as for drilling.
     pub holes: Option<Vec<HolePickParams>>,
-    /// The hole's diameter (helical boring) or the thread's major diameter.
-    pub diameter: NumberExpr,
+    /// The hole's or boss's diameter (helical boring; none: the picked circles') or the thread's major diameter.
+    pub diameter: Option<NumberExpr>,
     /// Rise per turn: a thread's (default the tool's pitch), or a helix's (default the stepdown).
     pub pitch: Option<NumberExpr>,
     /// In a hole (default), or on a stud: a thread on it, or a helix milling a round boss.

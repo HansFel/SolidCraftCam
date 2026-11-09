@@ -240,8 +240,14 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             }
             match a.kind {
                 JobKind::Helix | JobKind::Thread => {
-                    let diameter = a.hole_diameter.filter(|d| d.is_finite() && *d > 0.0).ok_or_else(|| bad(cmd, "give the `hole_diameter`"))?;
-                    map.insert("diameter".into(), json!(diameter));
+                    // A helix at picked circles may leave its diameter to them.
+                    match a.hole_diameter.filter(|d| d.is_finite() && *d > 0.0) {
+                        Some(diameter) => {
+                            map.insert("diameter".into(), json!(diameter));
+                        }
+                        None if matches!(a.kind, JobKind::Helix) && map.contains_key("holes") => {}
+                        None => return Err(bad(cmd, "give the `hole_diameter`")),
+                    }
                     if matches!(a.kind, JobKind::Thread) {
                         map.remove("stepdown");
                         for (key, value) in [("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v))), ("left_hand", a.left_hand.map(|v| json!(v)))] {

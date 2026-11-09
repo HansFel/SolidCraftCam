@@ -1423,7 +1423,8 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView, actions: 
             let number = i + 1;
             let Some(text) = program.lines.get(i) else { continue };
             let label = format!("{number:>digits$}  {text}");
-            if ui_kit::list_picker(ui, &format!("cam-gcode-{number}"), &label, view.selected == Some(number)).clicked() {
+            // Read down a column, as an editor shows a program: every line from the left.
+            if ui_kit::list_picker_start(ui, &format!("cam-gcode-{number}"), &label, view.selected == Some(number)).clicked() {
                 clicked = Some(number);
             }
         }

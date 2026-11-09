@@ -527,6 +527,15 @@ impl Milling {
     }
 
     /// The form opened from an operation's own button: contour, pocket or drill chosen.
+    /// A new helix takes its diameter from the circles picked for it until one is typed.
+    fn helix_from_picks(&mut self) {
+        if let Some(i) = FIELDS.iter().position(|(k, _, _)| *k == "hole_diameter")
+            && let Some(value) = self.values.get_mut(i)
+        {
+            value.clear();
+        }
+    }
+
     pub fn for_operation(app: &SolveApp, id: &str) -> Self {
         let (kind, name) = match id {
             "cam.op.contour" => (0, "ui.cam.contour"),
@@ -552,6 +561,9 @@ impl Milling {
         // Facing ends where the part's top is, at part zero, and takes off what the stock has above it.
         if kind == 3 {
             form.facing_from(stock_top(&app.session, &form.setup), 0.0);
+        }
+        if kind == 7 {
+            form.helix_from_picks();
         }
         form
     }
@@ -606,7 +618,7 @@ impl Milling {
             }
             // Each step's own sizes only; an empty pitch is the thread mill's.
             if (matches!(*key, "chamfer_width" | "tip_offset") && self.kind != 5)
-                || (*key == "hole_diameter" && !matches!(self.kind, 7 | 8))
+                || (*key == "hole_diameter" && (!matches!(self.kind, 7 | 8) || (self.kind == 7 && value.trim().is_empty())))
                 || (*key == "pitch" && (!matches!(self.kind, 7 | 8) || value.trim().is_empty()))
             {
                 continue;
@@ -1017,6 +1029,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         // Switched to facing: down to part zero, taking off what the stock has above it.
         form.facing_from(stock_top(&app.session, &form.setup), 0.0);
     }
+    if form.kind == 7 && was != 7 {
+        form.helix_from_picks();
+    }
     if form.kind == 3 {
         ui.add(egui::Label::new(tr("ui.cam.face_hint")).wrap_mode(egui::TextWrapMode::Wrap));
         if !crate::selection::items(inputs, 0).is_empty() {
@@ -1214,6 +1229,10 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             || (*key == "hole_diameter" && !matches!(form.kind, 7 | 8))
             || (*key == "pitch" && !matches!(form.kind, 7 | 8))
         {
+            continue;
+        }
+        if *key == "hole_diameter" && form.kind == 7 {
+            ui_kit::text_row(ui, tr(label), value, tr("ui.cam.helix_diameter_hint"));
             continue;
         }
         if *key == "pitch" && form.kind == 7 {

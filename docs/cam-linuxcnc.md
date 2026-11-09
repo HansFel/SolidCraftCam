@@ -188,7 +188,9 @@ full turn round the bottom, and out through the middle. Untick **In a hole** to 
 round boss from outside instead: the tool's centre runs half a tool diameter outside the boss's
 diameter, any diameter is possible, climb milling turns clockwise, and after the turn at the
 bottom the tool leaves straight up its own groove (`internal: false` and `pitch` in
-`cam.op.helix` and `cam.job.create`). **Thread** mills a thread with a thread mill: down the
+`cam.op.helix` and `cam.job.create`). Without a diameter, a helix at picked circles (a round edge, a face's
+round holes, a sketch circle) takes their diameter, so picking a boss's rim mills round that
+rim; picked circles of different sizes need a diameter given. **Thread** mills a thread with a thread mill: down the
 middle of the drilled core hole (or beside a stud for an outside thread), out onto the
 thread, and up one **pitch** a turn to above the top, counter-clockwise for a right-hand
 thread. **Tapping** with a tap from the library feeds one pitch a turn and is always written
