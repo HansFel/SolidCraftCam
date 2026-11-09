@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM chamfer</title>
+  <path d="M5 34.09L32 49.67L32 54.87L5 39.28Z" fill="#b8c3cf"/>
+  <path d="M59 24.73L40.1 35.64L32 49.67L32 54.87L59 39.28Z" fill="#8e9faf"/>
+  <path d="M32 9.14L59 24.73L40.1 35.64L13.1 20.06Z" fill="#e2e8ef"/>
+  <path d="M13.1 20.06L40.1 35.64L32 49.67L5 34.09Z" fill="#328bd3"/>
+  <path d="M32 9.14L59 24.73L59 39.28L32 54.87L5 39.28L5 34.09L13.1 20.06ZZ" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M13.1 20.06L40.1 35.64L59 24.73Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5 34.09L32 49.67L32 54.87Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M40.1 35.64L32 49.67Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

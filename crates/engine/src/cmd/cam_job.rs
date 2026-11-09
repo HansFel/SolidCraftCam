@@ -2,6 +2,7 @@
 use super::{CommandSpec, cam};
 use crate::params::bad;
 use crate::schema::cam::{ExportParams, ExportResult, JobKind, JobParams, JobResult, PreviewPoint};
+use solidcraft_doc::cam::SetupOperationType;
 use crate::{EngineError, Result, Session};
 use serde_json::{Value, json};
 
@@ -10,7 +11,7 @@ const EXPORT: crate::schema::TypedContract<ExportParams> = crate::schema::TypedC
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.job.create", "2.5D CAM — LinuxCNC", crate::checked!("cam.job.create", create))
-        .icon("cut").contract(&JOB)
+        .icon("cam_contour").contract(&JOB)
         .output(crate::schema::output_schema_for::<JobResult>)
         .params("Guided rectangle contour/pocket or hole-pattern job in work XY; dimensions mm, feeds mm/min. Creates or replaces one named operation; returns LinuxCNC G-code and preview points."),
     CommandSpec::new("cam.job.preview", "Preview CAM Job", crate::checked!("cam.job.preview", preview))
@@ -58,11 +59,18 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         _ if at_points => "drill",
         _ => "flat_endmill",
     };
-    cam::tool_cmd(
-        &mut work,
-        &json!({"number": a.tool, "kind": kind, "diameter": a.diameter, "flute_length": a.flute_length, "spindle_rpm": a.spindle_rpm}),
-    )?;
+    // A plasma cut needs no tool; a new setup for it is a plasma setup.
+    let plasma = matches!(a.kind, JobKind::Plasma);
+    if !plasma {
+        cam::tool_cmd(
+            &mut work,
+            &json!({"number": a.tool, "kind": kind, "diameter": a.diameter, "flute_length": a.flute_length, "spindle_rpm": a.spindle_rpm}),
+        )?;
+    }
     let mut setup = json!({"name": a.setup, "work_offset": a.work_offset});
+    if plasma && work.doc.cam.setup(&a.setup).is_none() {
+        setup["operation_type"] = json!("plasma");
+    }
     if let Some(material) = &a.material {
         setup["material"] = json!(material);
     }
@@ -85,7 +93,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             map.insert("chain".into(), json!(chain));
         }
     }
-    if let (JobKind::Contour, Some(map)) = (&a.kind, op.as_object_mut()) {
+    if let (JobKind::Contour | JobKind::Plasma, Some(map)) = (&a.kind, op.as_object_mut()) {
         let extra = [
             ("lead_in", a.lead_in.clone()),
             ("lead_out", a.lead_out.clone()),
@@ -95,7 +103,6 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             ("extend_start", a.extend_start.map(|v| json!(v))),
             ("extend_end", a.extend_end.map(|v| json!(v))),
             ("tabs", a.tabs.clone()),
-            ("slow_holes", a.slow_holes.clone()),
         ];
         for (key, value) in extra {
             if let Some(value) = value {
@@ -103,7 +110,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             }
         }
     }
-    if let (Some(start), JobKind::Contour) = (a.start, &a.kind) {
+    if let (Some(start), JobKind::Contour | JobKind::Plasma) = (a.start, &a.kind) {
         op["start"] = json!(start);
     }
     if matches!(a.kind, JobKind::Contour | JobKind::Pocket | JobKind::Slot) {
@@ -125,6 +132,25 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     match a.kind {
         JobKind::Contour => {
             cam::contour_cmd(&mut work, &op)?;
+        }
+        JobKind::Plasma => {
+            let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
+            for key in ["tool", "stepdown", "stepover", "spindle_rpm", "coolant", "tabs"] {
+                map.remove(key);
+            }
+            if let Some(side) = &a.side {
+                map.insert("side".into(), json!(side));
+            }
+            let torch = [("kerf", a.kerf), ("pierce_height", a.pierce_height), ("cut_height", a.cut_height), ("pierce_delay", a.pierce_delay)];
+            for (key, value) in torch {
+                if let Some(v) = value {
+                    map.insert(key.into(), json!(v));
+                }
+            }
+            if let Some(slow) = &a.slow_holes {
+                map.insert("slow_holes".into(), slow.clone());
+            }
+            cam::plasma_cmd(&mut work, &op)?;
         }
         JobKind::Pocket => {
             cam::pocket_cmd(&mut work, &op)?;
@@ -255,7 +281,10 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         })
         .collect::<Result<Vec<_>>>()?;
     let cut_minutes = path.stats().cut_minutes;
-    let post = cam::chosen_post(&work.doc.cam, setup).unwrap_or_else(|| "linuxcnc".into());
+    let post = cam::chosen_post(&work.doc.cam, setup).unwrap_or_else(|| match setup.operation_type {
+        SetupOperationType::Plasma => "plasma".into(),
+        _ => "linuxcnc".into(),
+    });
     let posted = cam::post_cmd(&mut work, &json!({"setup": a.setup, "post": post}))?;
     let result = JobResult {
         setup: a.setup,

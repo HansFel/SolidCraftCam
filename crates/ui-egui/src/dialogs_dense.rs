@@ -384,7 +384,7 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
         enter |= crate::hole_refs::input_rows(d, ui, &app.session, app.preferences.origin_plane_names, app.preferences.length_decimals);
     } else if let Kind::CamSetup(form) = &mut d.kind {
         // The part-zero mode chooses which pick rows show; a hidden row takes no picks.
-        crate::dialogs_cam_setup::head_rows(ui, form);
+        crate::dialogs_cam_setup::head_rows(app, ui, form);
         let shown = crate::dialogs_cam_setup::shown_inputs(form);
         if !shown.iter().any(|r| r.contains(&d.active))
             && let Some(first) = shown.first()
@@ -1944,6 +1944,70 @@ mod tests {
         h.step(&json!({"start":"cam.list"})).unwrap();
         h.frames(3);
         assert!(h.widget("Edit").is_some() && h.widget("Delete").is_some());
+    }
+
+    #[test]
+    fn cam_parts_group_setups_and_a_plasma_setup_takes_only_plasma_tables_posts_and_cuts() {
+        use solidcraft_engine::doc::cam::{CamOperation, SetupOperationType};
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h);
+        let table = solidcraft_engine::cam::Machine::plasma("Table");
+        h.app.preferences.cam_machines = serde_json::from_value(json!([
+            {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "spindle_min": 3000, "spindle_max": 12000, "max_feed": 2000},
+            table,
+        ]))
+        .unwrap();
+        let portal = h.app.preferences.cam_machines.find("Portal").cloned();
+        // A plasma setup of part "Bracket": a mill picked for it is dropped as the form is shown.
+        h.step(&json!({"start":"cam.setup"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::CamSetup(form) = &mut d.kind else { panic!("the setup form") };
+        form.kind = Some(1);
+        form.part = "Bracket".into();
+        form.set_machine(&h.app, portal.clone());
+        h.app.dialog = Some(d);
+        h.frames(2);
+        assert!(h.widget("Plasma cutting").is_some() && h.widget("Part").is_some());
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::CamSetup(form) = &mut d.kind else { panic!("the setup form") };
+        assert_eq!(form.operation_type(&h.app), SetupOperationType::Plasma);
+        let mut p = form.params(&d.inputs).unwrap();
+        assert!(p["machine"].is_null(), "a mill does not run a plasma setup");
+        form.set_machine(&h.app, h.app.preferences.cam_machines.find("Table").cloned());
+        p = form.params(&d.inputs).unwrap();
+        assert_eq!((p["part"].as_str(), p["operation_type"].as_str()), (Some("Bracket"), Some("plasma")));
+        h.app.run("cam.setup", p).unwrap();
+        let cut_setup = h.app.session.doc.cam.setups[0].clone();
+        assert_eq!((cut_setup.machine.as_deref(), cut_setup.part.as_deref()), (Some("Table"), Some("Bracket")));
+        assert_eq!(crate::cam_panel::setup_post(&h.app.session.doc.cam, &cut_setup), "plasma");
+        // Only posts for plasma tables are offered; a milling setup of the same part takes milling posts.
+        let plasma_posts: Vec<String> = crate::cam_panel::posts_for(&h.app, solidcraft_engine::cam::MachineKind::Plasma).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(plasma_posts, ["plasma"]);
+        assert!(crate::cam_panel::posts_for(&h.app, solidcraft_engine::cam::MachineKind::Mill).iter().all(|(n, _)| n != "plasma"));
+        // A plasma cut goes into the plasma setup with the table's torch data and no tool.
+        let form = crate::dialogs_milling::Milling::for_operation(&h.app, "cam.op.plasma");
+        let p = form.params().unwrap();
+        assert_eq!((p["kind"].as_str(), p["setup"].as_str(), p["kerf"].as_f64()), (Some("plasma"), Some(cut_setup.name.as_str()), Some(1.5)));
+        assert!(p.get("material").is_none());
+        h.app.run("cam.job.create", p).unwrap();
+        let cut = h.app.session.doc.cam.setups[0].operations.first().cloned().unwrap();
+        assert!(matches!(cut, CamOperation::Plasma { .. }) && h.app.session.doc.cam.tools.is_empty());
+        let again = crate::dialogs_milling::Milling::edit(&h.app, &h.app.session.doc.cam.setups[0], &cut).params().unwrap();
+        assert_eq!((again["kind"].as_str(), again["pierce_delay"].as_f64()), (Some("plasma"), Some(0.5)));
+        // A contour is not offered the plasma setup: it starts a new one.
+        let contour = crate::dialogs_milling::Milling::for_operation(&h.app, "cam.op.contour").params().unwrap();
+        assert_ne!(contour["setup"].as_str(), Some(cut_setup.name.as_str()));
+        // The job list heads each part with its sheets, and each setup has its own sheet.
+        h.app.run("cam.setup", json!({"name": "Drill first", "part": "Bracket"})).unwrap();
+        h.step(&json!({"start":"cam.list"})).unwrap();
+        h.frames(3);
+        for label in ["Part: Bracket", "Sheets for the part", "Setup sheet"] {
+            assert!(h.widget(label).is_some(), "{label} is shown");
+        }
+        assert_eq!(crate::cam_panel::parts(&h.app.session.doc.cam), [Some("Bracket".to_string())]);
     }
 
     #[test]

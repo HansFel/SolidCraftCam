@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Helical bore</title>
+  <path d="M5 29.3L32 44.9L32 52.16L5 36.58Z" fill="#b8c3cf"/>
+  <path d="M59 29.3L32 44.9L32 52.16L59 36.58Z" fill="#8e9faf"/>
+  <path d="M32 13.72L59 29.3L32 44.9L5 29.3Z" fill="#e2e8ef"/>
+  <path d="M32 13.72L59 29.3L59 36.58L32 52.16L5 36.58L5 29.3Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5 29.3L32 44.9L59 29.3" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 44.9L32 52.16" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M19.27 29.3A12.73 7.35 0 1 0 44.73 29.3A12.73 7.35 0 1 0 19.27 29.3Z" fill="#8e9faf"/>
+  <path d="M22.58 31.91A9.42 4.56 0 1 0 41.42 31.91A9.42 4.56 0 1 0 22.58 31.91Z" fill="#b8c3cf"/>
+  <path d="M19.27 29.3A12.73 7.35 0 1 0 44.73 29.3A12.73 7.35 0 1 0 19.27 29.3Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M21.18 16.84L21.35 16L21.83 15.2L22.63 14.46L23.71 13.82L25.05 13.3L26.59 12.93L28.3 12.72L30.12 12.69L32 12.84L33.88 13.19L35.7 13.72L37.41 14.43L38.95 15.3L40.29 16.32L41.37 17.47L42.17 18.7L42.65 20.01L42.82 21.34L42.65 22.68L21.18 25.84L21.35 25.01L21.83 24.21L22.63 23.47L23.71 22.83L25.05 22.31L26.59 21.94L28.3 21.73L30.12 21.69L32 21.85L33.88 22.19L35.7 22.73L37.41 23.44L42.02 23.9" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M42.82 30.34L37.68 23.42L46.12 22.38Z" fill="#236ead"/>
+</svg>

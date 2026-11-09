@@ -44,6 +44,7 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "cam.op.engrave", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.face", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.helix", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "cam.op.plasma", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.pocket", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.slot", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "cam.op.tap", scopes: &[], bindings: &[], audit: Audit::VerifiedNoOp },
@@ -403,9 +404,9 @@ crate::dialog_descriptor::dialog_descriptors! {
             /// Pick what the agent chat's next message is about (#2286): elements, features and bodies.
             /// OK hands the picks to the chat (`agent_chat::pick_done`); nothing is run.
             ChatContext,
-            Milling(crate::dialogs_milling::Milling),
+            Milling(Box<crate::dialogs_milling::Milling>),
             /// A CAM setup: part zero and axes picked on the model, stock (`dialogs_cam_setup`).
-            CamSetup(crate::dialogs_cam_setup::CamSetupForm),
+            CamSetup(Box<crate::dialogs_cam_setup::CamSetupForm>),
             /// Joints and components (`dialogs_assembly`).
             Assembly(crate::dialogs_assembly::Asm),
             /// Sheet metal (`dialogs_sheet`).
@@ -897,12 +898,12 @@ impl Dialog {
         let mut d = match id {
             // Contours and pockets take picked contours (edges, planar faces, sketch profiles) and a
             // start point instead of the rectangle.
-            "cam.job.create" => Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::new(app)), crate::dialogs_milling::inputs()),
-            "cam.setup" => Dialog::new(Kind::CamSetup(crate::dialogs_cam_setup::CamSetupForm::new(app)), crate::dialogs_cam_setup::inputs()),
+            "cam.job.create" => Dialog::new(Kind::Milling(Box::new(crate::dialogs_milling::Milling::new(app))), crate::dialogs_milling::inputs()),
+            "cam.setup" => Dialog::new(Kind::CamSetup(Box::new(crate::dialogs_cam_setup::CamSetupForm::new(app))), crate::dialogs_cam_setup::inputs()),
             // The Machining tab's operation buttons open the same guided form with their operation chosen.
             "cam.op.contour" | "cam.op.pocket" | "cam.op.drill" | "cam.op.face" | "cam.op.slot" | "cam.op.chamfer" | "cam.op.engrave"
-            | "cam.op.helix" | "cam.op.thread" | "cam.op.tap" => {
-                Dialog::new(Kind::Milling(crate::dialogs_milling::Milling::for_operation(app, id)), crate::dialogs_milling::inputs())
+            | "cam.op.helix" | "cam.op.thread" | "cam.op.tap" | "cam.op.plasma" => {
+                Dialog::new(Kind::Milling(Box::new(crate::dialogs_milling::Milling::for_operation(app, id))), crate::dialogs_milling::inputs())
             }
             "sketch.create" => Dialog::new(Kind::Sketch, vec![SelInput::new("Plane", PLANES | PLANAR_FACES, false)]),
             "sketch.intersect" => {

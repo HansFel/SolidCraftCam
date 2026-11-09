@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::machine::MachineKind;
 use crate::{CamError, Result, invalid};
 
 /// Most lines in one template block.
@@ -138,6 +139,9 @@ pub struct Post {
     pub tapping: Tapping,
     #[serde(default)]
     pub language: Language,
+    /// The kind of machine the post writes for: a post serves machines of its kind only.
+    #[serde(default, skip_serializing_if = "MachineKind::is_mill")]
+    pub machine: MachineKind,
 }
 
 fn yes() -> bool {
@@ -181,6 +185,7 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::G33_1,
             language: Language::GCode,
+            machine: MachineKind::Mill,
         }
     }
 
@@ -197,6 +202,7 @@ impl Post {
         post.coolant_on = Vec::new();
         post.coolant_off = Vec::new();
         post.tapping = Tapping::None;
+        post.machine = MachineKind::Plasma;
         post
     }
 
@@ -243,6 +249,7 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::None,
             language: Language::GCode,
+            machine: MachineKind::Mill,
         }
     }
 
@@ -303,6 +310,7 @@ impl Post {
             canned_cycles: true,
             tapping: Tapping::G84Rigid,
             language: Language::GCode,
+            machine: MachineKind::Mill,
         }
     }
 
@@ -335,6 +343,7 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::G331,
             language: Language::GCode,
+            machine: MachineKind::Mill,
         }
     }
 
@@ -368,6 +377,7 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::None,
             language: Language::Klartext,
+            machine: MachineKind::Mill,
         }
     }
 

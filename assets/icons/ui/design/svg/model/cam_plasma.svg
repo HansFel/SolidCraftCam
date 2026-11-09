@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Plasma cut</title>
+  <path d="M5.28 35.6L32 51.03L32 53.92L5.28 38.49Z" fill="#b8c3cf"/>
+  <path d="M58.72 35.6L32 51.03L32 53.92L58.72 38.49Z" fill="#8e9faf"/>
+  <path d="M32 20.17L58.72 35.6L32 51.03L5.28 35.6Z" fill="#e2e8ef"/>
+  <path d="M32 20.17L58.72 35.6L58.72 38.49L32 53.92L5.28 38.49L5.28 35.6Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5.28 35.6L32 51.03L58.72 35.6" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 51.03L32 53.92" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M41.21 37.7L40.14 38.58L38.83 39.34L37.31 39.95L35.64 40.4L33.85 40.68L32 40.77L30.15 40.68L28.36 40.4L26.69 39.95L25.17 39.34L23.86 38.58L22.79 37.7L22.01 36.73L21.53 35.7L21.37 34.63L21.53 33.57L22.01 32.54L22.79 31.57L23.86 30.7L25.17 29.93L26.69 29.32L28.36 28.88L30.15 28.59L32 28.5L33.85 28.59L35.64 28.88L37.31 29.32L38.83 29.93L40.14 30.7L41.21 31.57" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M39.01 27.07L36.61 20.57L36.61 10.07L45.81 10.07L45.81 20.57L43.41 27.07Z" fill="#b8c3cf"/>
+  <path d="M42.41 27.07L43.41 27.07L45.81 20.57L45.81 10.07L42.81 10.07L42.81 20.57Z" fill="#8e9faf"/>
+  <path d="M39.01 27.07L36.61 20.57L36.61 10.07L45.81 10.07L45.81 20.57L43.41 27.07Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M41.21 27.67L41.21 30.97" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

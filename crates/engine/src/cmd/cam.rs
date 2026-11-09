@@ -6,14 +6,14 @@
 use serde_json::{Value, json};
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
-    CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, Move, OpenContourParams, OpenPath, OpenSide,
+    CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move, OpenContourParams, OpenPath, OpenSide,
     Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_open, contour_with_tabs,
     drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
-    CamSetup, CamSide, CamStock, CamTabs, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
-    WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params, default_slot_params,
+    CamSetup, CamSide, CamSlowHoles, CamStock, CamTabs, CamTorch, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
+    SetupOperationType, WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params, default_slot_params,
 };
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
@@ -27,7 +27,7 @@ use crate::params::{bad, bool_, expr, num, req_expr, str_, string_list, vec2, ve
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new("cam.tool.define", "Define Tool", crate::checked!("cam.tool.define", tool_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ToolResult>).icon("hole").params(
+    CommandSpec::new("cam.tool.define", "Define Tool", crate::checked!("cam.tool.define", tool_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ToolParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ToolResult>).icon("cam_tool").params(
         "number (1…9999); kind?: flat_endmill|ball_endmill|bull_nose|chamfer|v_bit|t_slot|thread_mill|drill|centre_drill|reamer|tap|plasma \
          (default flat_endmill); diameter (mm); flute_length (mm); description?; flutes?; spindle_rpm?; feed?; plunge_feed?; \
          stepdown?; stepover?; cutting?: {material: {vc m/min, fz mm/tooth (drill: per rev), ap × D, ae × D}}; \
@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.machine.define", "Define Machine", crate::checked!("cam.machine.define", machine_cmd))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::MachineParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::MachineResult>)
-        .icon("settings")
+        .icon("cam_machine")
         .params(
             "name; x, y, z: [lowest, highest] travel (mm, X− X+ …); a?: {kind: limited, min, max} (degrees) | {kind: endless}; \
              spindle_min, spindle_max (rev/min); max_feed (mm/min); post?: the post its programs are written with              (built-in or saved on the design). Adds or replaces the design's machine of that name.",
@@ -65,7 +65,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>)
         .icon("delete")
         .params("name (a saved post no machine or setup names)"),
-    CommandSpec::new("cam.setup", "CAM Setup", crate::checked!("cam.setup", setup_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SetupParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SetupResult>).icon("settings").params(
+    CommandSpec::new("cam.setup", "CAM Setup", crate::checked!("cam.setup", setup_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::SetupParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::SetupResult>).icon("cam_setup").params(
         "name?: Setup 1, Setup 2, … when omitted; rename?: a new name for the existing setup `name` (steps and settings stay); work_offset?: 1…6 (G54…G59, default 1); \
          tool_axis?: [x,y,z] (programmed +Z, default [0,0,1]); \
          x_axis?: [x,y,z] (programmed +X, square to the tool axis; omitted, derived); \
@@ -77,9 +77,9 @@ pub static COMMANDS: &[CommandSpec] = &[
          {x,y,z: negative|center|positive} in the work frame; stock_spec?: {kind: relative_box|box|cylinder|…}; \
          model_bodies?: [names]; fixtures?: [names] (bodies holding the part: tools and holders keep 0.5 mm clear of their boxes, \
          posting refuses a step that comes nearer); zero_follows?: bool (a box-point part zero follows later model edits); stock?: {min:[x,y,z], max:[x,y,z]}; \
-         machine?: a machine's name, a machine as cam.machine.define takes it (copied into the design), or null; machine_post?: the post that machine names, in full as cam.post.define returns it (copied too); delete?: bool",
+         machine?: a machine's name, a machine as cam.machine.define takes it (copied into the design), or null; machine_post?: the post that machine names, in full as cam.post.define returns it (copied too);          part?: the part the setup makes (its setups are that part's steps, on any machines), or null;          operation_type?: milling|plasma|turning|… (a setup runs on a machine of its kind only, and takes only its kind of steps);          post?: a post of its own for that kind of machine, or null for its machine's; post_copy?: that post in full (copied too); delete?: bool",
     ),
-    CommandSpec::new("cam.op.contour", "2D Contour", crate::checked!("cam.op.contour", contour_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+    CommandSpec::new("cam.op.contour", "2D Contour", crate::checked!("cam.op.contour", contour_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_contour").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?: as solid.extrude; faces?: [{body, name, at?, contour_at?}]; \
          edges?: [{body, at}] (each the contour of a face square to the tool axis through that edge point); \
          chain?: bool (the picked edges themselves, joined end to end into closed contours seen along the tool axis; \
@@ -94,15 +94,24 @@ pub static COMMANDS: &[CommandSpec] = &[
          clearance?; retract?; top?; bottom (required unless cut given); stepdown?; \
          feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
-    CommandSpec::new("cam.op.pocket", "2D Pocket", crate::checked!("cam.op.pocket", pocket_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("hole").params(
+    CommandSpec::new("cam.op.plasma", "Plasma Cut", crate::checked!("cam.op.plasma", plasma_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::PlasmaCutParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_plasma").params(
+        "setup (a plasma setup); name; the outline as cam.op.contour takes it: sketch?, profiles?, faces?, edges?, chain?, geometry?, outer?, \
+         holes?, regions?; side?: auto|outside|inside|on (the kerf's side, default auto); start?; lead_in?, lead_out?; overlap?; \
+         open_side?, reverse?; tolerance?; the torch (each defaults to the setup's plasma table, else 1.5 mm, 3.8 mm, 1.5 mm, 0.5 s, \
+         2000 mm/min): kerf?, pierce_height?, cut_height?, pierce_delay? (s), feed?; slow_holes?: {diameter, share} small holes \
+         cut at a share of the feed, or null; the sheet: top? (default 0), bottom (its underside); retract? (travel height, default \
+         5 mm); clearance? (default 15 mm); plunge_feed? (down from the pierce height, default 500 mm/min). No tool: the cut \
+         needs none.",
+    ),
+    CommandSpec::new("cam.op.pocket", "2D Pocket", crate::checked!("cam.op.pocket", pocket_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_pocket").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?; faces?; edges?; or outer/regions; holes?; \
          stepover? (default half the tool diameter); climb?; stock_to_leave? (walls); floor_stock? (floor); tolerance?; ramp_angle?: deg; \
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
-    CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+    CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_slot").params(
         "setup; name; tool (number); edges?: [{body, at}] the picked edges, joined end to end into chains seen along the tool          axis (open or closed); or sketch?/profiles?, faces? or outer/regions: their contours, each a closed path;          the tool centre runs on each path. width? (default the tool diameter: one pass; wider adds side passes);          stepover? (side passes, default half the tool diameter); stock_to_leave? (both walls); tolerance?; ramp_angle?: deg          (default 0: plunge; an open path ramps back and forth); clearance?; retract?; top?; bottom; stepdown?; feed?;          plunge_feed?; spindle_rpm?; coolant?",
     ),
-    CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+    CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_face").params(
         "setup; name; tool (number); faces?/edges?: a picked face, whose outline's box is faced (the base faces the \
          whole footprint); outer?: [[x,y],…] a rectangle in work XY (default: the setup's stock outline); \
          stepover? (default 70 % of the tool diameter); overrun?: how far the tool's edge runs past the stock (default 2 mm); \
@@ -111,27 +120,27 @@ pub static COMMANDS: &[CommandSpec] = &[
          diameter); clearance?/retract? (raised above the start when lower); feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.remove", "Remove CAM Operation", crate::checked!("cam.op.remove", delete_op)).contract(&crate::schema::TypedContract::<crate::schema::cam::RemoveParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::DeleteResult>).icon("delete").params("setup; name"),
-    CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("hole")
+    CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("cam_drill")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
-    CommandSpec::new("cam.op.tap", "Tap", crate::checked!("cam.op.tap", tap_cmd)).icon("hole")
+    CommandSpec::new("cam.op.tap", "Tap", crate::checked!("cam.op.tap", tap_cmd)).icon("cam_tap")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool: a tap (kind tap, with its pitch); points?/holes? as for cam.op.drill; bottom: the thread's depth; spindle_rpm (or the tap's): the feed is one pitch a turn; clearance?; retract?; top?; coolant?. Written as the post's rigid tapping cycle (G84, G33.1, G331); a post without one refuses the program."),
-    CommandSpec::new("cam.op.helix", "Helical Bore", crate::checked!("cam.op.helix", helix_cmd)).icon("hole")
+    CommandSpec::new("cam.op.helix", "Helical Bore", crate::checked!("cam.op.helix", helix_cmd)).icon("cam_helix")
         .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool: an end mill; points?/holes? as for cam.op.drill; diameter: the hole's, above the tool's and at most twice it; bottom; stepdown?: depth per turn; climb? (default true); clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
-    CommandSpec::new("cam.op.thread", "Thread Mill", crate::checked!("cam.op.thread", thread_cmd)).icon("hole")
+    CommandSpec::new("cam.op.thread", "Thread Mill", crate::checked!("cam.op.thread", thread_cmd)).icon("cam_thread")
         .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
         .params("setup; name; tool: a thread mill; points?/holes? as for cam.op.drill; diameter: the thread's major diameter; pitch? (default the tool's); internal? (default true: in a hole, the core hole drilled before); left_hand?; bottom: the thread's depth; top?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?. Rises from the bottom one pitch a turn."),
-    CommandSpec::new("cam.op.chamfer", "Chamfer", crate::checked!("cam.op.chamfer", chamfer_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+    CommandSpec::new("cam.op.chamfer", "Chamfer", crate::checked!("cam.op.chamfer", chamfer_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_chamfer").params(
         "setup; name; tool: a chamfer or engraving cutter; edges?: [{body, at}] the edges to chamfer (closed chains round, open ones along their side), or faces?/sketch?/outer: their contours; \
          width: the chamfer's width on the face; tip_offset? (default 0.5 mm: how far the tip runs below the chamfer); side? auto|outside|inside; top?: the edge's height (default 0); tolerance?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
-    CommandSpec::new("cam.op.engrave", "Engrave", crate::checked!("cam.op.engrave", engrave_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cut").params(
+    CommandSpec::new("cam.op.engrave", "Engrave", crate::checked!("cam.op.engrave", engrave_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_engrave").params(
         "setup; name; tool: an engraving cutter (or a small end mill); edges?: [{body, at}], or sketch?/profiles? (sketch text and curves), faces?: the curves the tip follows; \
          bottom: the engraving's depth; stepdown?; top?; tolerance?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
@@ -166,7 +175,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.tool.speeds", "Tool Cutting Speeds", crate::checked!("cam.tool.speeds", speeds_cmd))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::SpeedsParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::SpeedsResult>)
-        .icon("hole")
+        .icon("cam_tool")
         .noundo()
         .params(
             "tool; material?: group (aluminium, steel, stainless, brass, plastic, wood or the tool's own); setup?: takes its material and \
@@ -354,6 +363,9 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|n| n as u32)
         .ok_or_else(|| bad(cmd, "`number` must be an integer 1…9999"))?;
     let kind_key = str_(p, "kind").unwrap_or("flat_endmill");
+    if kind_key == ToolKind::Plasma.key() {
+        return Err(bad(cmd, "a plasma torch is no tool: make a plasma setup on a plasma table and add a plasma cut (cam.op.plasma)"));
+    }
     let kind = ToolKind::from_key(kind_key).ok_or_else(|| {
         let known: Vec<&str> = ToolKind::ALL.iter().map(|k| k.key()).collect();
         bad(cmd, format!("unknown tool kind `{kind_key}` ({})", known.join(", ")))
@@ -406,9 +418,6 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     tool.shank_diameter = size("shank_diameter", old.as_ref().and_then(|t| t.shank_diameter))?;
     tool.overall_length = size("overall_length", old.as_ref().and_then(|t| t.overall_length))?;
     tool.stick_out = size("stick_out", old.as_ref().and_then(|t| t.stick_out))?;
-    tool.pierce_height = size("pierce_height", old.as_ref().and_then(|t| t.pierce_height))?;
-    tool.cut_height = size("cut_height", old.as_ref().and_then(|t| t.cut_height))?;
-    tool.pierce_delay = size("pierce_delay", old.as_ref().and_then(|t| t.pierce_delay))?;
     tool.holder = match p.get("holder") {
         None => s.doc.cam.tool(number).and_then(|t| t.holder.clone()),
         Some(Value::Null) => None,
@@ -584,7 +593,11 @@ fn tool_remove(s: &mut Session, p: &Value) -> Result<Value> {
 fn put_machine(s: &mut Session, cmd: &str, machine: Machine) -> Result<()> {
     machine.validate().map_err(|e| bad(cmd, e.to_string()))?;
     if let Some(post) = &machine.post {
-        resolve_post(&s.doc.cam, post).map_err(|e| bad(cmd, format!("machine `{}`: {e}", machine.name)))?;
+        let post = resolve_post(&s.doc.cam, post).map_err(|e| bad(cmd, format!("machine `{}`: {e}", machine.name)))?;
+        post_fits(&post, machine.kind).map_err(|e| bad(cmd, format!("machine `{}`: {e}", machine.name)))?;
+    }
+    if let Some(setup) = s.doc.cam.setups.iter().find(|x| x.machine.as_deref() == Some(machine.name.as_str()) && !kind_fits(x, machine.kind)) {
+        return Err(bad(cmd, format!("setup `{}` is a {} setup and runs on `{}`: it cannot become a {} machine", setup.name, setup.operation_type.key(), machine.name, machine.kind.key())));
     }
     let doc = s.doc_mut();
     let full = doc.cam.machines.len() >= MAX_MACHINES;
@@ -853,6 +866,13 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         existing.as_ref().map(|e| e.model_bodies.clone()).unwrap_or_default()
     };
     setup.operation_type = parse_value(cmd, p, "operation_type", existing.as_ref().map(|e| e.operation_type).unwrap_or_default())?;
+    setup.part = match p.get("part") {
+        Some(Value::String(n)) if n.trim().is_empty() => None,
+        Some(Value::String(n)) => Some(n.trim().to_string()),
+        Some(Value::Null) => None,
+        Some(_) => return Err(bad(cmd, "`part` must be the part's name or null")),
+        None => existing.as_ref().and_then(|e| e.part.clone()),
+    };
     setup.post_opts = parse_value(cmd, p, "post_opts", existing.as_ref().map(|e| e.post_opts.clone()).unwrap_or_default())?;
     // A machine given in full is copied into the design with the setup.
     let new_machine = match p.get("machine") {
@@ -971,6 +991,36 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Null) | None => None,
         Some(_) => return Err(bad(cmd, "`machine_post` must be a post or null")),
     };
+    // The setup's own post, given in full, comes into the design too.
+    let post_copy = match p.get("post_copy") {
+        Some(v @ Value::Object(_)) => Some(serde_json::from_value::<Post>(v.clone()).map_err(|e| bad(cmd, format!("`post_copy`: {e}")))?),
+        Some(Value::Null) | None => None,
+        Some(_) => return Err(bad(cmd, "`post_copy` must be a post or null")),
+    };
+    // The setup runs on a machine of its kind, and its programs are written by a post for it.
+    let machine = new_machine.clone().or_else(|| setup.machine.as_deref().and_then(|n| s.doc.cam.machine(n)).cloned());
+    if let Some(machine) = &machine
+        && !kind_fits(&setup, machine.kind)
+    {
+        return Err(bad(
+            cmd,
+            format!("machine `{}` is a {} machine; a {} setup runs on {}", machine.name, machine.kind.key(), setup.operation_type.key(), match setup.operation_type.machine_kind() {
+                Some(kind) => format!("a {} machine", kind.key()),
+                None => "no machine yet".into(),
+            }),
+        ));
+    }
+    let post_name = setup.post.clone().or_else(|| machine.as_ref().and_then(|m| m.post.clone()));
+    if let (Some(name), Some(kind)) = (post_name, setup.operation_type.machine_kind()) {
+        let post = match (&machine_post, &post_copy) {
+            (Some(post), _) | (_, Some(post)) if post.name == name => post.clone(),
+            _ => resolve_post(&s.doc.cam, &name).map_err(|e| bad(cmd, e))?,
+        };
+        post_fits(&post, kind).map_err(|e| bad(cmd, e))?;
+    }
+    if let Some(post) = post_copy.filter(|c| setup.post.as_ref() == Some(&c.name)) {
+        put_post(s, cmd, post)?;
+    }
     if let Some(post) = machine_post {
         put_post(s, cmd, post)?;
     }
@@ -1072,65 +1122,7 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
     let spindle_rpm = num(p, "spindle_rpm").or(tool.spindle_rpm);
     let coolant = bool_(p, "coolant").unwrap_or(false);
     let op = if is_contour {
-        let mut params = default_contour_params();
-        if let Some(side) = str_(p, "side") {
-            params.side = parse_side(cmd, side)?;
-        }
-        if let Some(c) = bool_(p, "climb") {
-            params.climb = c;
-        }
-        if let Some(v) = expr(p, "stock_to_leave") {
-            params.stock_to_leave = v;
-        }
-        if let Some(v) = expr(p, "floor_stock") {
-            params.floor_stock = v;
-        }
-        if let Some(v) = expr(p, "tolerance") {
-            params.tolerance = v;
-        }
-        if let Some(v) = expr(p, "ramp_angle") {
-            params.ramp_angle = v;
-        }
-        if let Some(v) = p.get("start") {
-            let v = vec3(v).ok_or_else(|| bad(cmd, "`start` must be [x, y, z]"))?;
-            params.start = Some([v.x, v.y, v.z]);
-        }
-        if let Some(v) = p.get("lead_in") {
-            params.lead_in = lead_param(cmd, v, "lead_in")?;
-        }
-        if let Some(v) = p.get("lead_out") {
-            params.lead_out = lead_param(cmd, v, "lead_out")?;
-        }
-        for (key, slot) in [("overlap", &mut params.overlap), ("extend_start", &mut params.extend_start), ("extend_end", &mut params.extend_end)] {
-            if let Some(v) = expr(p, key) {
-                *slot = v;
-            }
-        }
-        if let Some(side) = str_(p, "open_side") {
-            params.open_side = match side {
-                "left" => CamOpenSide::Left,
-                "right" => CamOpenSide::Right,
-                "on" => CamOpenSide::On,
-                _ => return Err(bad(cmd, "`open_side` must be left, right or on")),
-            };
-        }
-        if let Some(r) = bool_(p, "reverse") {
-            params.reverse = r;
-        }
-        match p.get("tabs") {
-            None => {}
-            Some(Value::Null) => params.tabs = None,
-            Some(v) => params.tabs = Some(Box::new(tabs_param(cmd, v)?)),
-        }
-        match p.get("slow_holes") {
-            None => {}
-            Some(Value::Null) => params.slow_holes = None,
-            Some(v) => {
-                let diameter = expr(v, "diameter").ok_or_else(|| bad(cmd, "`slow_holes` needs `diameter`"))?;
-                let share = num(v, "share").ok_or_else(|| bad(cmd, "`slow_holes` needs `share`, the share of the feed"))?;
-                params.slow_holes = Some(Box::new(solidcraft_doc::cam::CamSlowHoles { diameter, share }));
-            }
-        }
+        let params = contour_params(cmd, p)?;
         CamOperation::Contour { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     } else {
         let stepover = match expr(p, "stepover") {
@@ -1161,12 +1153,122 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
     store_op(s, cmd, &setup_name, op)
 }
 
+/// A contour's or plasma cut's outline settings: side, climb, allowances, leads, start, open
+/// chains and tabs, each as given, else the default.
+fn contour_params(cmd: &str, p: &Value) -> Result<CamContourParams> {
+    let mut params = default_contour_params();
+    if let Some(side) = str_(p, "side") {
+        params.side = parse_side(cmd, side)?;
+    }
+    if let Some(c) = bool_(p, "climb") {
+        params.climb = c;
+    }
+    if let Some(v) = expr(p, "stock_to_leave") {
+        params.stock_to_leave = v;
+    }
+    if let Some(v) = expr(p, "floor_stock") {
+        params.floor_stock = v;
+    }
+    if let Some(v) = expr(p, "tolerance") {
+        params.tolerance = v;
+    }
+    if let Some(v) = expr(p, "ramp_angle") {
+        params.ramp_angle = v;
+    }
+    if let Some(v) = p.get("start") {
+        let v = vec3(v).ok_or_else(|| bad(cmd, "`start` must be [x, y, z]"))?;
+        params.start = Some([v.x, v.y, v.z]);
+    }
+    if let Some(v) = p.get("lead_in") {
+        params.lead_in = lead_param(cmd, v, "lead_in")?;
+    }
+    if let Some(v) = p.get("lead_out") {
+        params.lead_out = lead_param(cmd, v, "lead_out")?;
+    }
+    for (key, slot) in [("overlap", &mut params.overlap), ("extend_start", &mut params.extend_start), ("extend_end", &mut params.extend_end)] {
+        if let Some(v) = expr(p, key) {
+            *slot = v;
+        }
+    }
+    if let Some(side) = str_(p, "open_side") {
+        params.open_side = match side {
+            "left" => CamOpenSide::Left,
+            "right" => CamOpenSide::Right,
+            "on" => CamOpenSide::On,
+            _ => return Err(bad(cmd, "`open_side` must be left, right or on")),
+        };
+    }
+    if let Some(r) = bool_(p, "reverse") {
+        params.reverse = r;
+    }
+    match p.get("tabs") {
+        None => {}
+        Some(Value::Null) => params.tabs = None,
+        Some(v) => params.tabs = Some(Box::new(tabs_param(cmd, v)?)),
+    }
+    Ok(params)
+}
+
+/// A plasma cut: the outline as a contour takes it, the torch's data (else the setup's plasma
+/// table's), the sheet's top and bottom. No tool.
+pub(super) fn plasma_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.op.plasma";
+    let setup_name = str_(p, "setup").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "`setup` is required"))?.to_string();
+    let name = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).ok_or_else(|| bad(cmd, "`name` is required"))?.to_string();
+    let setup = s.doc.cam.setup(&setup_name).ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
+    if setup.operation_type != SetupOperationType::Plasma {
+        return Err(bad(cmd, format!("setup `{setup_name}` is a {} setup: plasma cuts go in a plasma setup", setup.operation_type.key())));
+    }
+    if p.get("tool").is_some() {
+        return Err(bad(cmd, "a plasma cut needs no tool: give the torch's kerf and heights instead"));
+    }
+    let table = s.doc.cam.setup_machine(setup).and_then(|m| m.torch).unwrap_or_default();
+    let mm = |key: &str, fallback: f64| expr(p, key).unwrap_or_else(|| Expr::new(format!("{fallback} mm")));
+    let pierce_delay = match p.get("pierce_delay") {
+        None => table.pierce_delay,
+        Some(v) => v.as_f64().ok_or_else(|| bad(cmd, "`pierce_delay` is seconds"))?,
+    };
+    let slow_holes = match p.get("slow_holes") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let diameter = expr(v, "diameter").ok_or_else(|| bad(cmd, "`slow_holes` needs `diameter`"))?;
+            let share = num(v, "share").ok_or_else(|| bad(cmd, "`slow_holes` needs `share`, the share of the feed"))?;
+            Some(CamSlowHoles { diameter, share })
+        }
+    };
+    let torch = CamTorch {
+        kerf: mm("kerf", table.kerf),
+        pierce_height: mm("pierce_height", table.pierce_height),
+        cut_height: mm("cut_height", table.cut_height),
+        pierce_delay,
+        slow_holes,
+    };
+    let geometry = geometry_param(s, cmd, p)?;
+    let mut params = contour_params(cmd, p)?;
+    if params.tabs.is_some() {
+        return Err(bad(cmd, "a plasma cut leaves no holding tabs"));
+    }
+    params.climb = true;
+    let bottom = req_expr(cmd, p, "bottom")?;
+    let mut cut = default_cut(bottom, Expr::new("1000 mm"));
+    cut.top = mm("top", 0.0);
+    cut.retract = mm("retract", 5.0);
+    cut.clearance = mm("clearance", 15.0);
+    cut.feed = mm("feed", table.feed);
+    cut.plunge_feed = mm("plunge_feed", 500.0);
+    store_op(s, cmd, &setup_name, CamOperation::Plasma { name, geometry, params, torch: Box::new(torch), cut })
+}
+
 /// Checks `op`, makes its toolpath once, and puts it in setup `setup_name` in place of the
 /// step of its name, else at the end.
 fn store_op(s: &mut Session, cmd: &str, setup_name: &str, op: CamOperation) -> Result<Value> {
     let name = op.name().to_string();
     op.validate().map_err(|e| bad(cmd, e.to_string()))?;
     let setup = s.doc.cam.setup(setup_name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
+    if !setup.operation_type.takes(&op) {
+        let what = if op.uses_tool() { "milling and drilling go in a milling setup" } else { "plasma cuts go in a plasma setup" };
+        return Err(bad(cmd, format!("setup `{setup_name}` is a {} setup: {what}", setup.operation_type.key())));
+    }
     build_path(s, &setup, &op).map_err(|e| bad(cmd, e))?;
     let doc = s.doc_mut();
     let setup = doc.cam.setup_mut(setup_name).ok_or_else(|| bad(cmd, format!("no setup `{setup_name}` (cam.setup first)")))?;
@@ -1498,9 +1600,13 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
     if setup.operations.iter().all(|op| setup.skipped.iter().any(|n| n == op.name())) {
         return Err(bad(cmd, format!("setup `{setup_name}` has no operations to post")));
     }
-    let post_name = str_(p, "post").map(str::to_string).or_else(|| chosen_post(&s.doc.cam, &setup)).unwrap_or_else(|| "rs274".into());
+    let post_name =
+        str_(p, "post").map(str::to_string).or_else(|| chosen_post(&s.doc.cam, &setup)).unwrap_or_else(|| default_post(setup.operation_type).into());
     let post = resolve_post(&s.doc.cam, &post_name).map_err(|e| bad(cmd, e))?;
     post.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    if let Some(kind) = setup.operation_type.machine_kind() {
+        post_fits(&post, kind).map_err(|e| bad(cmd, format!("setup `{setup_name}`: {e}")))?;
+    }
     let program_name = str_(p, "program").unwrap_or(setup.name.as_str()).to_string();
     let mut program = Program { name: program_name, operations: Vec::new(), work_offset: Some(setup.work_offset) };
     let mut move_count = 0usize;
@@ -1516,10 +1622,12 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
     };
     let mut reach: Option<([f64; 3], [f64; 3])> = None;
     for op in setup.operations.iter().filter(|op| !setup.skipped.iter().any(|n| n == op.name())) {
-        let tool = s.doc.cam.tool(op.tool()).cloned().ok_or_else(|| bad(cmd, format!("operation `{}` needs tool {}", op.name(), op.tool())))?;
+        let tool = op_tool(s, op).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?;
         let path = build_path(s, &setup, op).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?;
         let live = live_setup(s, &setup).map_err(|e| bad(cmd, e))?;
-        if let Some(hit) = super::cam_collide::first_collision(s, &live, &tool, &path).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))? {
+        // A torch has no shank or holder, and cuts through the sheet it stands over.
+        if op.uses_tool()
+            && let Some(hit) = super::cam_collide::first_collision(s, &live, &tool, &path).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))? {
             return Err(bad(cmd, format!("operation `{}`: {}", op.name(), super::cam_collide::describe(&hit))));
         }
         move_count = move_count.saturating_add(path.moves.len());
@@ -1590,6 +1698,28 @@ fn time_model(machine: Option<&Machine>) -> TimeModel {
 /// else its machine's.
 pub(super) fn chosen_post(cam: &CamSettings, setup: &CamSetup) -> Option<String> {
     setup.post.clone().or_else(|| setup.machine.as_deref().and_then(|m| cam.machine(m)).and_then(|m| m.post.clone()))
+}
+
+/// Whether a setup runs on a machine of `kind`: a milling setup on a mill, a plasma setup on a
+/// plasma table, and so on for every kind of setup.
+pub(super) fn kind_fits(setup: &CamSetup, kind: MachineKind) -> bool {
+    setup.operation_type.machine_kind() == Some(kind)
+}
+
+/// Whether `post` writes programs for machines of `kind`.
+pub(super) fn post_fits(post: &Post, kind: MachineKind) -> std::result::Result<(), String> {
+    if post.machine == kind {
+        return Ok(());
+    }
+    Err(format!("post `{}` writes for a {} machine, not a {} machine", post.name, post.machine.key(), kind.key()))
+}
+
+/// The built-in post a setup of this type is written with when nothing names one.
+pub(super) fn default_post(kind: SetupOperationType) -> &'static str {
+    match kind {
+        SetupOperationType::Plasma => "plasma",
+        _ => "rs274",
+    }
 }
 
 fn resolve_post(cam: &CamSettings, name: &str) -> std::result::Result<Post, String> {
@@ -2532,7 +2662,7 @@ impl Session {
         .map_err(|e| e.to_string())?;
         let mut operations = Vec::new();
         for op in found.operations.iter().filter(|op| !found.skipped.iter().any(|n| n == op.name())) {
-            let tool = self.doc.cam.tool(op.tool()).ok_or_else(|| format!("operation `{}` needs tool {}", op.name(), op.tool()))?;
+            let tool = &op_tool(self, op).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
             let mut path = build_path(self, found, op).map_err(|e| format!("operation `{}`: {e}", op.name()))?;
             // A torch cuts above the sheet but through it: its cuts go through the stock.
             if tool.kind == ToolKind::Plasma {
@@ -2876,13 +3006,14 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             return Err("the floor stock leaves nothing to cut between top and bottom".into());
         }
     }
+    if let CamOperation::Plasma { .. } = op {
+        let torch = op_tool(s, op)?;
+        return plasma_path(s, setup, op, &torch, cut);
+    }
     let tool = s.doc.cam.tool(op.tool()).ok_or_else(|| format!("there is no tool {}", op.tool()))?;
     // A thread mill reaches below its short cutting edge; its own check knows how far.
     if !matches!(op, CamOperation::ThreadMill { .. }) && cut.heights.top - cut.heights.bottom > tool.flute_length {
         return Err("cutting depth exceeds the tool's flute length".into());
-    }
-    if tool.kind == ToolKind::Plasma {
-        return plasma_path(s, setup, op, tool, cut);
     }
     if let CamOperation::Drill { geometry: CamGeometry::Points { points }, dwell, .. } = op {
         let points: Vec<_> = points.iter().map(|p| Vec2::new(p[0], p[1])).collect();
@@ -2977,7 +3108,28 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         CamOperation::Drill { .. } => Err("drilling needs hole centres".into()),
         CamOperation::Face { .. } => Err("facing takes the stock outline or a rectangle".into()),
         CamOperation::Slot { .. } => Err("a slot takes edges or contours".into()),
+        CamOperation::Plasma { .. } => Err("a plasma cut is made by its torch".into()),
     }
+}
+
+/// The tool a step cuts with: its tool from the design's list, or for a plasma cut the torch its
+/// own data make (numbered 1; a plasma post changes no tools).
+pub(super) fn op_tool(s: &Session, op: &CamOperation) -> std::result::Result<Tool, String> {
+    let CamOperation::Plasma { torch, cut, .. } = op else {
+        return s.doc.cam.tool(op.tool()).cloned().ok_or_else(|| format!("there is no tool {}", op.tool()));
+    };
+    let thickness = eval_len(s, &cut.top, "top")? - eval_len(s, &cut.bottom, "bottom")?;
+    if !(thickness > 0.0) {
+        return Err("the sheet's bottom must lie below its top".into());
+    }
+    // Its length only has to reach through the sheet, which the simulation cuts a little below.
+    let mut tool = Tool::new(1, ToolKind::Plasma, eval_len(s, &torch.kerf, "kerf")?, thickness + 10.0);
+    tool.description = "plasma torch".into();
+    tool.pierce_height = Some(eval_len(s, &torch.pierce_height, "pierce_height")?);
+    tool.cut_height = Some(eval_len(s, &torch.cut_height, "cut_height")?);
+    tool.pierce_delay = Some(torch.pierce_delay);
+    tool.validate().map_err(|e| e.to_string())?;
+    Ok(tool)
 }
 
 /// The hole centres of an operation on points, in work XY.
@@ -3050,8 +3202,8 @@ fn contour_path(
 /// tabs), then turned into torch cuts ([`solidcraft_cam::plasma`]): pierced at the torch's
 /// heights over the step's top, the holes first, small holes slower when the step says so.
 fn plasma_path(s: &Session, setup: &CamSetup, op: &CamOperation, tool: &Tool, mut cut: Cut) -> std::result::Result<solidcraft_cam::Toolpath, String> {
-    let CamOperation::Contour { geometry, params, .. } = op else {
-        return Err("a plasma torch cuts contours only: make the step a contour".into());
+    let CamOperation::Plasma { geometry, params, torch, .. } = op else {
+        return Err("only a plasma cut is made by a torch".into());
     };
     if params.tabs.is_some() {
         return Err("a plasma cut leaves no holding tabs: take them off the step".into());
@@ -3061,7 +3213,7 @@ fn plasma_path(s: &Session, setup: &CamSetup, op: &CamOperation, tool: &Tool, mu
     params.floor_stock = Expr::new("0 mm");
     cut.stepdown = (cut.heights.top - cut.heights.bottom).max(1e-3);
     let once = contour_path(s, setup, geometry, &params, tool, &cut)?;
-    let slow_holes = match &params.slow_holes {
+    let slow_holes = match &torch.slow_holes {
         Some(h) => Some((eval_len(s, &h.diameter, "slow_holes.diameter")?, h.share)),
         None => None,
     };
@@ -3162,7 +3314,10 @@ fn setup_json(setup: &CamSetup) -> Value {
         "zero_follows": setup.zero_follows,
         "material": setup.material,
         "max_rpm": setup.max_rpm,
+        "part": setup.part,
+        "operation_type": setup.operation_type,
         "machine": setup.machine,
+        "post": setup.post,
         "skipped": setup.skipped,
         "operations": setup.operations.iter().map(|op| match op {
             CamOperation::Drill { name, tool, geometry, cut, dwell, spindle_rpm, coolant } => json!({
@@ -3200,6 +3355,9 @@ fn setup_json(setup: &CamSetup) -> Value {
             CamOperation::ThreadMill { name, tool, geometry, params, cut, spindle_rpm, coolant } => json!({
                 "type": "thread_mill", "name": name, "tool": tool, "geometry": geometry,
                 "params": params, "cut": cut, "spindle_rpm": spindle_rpm, "coolant": coolant,
+            }),
+            CamOperation::Plasma { name, geometry, params, torch, cut } => json!({
+                "type": "plasma", "name": name, "geometry": geometry, "params": params, "torch": torch, "cut": cut,
             }),
         }).collect::<Vec<_>>(),
     })
@@ -4389,23 +4547,27 @@ mod tests {
     }
 
     #[test]
-    fn a_plasma_torch_cuts_a_sheet_holes_first_and_posts_torch_on_and_off() {
+    fn a_plasma_cut_needs_no_tool_cuts_holes_first_and_posts_torch_on_and_off() {
         let mut s = Session::default();
         run(&mut s, "sketch.create", json!({"plane": "XY"}));
         run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [60, 40]}));
         run(&mut s, "sketch.finish", json!({}));
         run(&mut s, "solid.extrude", json!({"distance": 3, "operation": "new", "body_name": "Sheet"}));
-        let torch = json!({"number": 1, "kind": "plasma", "diameter": 1.5, "flute_length": 6, "feed": 2500, "plunge_feed": 1000,
-            "pierce_height": 3.8, "cut_height": 1.5, "pierce_delay": 0.5});
-        run(&mut s, "cam.tool.define", torch);
+        let table = json!({"name": "Table", "kind": "plasma", "x": [0, 3000], "y": [0, 1500], "z": [-50, 0], "spindle_min": 0, "spindle_max": 1,
+            "max_feed": 20000, "post": "plasma",
+            "torch": {"kerf": 1.5, "feed": 2500, "pierce_height": 3.8, "cut_height": 1.5, "pierce_delay": 0.5}});
+        run(&mut s, "cam.machine.define", table);
         let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
-        run(&mut s, "cam.setup", json!({"name": "Table", "wcs_origin_mode": "model_box_point", "box_point": corner, "post": "plasma"}));
+        run(&mut s, "cam.setup", json!({"name": "Cut", "part": "Bracket", "operation_type": "plasma", "machine": "Table",
+            "wcs_origin_mode": "model_box_point", "box_point": corner}));
         let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
         let holes = json!([[[20, 15], [20, 19], [24, 19], [24, 15]]]);
-        let part = json!({"setup": "Table", "name": "Part", "tool": 1, "outer": outer, "holes": holes, "top": 0, "bottom": -3, "stepdown": 1,
-            "clearance": 20, "retract": 6, "slow_holes": {"diameter": 6, "share": 0.5}});
-        run(&mut s, "cam.op.contour", part.clone());
-        let posted = run(&mut s, "cam.post", json!({"setup": "Table"}));
+        // No tool: the kerf, heights, delay and feed come from the plasma table.
+        let part = json!({"setup": "Cut", "name": "Part", "outer": outer, "holes": holes, "bottom": -3,
+            "clearance": 20, "retract": 6, "plunge_feed": 1000, "slow_holes": {"diameter": 6, "share": 0.5}});
+        run(&mut s, "cam.op.plasma", part.clone());
+        let posted = run(&mut s, "cam.post", json!({"setup": "Cut"}));
+        assert_eq!(posted["post"], "plasma");
         let gcode = posted["gcode"].as_str().unwrap();
         let lines: Vec<&str> = gcode.lines().map(str::trim).collect();
         // Lit right before each of the two pierces, out before every rapid; never changed, never offset.
@@ -4426,29 +4588,51 @@ mod tests {
         let first_full = lines.iter().position(|l| l.contains("F2500")).unwrap();
         assert!(first_slow < first_full, "{gcode}");
         assert!(posted["readback"]["within"].as_bool().unwrap());
-        // Kept in the design as it was given.
+        // Kept in the design as it was given, with no tool in the list.
         let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
-        assert_eq!(cold.cam.tool(1).map(|t| (t.kind, t.pierce_height, t.cut_height, t.pierce_delay)), Some((ToolKind::Plasma, Some(3.8), Some(1.5), Some(0.5))));
-        let CamOperation::Contour { params, .. } = &cold.cam.setup("Table").unwrap().operations[0] else { panic!("a contour") };
-        assert_eq!(params.slow_holes.as_ref().map(|h| h.share), Some(0.5));
+        assert!(cold.cam.tools.is_empty());
+        let setup = cold.cam.setup("Cut").unwrap();
+        assert_eq!(setup.part.as_deref(), Some("Bracket"));
+        let CamOperation::Plasma { torch, .. } = &setup.operations[0] else { panic!("a plasma cut") };
+        assert_eq!((torch.pierce_delay, torch.slow_holes.as_ref().map(|h| h.share)), (0.5, Some(0.5)));
         // The simulation cuts through the sheet, with nothing to warn of.
-        let sim = s.cam_simulate("Table", Some(0.5)).unwrap();
+        let sim = s.cam_simulate("Cut", Some(0.5)).unwrap();
         assert!(sim.removed > 0.0, "the kerf takes material");
         assert!(sim.operations.iter().all(|o| o.report.rapid_hits.is_empty() && o.report.too_deep.is_empty()));
-        // A torch cuts contours only, without tabs; Heidenhain writes no plasma cuts.
-        let refused = s.execute("cam.op.pocket", &json!({"setup": "Table", "name": "Pocket", "tool": 1, "outer": [[5, 5], [15, 5], [15, 15], [5, 15]], "bottom": -1}));
-        if refused.is_ok() {
-            assert!(s.execute("cam.post", &json!({"setup": "Table"})).is_err_and(|e| e.to_string().contains("contours only")));
-            run(&mut s, "cam.op.remove", json!({"setup": "Table", "name": "Pocket"}));
-        }
+        // A plasma setup takes plasma cuts only, a milling setup no plasma cut; no tabs.
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
+        let pocket = json!({"setup": "Cut", "name": "Pocket", "tool": 1, "outer": [[5, 5], [15, 5], [15, 15], [5, 15]], "bottom": -1});
+        assert!(s.execute("cam.op.pocket", &pocket).is_err_and(|e| e.to_string().contains("plasma setup")));
+        run(&mut s, "cam.setup", json!({"name": "Mill", "part": "Bracket"}));
+        let mut milled = part.clone();
+        milled["setup"] = json!("Mill");
+        assert!(s.execute("cam.op.plasma", &milled).is_err_and(|e| e.to_string().contains("plasma setup")));
         let mut tabbed = part.clone();
         tabbed["tabs"] = json!({"count": 2, "width": 3, "height": 1});
-        assert!(s.execute("cam.op.contour", &tabbed).is_err_and(|e| e.to_string().contains("tabs")));
-        run(&mut s, "cam.op.contour", part);
-        assert!(s.execute("cam.post", &json!({"setup": "Table", "post": "heidenhain"})).is_err());
-        // A torch without its heights is no tool.
-        assert!(s.execute("cam.tool.define", &json!({"number": 2, "kind": "plasma", "diameter": 1.5, "flute_length": 6})).is_err());
-        assert_eq!(run(&mut s, "cam.sheet", json!({}))["tools"][0]["kind"], "plasma");
+        assert!(s.execute("cam.op.plasma", &tabbed).is_err_and(|e| e.to_string().contains("tabs")));
+        let mut tooled = part.clone();
+        tooled["tool"] = json!(1);
+        assert!(s.execute("cam.op.plasma", &tooled).is_err());
+        // Machines and posts by kind: a milling setup refuses the plasma table, a plasma setup a
+        // mill and a milling post; a plasma table refuses a milling post; a torch is no tool.
+        assert!(s.execute("cam.setup", &json!({"name": "Mill", "machine": "Table"})).is_err_and(|e| e.to_string().contains("plasma machine")));
+        run(&mut s, "cam.machine.define", json!({"name": "Router", "x": [0, 600], "y": [0, 400], "z": [-100, 0], "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000}));
+        assert!(s.execute("cam.setup", &json!({"name": "Cut", "machine": "Router"})).is_err());
+        assert!(s.execute("cam.setup", &json!({"name": "Cut", "post": "linuxcnc"})).is_err_and(|e| e.to_string().contains("mill machine")));
+        assert!(s.execute("cam.post", &json!({"setup": "Cut", "post": "heidenhain"})).is_err());
+        let mut milling_post = run(&mut s, "cam.list", json!({}))["machines"][1].clone();
+        milling_post["post"] = json!("grbl");
+        assert!(s.execute("cam.machine.define", &milling_post).is_err_and(|e| e.to_string().contains("not a plasma machine")));
+        assert!(s.execute("cam.setup", &json!({"name": "Cut", "operation_type": "milling"})).is_err());
+        assert!(s.execute("cam.tool.define", &json!({"number": 2, "kind": "plasma", "diameter": 1.5, "flute_length": 6})).is_err_and(|e| e.to_string().contains("no tool")));
+        // The part's sheet: both setups, the cut's torch data and no tool for it.
+        let sheet = run(&mut s, "cam.sheet", json!({"part": "Bracket"}));
+        assert_eq!(sheet["setups"].as_array().map(Vec::len), Some(2));
+        assert!(sheet["tools"].as_array().unwrap().is_empty());
+        let step = &sheet["setups"][0]["steps"][0];
+        assert_eq!((step["tool"].clone(), step["torch"]["kerf"].as_f64()), (Value::Null, Some(1.5)));
+        assert_eq!((sheet["setups"][0]["operation_type"].as_str(), sheet["setups"][0]["machine_kind"].as_str()), (Some("plasma"), Some("plasma")));
+        assert!(s.execute("cam.sheet", &json!({"part": "Nothing"})).is_err());
     }
 
     #[test]

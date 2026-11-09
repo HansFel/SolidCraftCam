@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Thread mill</title>
+  <path d="M5 27.84L32 43.43L32 51.75L5 36.16Z" fill="#b8c3cf"/>
+  <path d="M59 27.84L32 43.43L32 51.75L59 36.16Z" fill="#8e9faf"/>
+  <path d="M32 12.25L59 27.84L32 43.43L5 27.84Z" fill="#e2e8ef"/>
+  <path d="M32 12.25L59 27.84L59 36.16L32 51.75L5 36.16L5 27.84Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M5 27.84L32 43.43L59 27.84" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 43.43L32 51.75" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M18.64 27.84A13.36 7.72 0 1 0 45.36 27.84A13.36 7.72 0 1 0 18.64 27.84Z" fill="#8e9faf"/>
+  <defs><clipPath id="cam-thread-bore"><path d="M18.64 27.84A13.36 7.72 0 1 0 45.36 27.84A13.36 7.72 0 1 0 18.64 27.84Z" fill="none"/></clipPath></defs>
+  <g clip-path="url(#cam-thread-bore)">
+  <path d="M45.36 28.24L45.16 27.03L44.56 25.85L43.57 24.75L42.24 23.77L40.59 22.94L38.68 22.29L36.57 21.85L34.32 21.62L32 21.63L29.68 21.87L27.43 22.34L25.32 23.03L23.41 23.92L21.76 24.99L20.43 26.22L19.44 27.56L18.84 28.98L18.64 30.44" fill="none" stroke="#236ead" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M45.36 32.84L45.16 31.63L44.56 30.45L43.57 29.35L42.24 28.37L40.59 27.54L38.68 26.89L36.57 26.45L34.32 26.22L32 26.23L29.68 26.47L27.43 26.94L25.32 27.63L23.41 28.52L21.76 29.59L20.43 30.82L19.44 32.16L18.84 33.58L18.64 35.04" fill="none" stroke="#236ead" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M45.36 37.44L45.16 36.23L44.56 35.05L43.57 33.95L42.24 32.97L40.59 32.14L38.68 31.49L36.57 31.05L34.32 30.82L32 30.83L29.68 31.07L27.43 31.54L25.32 32.23L23.41 33.12L21.76 34.19L20.43 35.42L19.44 36.76L18.84 38.18L18.64 39.64" fill="none" stroke="#236ead" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+  <path d="M18.64 27.84A13.36 7.72 0 1 0 45.36 27.84A13.36 7.72 0 1 0 18.64 27.84Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -44,7 +44,8 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    /// Every kind, in the order the tool form offers them.
+    /// Every kind a tool list holds, in the order the tool form offers them. A plasma torch is
+    /// none of them: a plasma cut makes its own from its torch data.
     pub const ALL: &[ToolKind] = &[
         ToolKind::FlatEndmill,
         ToolKind::BallEndmill,
@@ -57,7 +58,6 @@ impl ToolKind {
         ToolKind::CentreDrill,
         ToolKind::Reamer,
         ToolKind::Tap,
-        ToolKind::Plasma,
     ];
 
     pub fn label(self) -> &'static str {

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM drill</title>
+  <path d="M8.62 33.02L32 46.52L32 52.82L8.62 39.32Z" fill="#b8c3cf"/>
+  <path d="M55.38 33.02L32 46.52L32 52.82L55.38 39.32Z" fill="#8e9faf"/>
+  <path d="M32 19.52L55.38 33.02L32 46.52L8.62 33.02Z" fill="#e2e8ef"/>
+  <path d="M32 19.52L55.38 33.02L55.38 39.32L32 52.82L8.62 39.32L8.62 33.02Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M8.62 33.02L32 46.52L55.38 33.02" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 46.52L32 52.82" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.04 33.02A4.96 2.86 0 1 0 36.96 33.02A4.96 2.86 0 1 0 27.04 33.02Z" fill="#236ead"/>
+  <path d="M28.33 35.27A3.67 1.78 0 1 0 35.67 35.27A3.67 1.78 0 1 0 28.33 35.27Z" fill="#328bd3"/>
+  <path d="M27.04 33.02A4.96 2.86 0 1 0 36.96 33.02A4.96 2.86 0 1 0 27.04 33.02Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.47 25.82L32 30.32L35.53 25.82Z" fill="#8e9faf"/>
+  <path d="M28.47 25.82L32 30.32L35.53 25.82Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.47 13.22L28.47 25.82A3.53 2.04 0 0 0 35.53 25.82L35.53 13.22Z" fill="#b8c3cf"/>
+  <path d="M33.23 13.22L33.23 27.73A3.53 2.04 0 0 0 35.53 25.82L35.53 13.22Z" fill="#8e9faf"/>
+  <path d="M28.47 13.22L28.47 25.82A3.53 2.04 0 0 0 35.53 25.82L35.53 13.22Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.47 13.22A3.53 2.04 0 1 0 35.53 13.22A3.53 2.04 0 1 0 28.47 13.22Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

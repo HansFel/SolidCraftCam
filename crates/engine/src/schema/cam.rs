@@ -35,10 +35,6 @@ pub struct ToolParams {
     pub stick_out: Option<f64>,
     /// The holder: `{description?, diameter, length}` (mm), or null for none.
     pub holder: Option<HolderParams>,
-    /// Plasma torch: how high above the sheet it pierces and cuts (mm), and how long it pierces (s).
-    pub pierce_height: Option<f64>,
-    pub cut_height: Option<f64>,
-    pub pierce_delay: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -186,11 +182,15 @@ pub struct SetupParams {
     pub model_bodies: Option<Vec<String>>,
     pub operation_type: Option<serde_json::Value>,
     pub post_opts: Option<serde_json::Value>,
+    /// The part the setup makes, by name; null or empty: the design's one part.
+    pub part: Option<serde_json::Value>,
     /// A machine's name, a machine as `cam.machine.define` takes it (copied into the design), or null.
     pub machine: Option<serde_json::Value>,
     /// The post a machine given in full names, in full as `cam.post.define` returns it (copied into the design), or null.
     pub machine_post: Option<serde_json::Value>,
     pub post: Option<serde_json::Value>,
+    /// The post `post` names, in full as `cam.post.define` returns it (copied into the design), or null.
+    pub post_copy: Option<serde_json::Value>,
     /// Programmed +Z out of the flat face picked here.
     pub z_face: Option<PickParams>,
     /// Programmed +X along the straight edge picked here (square to the tool axis).
@@ -281,8 +281,6 @@ pub struct MillingParams {
     pub extend_end: Option<NumberExpr>,
     /// Closed contours: holding tabs `{count?, spacing?, width, height}`, or null for none.
     pub tabs: Option<serde_json::Value>,
-    /// Plasma: small holes `{diameter, share}` cut at `share` of the feed, or null for none.
-    pub slow_holes: Option<serde_json::Value>,
     pub outer: Option<Vec<[f64; 2]>>,
     pub holes: Option<Vec<Vec<[f64; 2]>>>,
     pub regions: Option<serde_json::Value>,
@@ -313,6 +311,51 @@ pub struct MillingParams {
     pub cut: Option<serde_json::Value>,
     pub spindle_rpm: Option<f64>,
     pub coolant: Option<bool>,
+}
+
+/// `cam.op.plasma`: the outline as a contour takes it, the torch and the sheet. No tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PlasmaCutParams {
+    pub setup: String,
+    pub name: String,
+    pub sketch: Option<super::IdOrName>,
+    pub profiles: Option<super::ProfilesParam>,
+    pub faces: Option<serde_json::Value>,
+    pub edges: Option<serde_json::Value>,
+    pub chain: Option<bool>,
+    pub geometry: Option<serde_json::Value>,
+    pub start: Option<[f64; 3]>,
+    pub lead_in: Option<serde_json::Value>,
+    pub lead_out: Option<serde_json::Value>,
+    pub overlap: Option<NumberExpr>,
+    pub open_side: Option<String>,
+    pub reverse: Option<bool>,
+    pub extend_start: Option<NumberExpr>,
+    pub extend_end: Option<NumberExpr>,
+    pub outer: Option<Vec<[f64; 2]>>,
+    pub holes: Option<Vec<Vec<[f64; 2]>>>,
+    pub regions: Option<serde_json::Value>,
+    /// Which side of the outline the kerf goes: auto, outside, inside or on.
+    pub side: Option<String>,
+    pub tolerance: Option<NumberExpr>,
+    /// Width of the cut (mm).
+    pub kerf: Option<NumberExpr>,
+    /// Height over the sheet the arc is struck at, and cut at (mm).
+    pub pierce_height: Option<NumberExpr>,
+    pub cut_height: Option<NumberExpr>,
+    /// Wait for the pierce (s).
+    pub pierce_delay: Option<f64>,
+    /// Small holes `{diameter, share}` cut at `share` of the feed, or null for none.
+    pub slow_holes: Option<serde_json::Value>,
+    pub clearance: Option<NumberExpr>,
+    /// Travel height over the sheet.
+    pub retract: Option<NumberExpr>,
+    /// The sheet's top and underside.
+    pub top: Option<NumberExpr>,
+    pub bottom: Option<NumberExpr>,
+    pub feed: Option<NumberExpr>,
+    pub plunge_feed: Option<NumberExpr>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -557,6 +600,8 @@ pub enum JobKind {
     Thread,
     /// Tapping with a tap.
     Tap,
+    /// A plasma cut in a plasma setup: no tool, the torch's `kerf`, heights and delay.
+    Plasma,
 }
 
 /// Millimetres, mm/min and rpm. The rectangle is in setup work XY unless `sketch` or `faces`
@@ -564,6 +609,19 @@ pub enum JobKind {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JobParams {
+    /// Plasma: the torch's kerf, pierce and cut height (mm), pierce delay (s); absent: the
+    /// setup's plasma table's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kerf: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pierce_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pierce_delay: Option<f64>,
+    /// Plasma: small holes `{diameter, share}` cut at `share` of the feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_holes: Option<serde_json::Value>,
     pub setup: String,
     pub name: String,
     pub kind: JobKind,
@@ -610,9 +668,6 @@ pub struct JobParams {
     pub extend_end: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<serde_json::Value>,
-    /// Plasma: small holes `{diameter, share}` cut slower, as `cam.op.contour` takes them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slow_holes: Option<serde_json::Value>,
     /// A step's stored geometry, unchanged: what an edit keeps when nothing new is picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<serde_json::Value>,
@@ -711,6 +766,8 @@ pub struct ExportParams {
 pub struct SheetParams {
     /// One setup; absent: every setup.
     pub setup: Option<String>,
+    /// The setups of one part (`""`: those naming none), instead of `setup`.
+    pub part: Option<String>,
     /// Write the sheet to this file.
     pub path: Option<String>,
     /// `html`, `csv` (the tool list) or `json`; absent: from the path's extension.
@@ -767,15 +824,35 @@ pub struct SheetStep {
     /// The step's type (`contour`, `pocket`, `drill`, …).
     #[serde(rename = "type")]
     pub kind: String,
-    pub tool: u32,
+    /// The tool it cuts with; none for a plasma cut.
+    pub tool: Option<u32>,
+    /// A plasma cut's torch data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub torch: Option<SheetTorch>,
     pub skipped: bool,
     /// Its run time with the tool change before it (seconds); absent when not posted.
     pub seconds: Option<f64>,
 }
 
+/// A plasma cut's torch data (mm, s, mm/min).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetTorch {
+    pub kerf: f64,
+    pub pierce_height: f64,
+    pub cut_height: f64,
+    pub pierce_delay: f64,
+    pub feed: f64,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SheetSetup {
     pub name: String,
+    /// The part the setup makes.
+    pub part: Option<String>,
+    /// `milling`, `plasma`, …
+    pub operation_type: String,
+    /// The kind of machine it runs on (`mill`, `plasma`, …).
+    pub machine_kind: Option<String>,
     pub work_offset: String,
     /// Part zero in model coordinates.
     pub origin: [f64; 3],

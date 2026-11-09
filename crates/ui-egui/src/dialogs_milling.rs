@@ -30,8 +30,6 @@ pub struct Milling {
     start: Option<[f64; 3]>,
     /// The library tool chosen: copied into the design (with its cutting data) when the job runs.
     library_tool: Option<Tool>,
-    /// The step's tool is a plasma torch (worked out as the form is shown).
-    torch: bool,
     /// The setup's material group; None keeps the setup's own.
     pub(crate) material: Option<String>,
     /// An edited step's stored geometry (`{"geometry": …}`) and start point, used while nothing
@@ -66,7 +64,7 @@ pub struct Milling {
 }
 
 /// The form's operations by their place in its list: contour 0, pocket 1, drill 2, face 3,
-/// slot 4, chamfer 5, engrave 6, helical bore 7, thread mill 8, tap 9.
+/// slot 4, chamfer 5, engrave 6, helical bore 7, thread mill 8, tap 9, plasma cut 10.
 const KIND_NAMES: &[(&str, &str)] = &[
     ("contour", "ui.cam.contour"),
     ("pocket", "ui.cam.pocket"),
@@ -78,7 +76,11 @@ const KIND_NAMES: &[(&str, &str)] = &[
     ("helix", "ui.cam.helix"),
     ("thread", "ui.cam.thread"),
     ("tap", "ui.cam.tap"),
+    ("plasma", "ui.cam.plasma"),
 ];
+
+/// The plasma cut's place in [`KIND_NAMES`].
+const PLASMA: usize = 10;
 
 /// Lead strategies: the kinds `cam.op.contour` takes.
 const LEADS: [&str; 4] = ["direct", "arc", "tangent", "perpendicular"];
@@ -171,6 +173,10 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("tip_offset", "ui.cam.tip_offset", "0.5"),
     ("hole_diameter", "ui.cam.hole_diameter", "10"),
     ("pitch", "ui.cam.pitch", ""),
+    ("kerf", "ui.cam.kerf", "1.5"),
+    ("pierce_height", "ui.cam.pierce_height", "3.8"),
+    ("cut_height", "ui.cam.cut_height", "1.5"),
+    ("pierce_delay", "ui.cam.pierce_delay", "0.5"),
     ("slow_hole_diameter", "ui.cam.slow_hole_diameter", ""),
     ("slow_hole_share", "ui.cam.slow_hole_share", "60"),
     ("feed", "ui.cam.feed", "600"),
@@ -209,7 +215,6 @@ impl Milling {
             geometry: Value::Null,
             start: None,
             library_tool: None,
-            torch: false,
             material: setup.and_then(|s| s.material.clone()),
             kept: Value::Null,
             kept_start: None,
@@ -241,6 +246,52 @@ impl Milling {
     /// Steps on hole centres: drilling, helical boring, thread milling, tapping.
     fn at_holes(&self) -> bool {
         matches!(self.kind, 2 | 7 | 8 | 9)
+    }
+
+    /// A plasma cut: no tool, the torch's data instead.
+    fn plasma(&self) -> bool {
+        self.kind == PLASMA
+    }
+
+    /// Steps round an outline with a side, leads and a start: contours and plasma cuts.
+    fn outlined(&self) -> bool {
+        self.kind == 0 || self.plasma()
+    }
+
+    /// Whether `setup` takes this step: plasma cuts go in plasma setups, the rest in milling setups.
+    fn fits(&self, setup: &solidcraft_engine::doc::cam::CamSetup) -> bool {
+        use solidcraft_engine::doc::cam::SetupOperationType;
+        (setup.operation_type == SetupOperationType::Plasma) == self.plasma()
+    }
+
+    /// The torch fields from setup `setup`'s plasma table, when it has one.
+    fn take_torch(&mut self, app: &SolveApp) {
+        let cam = &app.session.doc.cam;
+        let Some(torch) = cam.setup(&self.setup).and_then(|s| cam.setup_machine(s)).and_then(|m| m.torch) else { return };
+        for (key, value) in [
+            ("kerf", torch.kerf),
+            ("pierce_height", torch.pierce_height),
+            ("cut_height", torch.cut_height),
+            ("pierce_delay", torch.pierce_delay),
+            ("feed", torch.feed),
+        ] {
+            if let Some(field) = self.field(key) {
+                *field = plain_number(value);
+            }
+        }
+    }
+
+    /// A setup this step fits in: the one chosen when it fits, else the last that does, else a
+    /// new name.
+    fn fitting_setup(&mut self, app: &SolveApp) {
+        let cam = &app.session.doc.cam;
+        if cam.setup(&self.setup).is_some_and(|s| self.fits(s)) {
+            return;
+        }
+        self.setup = match cam.setups.iter().rev().find(|s| self.fits(s)) {
+            Some(setup) => setup.name.clone(),
+            None => cam.unused_setup_name(),
+        };
     }
 
     fn field(&mut self, key: &str) -> Option<&mut String> {
@@ -292,6 +343,7 @@ impl Milling {
             CamOperation::Engrave { cut, spindle_rpm, .. } => (6, cut, spindle_rpm),
             CamOperation::HelicalBore { cut, spindle_rpm, .. } => (7, cut, spindle_rpm),
             CamOperation::ThreadMill { cut, spindle_rpm, .. } => (8, cut, spindle_rpm),
+            CamOperation::Plasma { cut, .. } => (PLASMA, cut, &None),
         };
         // A hole step with a tap is tapping.
         let kind = if kind == 2 && app.session.doc.cam.tool(op.tool()).is_some_and(|t| t.kind == ToolKind::Tap) { 9 } else { kind };
@@ -306,7 +358,9 @@ impl Milling {
                 *field = value;
             }
         };
-        set("tool", op.tool().to_string());
+        if op.uses_tool() {
+            set("tool", op.tool().to_string());
+        }
         if let Some(tool) = tool {
             set("diameter", number(tool.diameter));
             set("flute_length", number(tool.flute_length));
@@ -352,6 +406,16 @@ impl Milling {
                 set("hole_diameter", plain(&params.diameter));
                 set("pitch", plain(&params.pitch));
             }
+            CamOperation::Plasma { torch, .. } => {
+                set("kerf", plain(&torch.kerf));
+                set("pierce_height", plain(&torch.pierce_height));
+                set("cut_height", plain(&torch.cut_height));
+                set("pierce_delay", number(torch.pierce_delay));
+                if let Some(slow) = &torch.slow_holes {
+                    set("slow_hole_diameter", plain(&slow.diameter));
+                    set("slow_hole_share", number(slow.share * 100.0));
+                }
+            }
             CamOperation::Face { params, cut, .. } => {
                 set("stepover", plain(&params.stepover));
                 set("overrun", plain(&params.overrun));
@@ -362,7 +426,7 @@ impl Milling {
             }
         }
         match op {
-            CamOperation::Contour { params, .. } => {
+            CamOperation::Contour { params, .. } | CamOperation::Plasma { params, .. } => {
                 use solidcraft_engine::doc::cam::CamSide;
                 form.side = match params.side {
                     CamSide::Auto => 0,
@@ -400,13 +464,6 @@ impl Milling {
                     CamOpenSide::On => 2,
                 };
                 form.reverse = params.reverse;
-                if let Some(slow) = &params.slow_holes {
-                    for (key, text) in [("slow_hole_diameter", plain(&slow.diameter)), ("slow_hole_share", number(slow.share * 100.0))] {
-                        if let Some(field) = FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| form.values.get_mut(i)) {
-                            *field = text;
-                        }
-                    }
-                }
                 if let Some(tabs) = &params.tabs {
                     form.tabs = true;
                     let count = tabs.count.to_string();
@@ -440,6 +497,7 @@ impl Milling {
                 );
             }
             CamOperation::Contour { geometry, .. }
+            | CamOperation::Plasma { geometry, .. }
             | CamOperation::Pocket { geometry, .. }
             | CamOperation::Slot { geometry, .. }
             | CamOperation::Chamfer { geometry, .. }
@@ -452,7 +510,7 @@ impl Milling {
             }
             CamOperation::Drill { .. } | CamOperation::Face { .. } | CamOperation::HelicalBore { .. } | CamOperation::ThreadMill { .. } => {}
         }
-        if let CamOperation::Contour { params, .. } = op {
+        if let CamOperation::Contour { params, .. } | CamOperation::Plasma { params, .. } = op {
             form.kept_start = params.start;
         }
         form.chain = matches!(op.geometry(), solidcraft_engine::doc::cam::CamGeometry::Edges { .. });
@@ -477,10 +535,17 @@ impl Milling {
             "cam.op.helix" => (7, "ui.cam.helix"),
             "cam.op.thread" => (8, "ui.cam.thread"),
             "cam.op.tap" => (9, "ui.cam.tap"),
+            "cam.op.plasma" => (PLASMA, "ui.cam.plasma"),
             _ => (1, "ui.cam.pocket"),
         };
-        let form = Self::new(app);
-        let mut form = Self { kind, name: free_name(app, &form.setup, app.tr(name)), ..form };
+        let mut form = Self { kind, ..Self::new(app) };
+        // A plasma cut goes into a plasma setup, the rest into a milling setup.
+        form.fitting_setup(app);
+        form.name = free_name(app, &form.setup, app.tr(name));
+        if form.plasma() {
+            form.take_torch(app);
+            form.material = None;
+        }
         // Facing ends where the part's top is, at part zero, and takes off what the stock has above it.
         if kind == 3 {
             form.facing_from(stock_top(&app.session, &form.setup), 0.0);
@@ -529,8 +594,11 @@ impl Milling {
             if *key == "slot_width" && (self.kind != 4 || value.trim().is_empty()) {
                 continue;
             }
-            // A torch's small holes are one setting, below.
+            // A torch's small holes are one setting, below; its data belong to plasma cuts only.
             if matches!(*key, "slow_hole_diameter" | "slow_hole_share") {
+                continue;
+            }
+            if !self.plasma() && matches!(*key, "kerf" | "pierce_height" | "cut_height" | "pierce_delay") {
                 continue;
             }
             // Each step's own sizes only; an empty pitch is the thread mill's.
@@ -558,8 +626,7 @@ impl Milling {
         }
         // Small holes cut slower by a torch: up to the diameter given, at the share given (%).
         let field = |key: &str| FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| self.values.get(i)).map(|v| v.trim().replace(',', "."));
-        if self.kind == 0
-            && self.torch
+        if self.plasma()
             && let Some(text) = field("slow_hole_diameter").filter(|t| !t.is_empty())
         {
             let bad = || crate::i18n::tr("ui.cam.invalid_number").to_string();
@@ -593,10 +660,10 @@ impl Milling {
                 p[key.as_str()] = value.clone();
             }
         }
-        if let (0, Some(start)) = (self.kind, self.start) {
+        if let (true, Some(start)) = (self.outlined(), self.start) {
             p["start"] = json!(start);
         }
-        if self.kind == 0 {
+        if self.outlined() {
             p["side"] = json!(SIDES.get(self.side).copied().unwrap_or("auto"));
         }
         if self.kind == 5 {
@@ -638,7 +705,7 @@ impl Milling {
                 }
                 map.insert("tabs".into(), json!({"count": count as u32, "width": width, "height": height}));
             }
-            if self.kind == 0 {
+            if self.outlined() {
                 for (key, kind, size) in [("lead_in", self.lead_in, lead_in), ("lead_out", self.lead_out, lead_out)] {
                     let lead = match LEADS.get(kind).copied().unwrap_or("direct") {
                         "direct" => json!({"kind": "direct"}),
@@ -666,6 +733,9 @@ impl Milling {
         if self.kind == 4 && p["stock_to_leave"].as_f64().is_some_and(|v| v < 0.0) {
             return Err(crate::i18n::tr("ui.cam.stock_negative").into());
         }
+        if self.plasma() && self.chain && p.get("edges").is_some() {
+            p["chain"] = json!(true);
+        }
         if self.kind < 2 {
             p["climb"] = json!(self.climb);
             if self.chain && p.get("edges").is_some() {
@@ -677,7 +747,7 @@ impl Milling {
                 }
             }
         }
-        if let Some(material) = &self.material {
+        if let Some(material) = self.material.as_ref().filter(|_| !self.plasma()) {
             p["material"] = json!(material);
         }
         Ok(p)
@@ -722,7 +792,6 @@ impl Milling {
         let wanted = match tool.as_ref().map(|t| t.kind) {
             Some(ToolKind::Tap) => Some(9),
             Some(ToolKind::ThreadMill) => Some(8),
-            Some(ToolKind::Plasma) => Some(0),
             Some(k) if k.cuts_down() && self.kind != 2 => Some(2),
             _ => None,
         };
@@ -934,6 +1003,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     let kinds: Vec<&str> = KIND_NAMES.iter().map(|(_, label)| tr(label)).collect();
     let was = form.kind;
     ui_kit::choice_row(ui, tr("ui.cam.operation"), "cam-kind", &mut form.kind, &kinds);
+    // Into or out of a plasma cut: the setup follows, and a plasma cut takes its table's torch data.
+    if form.plasma() != (was == PLASMA) {
+        form.fitting_setup(app);
+        if form.plasma() {
+            form.take_torch(app);
+        }
+    }
     if form.kind == 3 && was != 3 {
         // Switched to facing: down to part zero, taking off what the stock has above it.
         form.facing_from(stock_top(&app.session, &form.setup), 0.0);
@@ -951,6 +1027,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             7 => Some("ui.cam.helix_hint"),
             8 => Some("ui.cam.thread_hint"),
             9 => Some("ui.cam.tap_hint"),
+            PLASMA => Some("ui.cam.plasma_hint"),
             _ => None,
         };
         if let Some(hint) = hint {
@@ -967,7 +1044,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
-    if form.kind == 0 {
+    if form.outlined() {
         let start_label = if form.start.is_some() { tr("ui.cam.start_set") } else { tr("ui.cam.start_hint") };
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(start_label).wrap());
@@ -980,7 +1057,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         });
     }
     // Where the tool rides and which way it turns, right with the contours they apply to.
-    if form.kind == 0 {
+    if form.outlined() {
         let sides = [tr("ui.cam.side_auto"), tr("ui.cam.side_outside"), tr("ui.cam.side_inside"), tr("ui.cam.side_on")];
         ui_kit::choice_row(ui, tr("ui.cam.side"), "cam-side", &mut form.side, &sides);
     }
@@ -993,24 +1070,27 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.thread_internal"), &mut form.internal));
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.thread_left"), &mut form.left_hand));
     }
-    if form.kind == 0 {
+    if form.outlined() {
         let leads = [tr("ui.cam.lead_direct"), tr("ui.cam.lead_arc"), tr("ui.cam.lead_tangent"), tr("ui.cam.lead_perpendicular")];
         ui_kit::choice_row(ui, tr("ui.cam.lead_in"), "cam-lead-in", &mut form.lead_in, &leads);
         ui_kit::choice_row(ui, tr("ui.cam.lead_out"), "cam-lead-out", &mut form.lead_out, &leads);
+    }
+    // A plasma cut leaves no tabs: the part drops out of the sheet.
+    if form.kind == 0 {
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.tabs"), &mut form.tabs));
     }
     // Picked edges can be the contour themselves instead of the faces they bound, and the chain
     // they start can be found and offered as picked. A chain that does not close is an open
     // contour, with its own side and direction.
     let edges_picked = crate::selection::items(inputs, 0).iter().any(|pick| matches!(pick, Sel::Edge { .. }));
-    if form.kind == 0 && edges_picked {
+    if form.outlined() && edges_picked {
         let sides = [tr("ui.cam.side_left"), tr("ui.cam.side_right"), tr("ui.cam.side_on")];
         ui_kit::choice_row(ui, tr("ui.cam.open_side"), "cam-open-side", &mut form.open_side, &sides);
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.reverse"), &mut form.reverse));
     }
-    if matches!(form.kind, 0 | 1 | 4 | 5 | 6) && edges_picked {
+    if matches!(form.kind, 0 | 1 | 4 | 5 | 6 | PLASMA) && edges_picked {
         // A slot always follows the picked edges themselves.
-        if form.kind < 2 {
+        if form.kind < 2 || form.plasma() {
             ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.chain"), &mut form.chain));
         }
         if ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_chain"), ui_kit::Button::Small)).clicked() {
@@ -1075,23 +1155,23 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     if form.taken {
         ui.add(egui::Label::new(egui::RichText::new(tr("ui.cam.name_taken")).color(Tokens::get().warning)).wrap());
     }
-    tool_rows(app, ui, form);
-    // The tool picked from the library, else the design's tool of that number.
-    let number = FIELDS.iter().position(|(k, _, _)| *k == "tool").and_then(|i| form.values.get(i)).and_then(|v| v.trim().parse::<u32>().ok());
-    let kind = form.library_tool.as_ref().map(|t| t.kind).or_else(|| number.and_then(|n| app.session.doc.cam.tool(n)).map(|t| t.kind));
-    form.torch = kind == Some(ToolKind::Plasma);
-    let torch = form.torch;
+    // A plasma cut has no tool: its torch's data are fields of its own.
+    if !form.plasma() {
+        tool_rows(app, ui, form);
+    }
+    let torch = form.plasma();
+    let outlined = form.outlined();
     let picked = form.picked();
     for ((key, label, _), value) in FIELDS.iter().zip(&mut form.values) {
-        // A torch cuts once through: no depth passes, no floor stock; its small holes slower.
-        if matches!(*key, "slow_hole_diameter" | "slow_hole_share") {
-            if form.kind == 0 && torch {
+        // A torch cuts once through: no tool, no depth passes, no allowances; its small holes slower.
+        if matches!(*key, "kerf" | "pierce_height" | "cut_height" | "pierce_delay" | "slow_hole_diameter" | "slow_hole_share") {
+            if torch {
                 let hint = if *key == "slow_hole_diameter" { tr("ui.cam.slow_hole_hint") } else { "" };
                 ui_kit::text_row(ui, tr(label), value, hint);
             }
             continue;
         }
-        if torch && matches!(*key, "stepdown" | "floor_stock" | "stock_to_leave" | "spindle_rpm") {
+        if torch && matches!(*key, "tool" | "diameter" | "flute_length" | "stepdown" | "stepover" | "floor_stock" | "stock_to_leave" | "spindle_rpm" | "dwell") {
             continue;
         }
         if (picked || form.kind == 3) && matches!(*key, "x" | "y" | "width" | "height") {
@@ -1154,7 +1234,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             "lead_out_size" => Some(form.lead_out),
             _ => None,
         };
-        if matches!(*key, "lead_in_size" | "lead_out_size" | "overlap" | "extend_start" | "extend_end") && form.kind != 0 {
+        if matches!(*key, "lead_in_size" | "lead_out_size" | "overlap" | "extend_start" | "extend_end") && !outlined {
             continue;
         }
         if matches!(*key, "tab_count" | "tab_width" | "tab_height") && !(form.kind == 0 && form.tabs) {
@@ -1312,17 +1392,19 @@ fn paint(ui: &mut egui::Ui, value: &Value) {
 fn setup_row(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
     let tr = crate::i18n::tr;
     let cam = &app.session.doc.cam;
-    if cam.setups.is_empty() {
+    // Plasma cuts are offered plasma setups only, milling steps milling setups only.
+    let setups: Vec<&solidcraft_engine::doc::cam::CamSetup> = cam.setups.iter().filter(|s| form.fits(s)).collect();
+    if setups.is_empty() {
         ui_kit::text_row(ui, tr("ui.cam.setup"), &mut form.setup, "");
         return;
     }
-    let mut labels: Vec<&str> = cam.setups.iter().map(|s| s.name.as_str()).collect();
+    let mut labels: Vec<&str> = setups.iter().map(|s| s.name.as_str()).collect();
     labels.push(tr("ui.cam.new_setup_entry"));
-    let current = cam.setups.iter().position(|s| s.name == form.setup).unwrap_or(cam.setups.len());
+    let current = setups.iter().position(|s| s.name == form.setup).unwrap_or(setups.len());
     let mut chosen = current;
     ui_kit::choice_row(ui, tr("ui.cam.setup_pick"), "cam-form-setup", &mut chosen, &labels);
     if chosen != current {
-        match cam.setups.get(chosen) {
+        match setups.get(chosen) {
             Some(setup) => {
                 form.setup = setup.name.clone();
                 form.material = setup.material.clone();
@@ -1333,7 +1415,7 @@ fn setup_row(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
             None => form.setup = cam.unused_setup_name(),
         }
     }
-    if chosen == cam.setups.len() {
+    if chosen == setups.len() {
         ui_kit::text_row(ui, tr("ui.cam.new_setup_name"), &mut form.setup, "");
     }
     if let Some(setup) = cam.setup(&form.setup)

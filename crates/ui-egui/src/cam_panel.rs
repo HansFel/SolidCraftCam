@@ -11,8 +11,10 @@ use egui::RichText;
 use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
 use solidcore_record::Vec3;
-use solidcraft_engine::cam::{CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, Post, RotaryAxis, Tapping, Tool, ToolKind, Units};
-use solidcraft_engine::doc::cam::{CamOperation, CamSetup};
+use solidcraft_engine::cam::{
+    CommentStyle, CuttingData, LineNumbers, MATERIALS, Machine, MachineKind, Post, RotaryAxis, Tapping, Tool, ToolKind, Torch, Units,
+};
+use solidcraft_engine::doc::cam::{CamOperation, CamSettings, CamSetup, SetupOperationType};
 use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
@@ -231,6 +233,54 @@ impl ProgramFolders {
     }
 }
 
+/// The parts the design's setups make, in the order their first setup comes; None is the
+/// design's one part, for setups that name none.
+pub(crate) fn parts(cam: &CamSettings) -> Vec<Option<String>> {
+    let mut parts: Vec<Option<String>> = Vec::new();
+    for setup in &cam.setups {
+        if !parts.contains(&setup.part) {
+            parts.push(setup.part.clone());
+        }
+    }
+    parts
+}
+
+/// The posts that write for machines of `kind`: the built-in ones, the design's, then the
+/// personal ones the design lacks (with the post in full, to copy into the design).
+pub(crate) fn posts_for(app: &SolveApp, kind: MachineKind) -> Vec<(String, Option<Post>)> {
+    let cam = &app.session.doc.cam;
+    let mut out: Vec<(String, Option<Post>)> =
+        Post::BUILTIN.iter().filter_map(|n| Post::builtin(n)).filter(|p| p.machine == kind).map(|p| (p.name, None)).collect();
+    out.extend(cam.posts.iter().filter(|p| p.machine == kind).map(|p| (p.name.clone(), None)));
+    out.extend(app.preferences.cam_posts.0.iter().filter(|p| p.machine == kind && cam.post(&p.name).is_none()).map(|p| (p.name.clone(), Some(p.clone()))));
+    out
+}
+
+/// A kind of machine as the user reads it.
+pub(crate) fn machine_kind_label(kind: MachineKind) -> &'static str {
+    match kind {
+        MachineKind::Mill => tr("ui.cam.machine_mill"),
+        MachineKind::Lathe => tr("ui.cam.machine_lathe"),
+        MachineKind::Plasma => tr("ui.cam.machine_plasma"),
+    }
+}
+
+/// What a setup does as the user reads it.
+pub(crate) fn setup_type_label(kind: SetupOperationType) -> String {
+    match crate::dialogs_cam_setup::TYPES.iter().find(|(t, _)| *t == kind) {
+        Some((_, key)) => tr(key).to_string(),
+        None => kind.key().replace('_', " "),
+    }
+}
+
+/// The post setup `setup`'s programs are written with: its own, its machine's, else its kind's default.
+pub(crate) fn setup_post(cam: &CamSettings, setup: &CamSetup) -> String {
+    setup.post.clone().or_else(|| cam.setup_machine(setup).and_then(|m| m.post.clone())).unwrap_or_else(|| match setup.operation_type {
+        SetupOperationType::Plasma => "plasma".into(),
+        _ => "rs274".into(),
+    })
+}
+
 /// The program file's name for setup `setup`: characters a file name cannot hold become `_`.
 fn program_file(setup: &str, extension: &str) -> String {
     let stem: String = setup.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '_' } else { c }).collect();
@@ -241,8 +291,7 @@ fn program_file(setup: &str, extension: &str) -> String {
 /// The extension the post of setup `setup` writes: the setup's post, else its machine's, else LinuxCNC.
 fn program_extension(app: &SolveApp, setup: &str) -> String {
     let cam = &app.session.doc.cam;
-    let setup = cam.setup(setup);
-    let post = setup.and_then(|s| s.post.clone().or_else(|| cam.setup_machine(s).and_then(|m| m.post.clone()))).unwrap_or_else(|| "linuxcnc".into());
+    let post = cam.setup(setup).map(|s| setup_post(cam, s)).unwrap_or_else(|| "linuxcnc".into());
     cam.post(&post).map(|p| p.extension.clone()).or_else(|| Post::builtin(&post).map(|p| p.extension)).unwrap_or_else(|| "ngc".into())
 }
 
@@ -254,7 +303,7 @@ fn program_folder(app: &SolveApp, setup: &str) -> Option<String> {
 }
 
 /// A post's name as the user reads it: the controller's own spelling for the built-in ones.
-fn post_label(name: &str) -> String {
+pub(crate) fn post_label(name: &str) -> String {
     match name {
         "centroid" => "Centroid".into(),
         "fanuc" => "Fanuc".into(),
@@ -262,6 +311,7 @@ fn post_label(name: &str) -> String {
         "heidenhain" => "Heidenhain".into(),
         "linuxcnc" => "LinuxCNC".into(),
         "mach3" => "Mach3".into(),
+        "plasma" => "Plasma (RS-274)".into(),
         "rs274" => "RS-274".into(),
         "sinumerik" => "Sinumerik".into(),
         other => other.to_string(),
@@ -271,6 +321,17 @@ fn post_label(name: &str) -> String {
 /// One line naming a machine and its limits.
 pub fn machine_label(m: &Machine) -> String {
     let span = |[lo, hi]: [f64; 2]| number(hi - lo);
+    // A plasma table: its bed, fastest feed and torch; it has no spindle.
+    if m.kind == MachineKind::Plasma {
+        let mut line = format!("{} – {}, {} × {} mm, vf {}", m.name, machine_kind_label(m.kind), span(m.x), span(m.y), number(m.max_feed));
+        if let Some(t) = &m.torch {
+            line.push_str(&format!(", {} {}", tr("ui.cam.kerf"), number(t.kerf)));
+        }
+        if let Some(post) = &m.post {
+            line.push_str(&format!(", {}", post_label(post)));
+        }
+        return line;
+    }
     let mut line = format!(
         "{} – {} × {} × {} mm, n {}–{}, vf {}",
         m.name,
@@ -340,15 +401,7 @@ const SIZES: &[(usize, &str, fn(ToolKind) -> bool)] = &[
     (4, "ui.cam.shank_diameter", |_| true),
     (5, "ui.cam.overall_length", |_| true),
     (6, "ui.cam.stick_out", |_| true),
-    (7, "ui.cam.pierce_height", |k| k == ToolKind::Plasma),
-    (8, "ui.cam.cut_height", |k| k == ToolKind::Plasma),
-    (9, "ui.cam.pierce_delay", |k| k == ToolKind::Plasma),
 ];
-
-/// The sizes a kind cannot do without: shown without the "optional" hint.
-fn required_size(i: usize) -> bool {
-    (7..=9).contains(&i)
-}
 
 /// A size as typed: empty is none, else a number (a comma is a decimal point).
 fn optional(text: &str) -> Result<Option<f64>, String> {
@@ -371,9 +424,8 @@ struct ToolEdit {
     flute_length: String,
     description: String,
     cutting: Vec<[String; 4]>,
-    /// Corner radius, tip angle, tip diameter, pitch, shank diameter, overall length, stick-out,
-    /// and a torch's pierce height, cut height and pierce delay.
-    sizes: [String; 10],
+    /// Corner radius, tip angle, tip diameter, pitch, shank diameter, overall length, stick-out.
+    sizes: [String; 7],
     /// The holder's description, diameter and length; no diameter: no holder.
     holder: [String; 3],
 }
@@ -403,9 +455,6 @@ impl ToolEdit {
                 tool.shank_diameter,
                 tool.overall_length,
                 tool.stick_out,
-                tool.pierce_height,
-                tool.cut_height,
-                tool.pierce_delay,
             ]
             .map(|v| v.map(number).unwrap_or_default()),
             holder: match &tool.holder {
@@ -428,7 +477,7 @@ impl ToolEdit {
         tool.flutes = self.flutes.trim().parse().map_err(|_| bad())?;
         tool.description = self.description.trim().chars().take(256).collect();
         // Sizes the kind does not use are dropped, so changing the kind never leaves one behind.
-        let mut sizes = [None; 10];
+        let mut sizes = [None; 7];
         for &(i, _, used) in SIZES {
             if used(kind)
                 && let Some(text) = self.sizes.get(i)
@@ -444,9 +493,6 @@ impl ToolEdit {
             tool.shank_diameter,
             tool.overall_length,
             tool.stick_out,
-            tool.pierce_height,
-            tool.cut_height,
-            tool.pierce_delay,
         ] = sizes;
         tool.holder = match (optional(&self.holder[1])?, optional(&self.holder[2])?) {
             (None, None) => None,
@@ -483,6 +529,10 @@ impl ToolEdit {
 #[derive(Clone, Debug, Default)]
 struct MachineEdit {
     name: String,
+    /// What the machine does, as [`MachineKind::ALL`] lists it.
+    kind: usize,
+    /// A plasma table's kerf, feed, pierce height, cut height and pierce delay.
+    torch: [String; 5],
     travel: [String; 6],
     a_kind: usize,
     a: [String; 2],
@@ -501,8 +551,11 @@ impl MachineEdit {
             Some(RotaryAxis::Limited { min, max }) => (1, [number(min), number(max)]),
             Some(RotaryAxis::Endless) => (2, ["-360".into(), "360".into()]),
         };
+        let torch = m.torch.unwrap_or_default();
         MachineEdit {
             name: m.name.clone(),
+            kind: MachineKind::ALL.iter().position(|k| *k == m.kind).unwrap_or(0),
+            torch: [torch.kerf, torch.feed, torch.pierce_height, torch.cut_height, torch.pierce_delay].map(number),
             travel: [number(m.x[0]), number(m.x[1]), number(m.y[0]), number(m.y[1]), number(m.z[0]), number(m.z[1])],
             a_kind,
             a,
@@ -521,14 +574,26 @@ impl MachineEdit {
             2 => Some(RotaryAxis::Endless),
             _ => None,
         };
+        let kind = MachineKind::ALL.get(self.kind).copied().unwrap_or_default();
+        let plasma = kind == MachineKind::Plasma;
+        let torch = if plasma {
+            let v = |i: usize| self.torch.get(i).map_or(Ok(0.0), |s| parse(s));
+            Some(Torch { kerf: v(0)?, feed: v(1)?, pierce_height: v(2)?, cut_height: v(3)?, pierce_delay: v(4)? })
+        } else {
+            None
+        };
+        // A plasma table's spindle range only lets the torch's on and off through.
+        let (spindle_min, spindle_max) = if plasma { (0.0, 1.0) } else { (parse(&self.spindle[0])?, parse(&self.spindle[1])?) };
         let machine = Machine {
             name: self.name.trim().to_string(),
+            kind,
+            torch,
             x: [t(0)?, t(1)?],
             y: [t(2)?, t(3)?],
             z: [t(4)?, t(5)?],
-            a,
-            spindle_min: parse(&self.spindle[0])?,
-            spindle_max: parse(&self.spindle[1])?,
+            a: if plasma { None } else { a },
+            spindle_min,
+            spindle_max,
             max_feed: parse(&self.max_feed)?,
             post: self.post.clone(),
         };
@@ -560,6 +625,8 @@ struct PostEdit {
     tapping: usize,
     /// G-code or Klartext, as the post it started from writes.
     language: solidcraft_engine::cam::Language,
+    /// The kind of machine it writes for, as the post it started from does.
+    machine: MachineKind,
     tool_change_first: bool,
     dwell: String,
     /// Program start, tool change, spindle on, spindle off, coolant on, coolant off, program end.
@@ -582,6 +649,7 @@ impl PostEdit {
         let numbers = p.line_numbers.unwrap_or(LineNumbers { start: 10, step: 10 });
         let block = |lines: &[String]| lines.join("\n");
         PostEdit {
+            machine: p.machine,
             name: p.name.clone(),
             extension: p.extension.clone(),
             units: usize::from(p.units == Units::Inch),
@@ -650,6 +718,7 @@ impl PostEdit {
             canned_cycles: self.canned_cycles,
             tapping: TAPPING.get(self.tapping).map_or(Tapping::None, |(t, _)| *t),
             language: self.language,
+            machine: self.machine,
             dwell: self.dwell.trim().to_string(),
         };
         post.validate().map_err(|e| e.to_string())?;
@@ -1007,8 +1076,9 @@ enum Action {
     Post(Box<Post>),
     /// Takes a post off the personal list.
     Unpost(String),
-    /// Saves the tool list and setup sheet.
-    Sheet,
+    /// Saves the tool list and setup sheet: `cam.sheet`'s choice of setups (one setup, a part's,
+    /// or every one) and the file's name without extension.
+    Sheet(Value, String),
 }
 
 /// Export setup `setup`'s program: straight into its machine's folder when one is set (an
@@ -1045,6 +1115,7 @@ fn op_kind(op: &CamOperation) -> &'static str {
         CamOperation::Engrave { .. } => "cmd.cam.op.engrave",
         CamOperation::HelicalBore { .. } => "cmd.cam.op.helix",
         CamOperation::ThreadMill { .. } => "cmd.cam.op.thread",
+        CamOperation::Plasma { .. } => "cmd.cam.op.plasma",
     }
 }
 
@@ -1077,6 +1148,20 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             actions.push(Action::Run("cam.setup", json!({"name": setup.name, "delete": true})));
         }
     });
+    // What the setup does, the machine it runs on and the post that writes its program.
+    let cam = &app.session.doc.cam;
+    let machine = setup.machine.as_ref().map_or_else(|| tr("ui.cam.machine_none").to_string(), |n| cam.machine(n).map_or_else(|| n.clone(), machine_label));
+    let line = format!(
+        "{} · {}: {machine} · {}: {}",
+        setup_type_label(setup.operation_type),
+        tr("ui.cam.machine"),
+        tr("ui.cam.post"),
+        post_label(&setup_post(cam, setup))
+    );
+    ui.add(egui::Label::new(RichText::new(line).color(t.text_dim)).wrap());
+    if setup.operation_type == SetupOperationType::Plasma {
+        return step_rows(app, ui, d, setup, actions);
+    }
     // Material: none, the six groups, and the setup's own name if it is another.
     let mut names: Vec<String> = MATERIALS.iter().map(|m| (*m).to_string()).collect();
     if let Some(m) = &setup.material
@@ -1112,10 +1197,12 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             actions.push(Action::Run("cam.setup", json!({"name": setup.name, "max_rpm": value})));
         }
     }
-    if let Some(name) = &setup.machine {
-        let line = app.session.doc.cam.machine(name).map_or_else(|| name.clone(), machine_label);
-        ui.add(egui::Label::new(RichText::new(format!("{}: {line}", tr("ui.cam.machine"))).color(t.text_dim)).wrap());
-    }
+    step_rows(app, ui, d, setup, actions);
+}
+
+/// A setup's steps in order, each with its tool or torch and its buttons, then its program's.
+fn step_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSetup, actions: &mut Vec<Action>) {
+    let t = Tokens::get();
     let count = setup.operations.len();
     if count == 0 {
         ui.add(egui::Label::new(RichText::new(tr("ui.cam.no_steps")).color(t.text_dim)).wrap());
@@ -1151,7 +1238,10 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             ui.label(RichText::new(tr(op_kind(op))).color(t.text_dim));
             let tool = app.session.doc.cam.tool(op.tool());
             let rpm = op.spindle_rpm().or(tool.and_then(|t| t.spindle_rpm));
-            let mut info = tool.map_or(format!("T{}", op.tool()), |t| format!("T{} Ø{}", t.number, number(t.diameter)));
+            let mut info = match op {
+                CamOperation::Plasma { torch, .. } => format!("{} {}", tr("ui.cam.kerf"), torch.kerf.as_str()),
+                _ => tool.map_or(format!("T{}", op.tool()), |t| format!("T{} Ø{}", t.number, number(t.diameter))),
+            };
             if let Some(rpm) = rpm {
                 info.push_str(&format!("  n {}", number(rpm.round())));
             }
@@ -1173,7 +1263,8 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
                         actions.push(Action::Run("cam.op.duplicate", json!({"setup": setup.name, "name": name})));
                         ui.close();
                     }
-                    for other in app.session.doc.cam.setups.iter().filter(|o| o.name != setup.name) {
+                    // Only into setups that take the step: plasma cuts into plasma setups and so on.
+                    for other in app.session.doc.cam.setups.iter().filter(|o| o.name != setup.name && o.operation_type.takes(op)) {
                         let text = crate::i18n::format("ui.cam.copy_to", &[("setup", &other.name)]);
                         if ui_kit::list_picker_start(ui, &format!("cam-dup-{}-{name}-{}", setup.name, other.name), &text, false).clicked() {
                             actions.push(Action::Run("cam.op.duplicate", json!({"setup": setup.name, "name": name, "to_setup": other.name})));
@@ -1198,6 +1289,10 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
             }
             if ui_kit::button(ui, tr("ui.cam.show_gcode"), ui_kit::Button::Normal).clicked() {
                 d.gcode = Some(GcodeView::new(app, &setup.name));
+            }
+            // The sheet for this setup's machine: its frame, stock, machine, post and steps.
+            if ui_kit::button(ui, tr("ui.cam.sheet.setup"), ui_kit::Button::Normal).on_hover_text(tr("ui.cam.sheet.setup_hint")).clicked() {
+                actions.push(Action::Sheet(json!({"setup": setup.name}), setup.name.clone()));
             }
         });
     }
@@ -1422,6 +1517,7 @@ fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut V
             "cam.op.helix",
             "cam.op.thread",
             "cam.op.tap",
+            "cam.op.plasma",
         ] {
             if ui_kit::button(ui, tr(&format!("cmd.{id}")), ui_kit::Button::Normal).clicked() {
                 actions.push(Action::Start(id));
@@ -1433,14 +1529,27 @@ fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut V
     if setups.is_empty() {
         ui.add(egui::Label::new(tr("ui.cam.no_setups")).wrap());
     }
-    for setup in &setups {
+    // Each part, then the setups that make it, each on its own machine.
+    for part in parts(&app.session.doc.cam) {
         ui.separator();
-        setup_rows(app, ui, d, setup, actions);
+        let title = part.clone().unwrap_or_else(|| tr("ui.cam.part_default").to_string());
+        let mine: Vec<&CamSetup> = setups.iter().filter(|s| s.part == part).collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("{}: {title}", tr("ui.cam.part"))).strong());
+            if mine.iter().any(|s| !s.operations.is_empty())
+                && ui_kit::button(ui, tr("ui.cam.sheet.part"), ui_kit::Button::Small).on_hover_text(tr("ui.cam.sheet.hint")).clicked()
+            {
+                actions.push(Action::Sheet(json!({"part": part.clone().unwrap_or_default()}), title.clone()));
+            }
+        });
+        for setup in mine {
+            ui.indent(("cam-part-setup", &setup.name), |ui| setup_rows(app, ui, d, setup, actions));
+        }
     }
     if setups.iter().any(|s| !s.operations.is_empty()) {
         ui.separator();
         if ui_kit::button(ui, tr("ui.cam.sheet.export"), ui_kit::Button::Normal).on_hover_text(tr("ui.cam.sheet.hint")).clicked() {
-            actions.push(Action::Sheet);
+            actions.push(Action::Sheet(json!({}), "setup-sheet".into()));
         }
     }
 }
@@ -1454,13 +1563,17 @@ const SHEET_HEADINGS: &[(&str, &str)] = &[
     ("fixtures", "ui.cam.sheet.fixtures"),
     ("flute_length", "ui.cam.sheet.flute_length"),
     ("flutes", "ui.cam.sheet.flutes"),
+    ("heights", "ui.cam.sheet.heights"),
     ("holder", "ui.cam.sheet.holder"),
+    ("kerf", "ui.cam.kerf"),
     ("kind", "ui.cam.sheet.kind"),
     ("machine", "ui.cam.sheet.machine"),
     ("material", "ui.cam.sheet.material"),
     ("none", "ui.cam.sheet.none"),
     ("number", "ui.cam.sheet.number"),
+    ("operation_type", "ui.cam.setup_type"),
     ("origin", "ui.cam.sheet.origin"),
+    ("part", "ui.cam.part"),
     ("part_zero", "ui.cam.sheet.part_zero"),
     ("post", "ui.cam.sheet.post"),
     ("problem", "ui.cam.sheet.problem"),
@@ -1487,6 +1600,7 @@ const SHEET_STEPS: &[(&str, &str)] = &[
     ("engrave", "cmd.cam.op.engrave"),
     ("face", "cmd.cam.op.face"),
     ("helical_bore", "cmd.cam.op.helix"),
+    ("plasma", "cmd.cam.op.plasma"),
     ("pocket", "cmd.cam.op.pocket"),
     ("slot", "cmd.cam.op.slot"),
     ("thread_mill", "cmd.cam.op.thread"),
@@ -1513,6 +1627,12 @@ fn sheet_labels() -> Value {
     }
     for (key, id) in SHEET_STOCKS {
         labels.insert(format!("stock.{key}"), json!(tr(id)));
+    }
+    for &kind in MachineKind::ALL {
+        labels.insert(format!("machine.{}", kind.key()), json!(machine_kind_label(kind)));
+    }
+    for (kind, id) in crate::dialogs_cam_setup::TYPES {
+        labels.insert(format!("type.{}", kind.key()), json!(tr(id)));
     }
     Value::Object(labels)
 }
@@ -1630,31 +1750,23 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     let kinds: Vec<&str> = KINDS.iter().map(|k| tr(kind_key(*k))).collect();
     ui_kit::text_row(ui, tr("ui.cam.tool"), &mut edit.number, "");
     ui_kit::choice_row(ui, tr("ui.cam.kind"), "cam-tool-kind", &mut edit.kind, &kinds);
-    // A torch's diameter is the width of its cut, its length the thickest sheet it cuts.
     let kind = KINDS.get(edit.kind).copied().unwrap_or(ToolKind::FlatEndmill);
-    let torch = kind == ToolKind::Plasma;
-    ui_kit::text_row(ui, tr(if torch { "ui.cam.kerf" } else { "ui.cam.diameter" }), &mut edit.diameter, "");
-    if !torch {
-        ui_kit::text_row(ui, tr("ui.cam.flutes"), &mut edit.flutes, "");
-    }
-    ui_kit::text_row(ui, tr(if torch { "ui.cam.max_thickness" } else { "ui.cam.flute" }), &mut edit.flute_length, "");
+    ui_kit::text_row(ui, tr("ui.cam.diameter"), &mut edit.diameter, "");
+    ui_kit::text_row(ui, tr("ui.cam.flutes"), &mut edit.flutes, "");
+    ui_kit::text_row(ui, tr("ui.cam.flute"), &mut edit.flute_length, "");
     ui_kit::text_row(ui, tr("ui.cam.description"), &mut edit.description, "");
     // The kind's own sizes, then lengths and the holder every tool can have.
     for &(i, key, used) in SIZES {
         if used(kind)
             && let Some(text) = edit.sizes.get_mut(i)
         {
-            ui_kit::text_row(ui, tr(key), text, if required_size(i) { "" } else { tr("ui.cam.optional") });
+            ui_kit::text_row(ui, tr(key), text, tr("ui.cam.optional"));
         }
     }
     ui_kit::text_row(ui, tr("ui.cam.holder"), &mut edit.holder[0], tr("ui.cam.optional"));
     ui_kit::text_row(ui, tr("ui.cam.holder_diameter"), &mut edit.holder[1], tr("ui.cam.optional"));
     ui_kit::text_row(ui, tr("ui.cam.holder_length"), &mut edit.holder[2], tr("ui.cam.optional"));
-    if torch {
-        ui.add(egui::Label::new(RichText::new(tr("ui.cam.plasma_hint")).color(Tokens::get().text_dim)).wrap());
-    } else {
-        cutting_rows(ui, edit);
-    }
+    cutting_rows(ui, edit);
     if ui_kit::button(ui, tr("ui.cam.save_tool"), ui_kit::Button::Primary).clicked() {
         let base = original.and_then(|n| library.find(n));
         match edit.tool(base) {
@@ -1702,10 +1814,15 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
             });
         }
     });
-    if ui_kit::button(ui, tr("ui.cam.new_machine"), ui_kit::Button::Normal).clicked() {
-        let name = (1..=MAX_MACHINES).map(|i| format!("{} {i}", tr("ui.cam.machine"))).find(|n| list.find(n).is_none()).unwrap_or_default();
-        d.machine = Some((None, MachineEdit::from_machine(&Machine::new(name))));
-    }
+    ui.horizontal_wrapped(|ui| {
+        let free = |base: &str| (1..=MAX_MACHINES).map(|i| format!("{base} {i}")).find(|n| list.find(n).is_none()).unwrap_or_default();
+        if ui_kit::button(ui, tr("ui.cam.new_machine"), ui_kit::Button::Normal).clicked() {
+            d.machine = Some((None, MachineEdit::from_machine(&Machine::new(free(tr("ui.cam.machine"))))));
+        }
+        if ui_kit::button(ui, tr("ui.cam.new_plasma_table"), ui_kit::Button::Normal).clicked() {
+            d.machine = Some((None, MachineEdit::from_machine(&Machine::plasma(free(tr("ui.cam.machine_plasma"))))));
+        }
+    });
     let design: Vec<&Machine> = app.session.doc.cam.machines.iter().filter(|m| list.find(&m.name) != Some(*m)).collect();
     if !design.is_empty() {
         ui.separator();
@@ -1726,23 +1843,36 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     let Some((original, edit)) = &mut d.machine else { return };
     ui.separator();
     ui_kit::text_row(ui, tr("ui.cam.machine_name"), &mut edit.name, "");
+    // What the machine does decides which setups it runs and which posts write for it.
+    let kinds: Vec<&str> = MachineKind::ALL.iter().map(|k| machine_kind_label(*k)).collect();
+    ui_kit::choice_row(ui, tr("ui.cam.machine_kind"), "cam-machine-kind", &mut edit.kind, &kinds);
+    let kind = MachineKind::ALL.get(edit.kind).copied().unwrap_or_default();
+    let plasma = kind == MachineKind::Plasma;
     for (label, value) in ["X−", "X+", "Y−", "Y+", "Z−", "Z+"].iter().zip(edit.travel.iter_mut()) {
         ui_kit::text_row(ui, &format!("{} {label} (mm)", tr("ui.cam.travel")), value, "");
     }
-    let kinds = [tr("ui.cam.a_none"), tr("ui.cam.a_limited"), tr("ui.cam.a_endless")];
-    ui_kit::choice_row(ui, tr("ui.cam.a_axis"), "cam-machine-a", &mut edit.a_kind, &kinds);
-    if edit.a_kind == 1 {
-        for (label, value) in ["A−", "A+"].iter().zip(edit.a.iter_mut()) {
-            ui_kit::text_row(ui, &format!("{} {label} (°)", tr("ui.cam.travel")), value, "");
+    if plasma {
+        // The torch's cutting data, suggested to each new plasma cut on the table.
+        let labels = ["ui.cam.kerf", "ui.cam.feed", "ui.cam.pierce_height", "ui.cam.cut_height", "ui.cam.pierce_delay"];
+        for (key, value) in labels.iter().zip(edit.torch.iter_mut()) {
+            ui_kit::text_row(ui, tr(key), value, "");
         }
+    } else {
+        let kinds = [tr("ui.cam.a_none"), tr("ui.cam.a_limited"), tr("ui.cam.a_endless")];
+        ui_kit::choice_row(ui, tr("ui.cam.a_axis"), "cam-machine-a", &mut edit.a_kind, &kinds);
+        if edit.a_kind == 1 {
+            for (label, value) in ["A−", "A+"].iter().zip(edit.a.iter_mut()) {
+                ui_kit::text_row(ui, &format!("{} {label} (°)", tr("ui.cam.travel")), value, "");
+            }
+        }
+        let [slow, fast] = &mut edit.spindle;
+        ui_kit::text_row(ui, tr("ui.cam.spindle_min"), slow, "");
+        ui_kit::text_row(ui, tr("ui.cam.spindle_max"), fast, "");
     }
-    let [slow, fast] = &mut edit.spindle;
-    ui_kit::text_row(ui, tr("ui.cam.spindle_min"), slow, "");
-    ui_kit::text_row(ui, tr("ui.cam.spindle_max"), fast, "");
     ui_kit::text_row(ui, tr("ui.cam.max_feed"), &mut edit.max_feed, "");
-    // The default, every built-in post, the personal posts, and the machine's own if it names another.
-    let mut posts: Vec<String> = Post::BUILTIN.iter().map(|p| (*p).to_string()).collect();
-    posts.extend(app.preferences.cam_posts.0.iter().map(|p| p.name.clone()));
+    // The default, the posts for this kind of machine, and the machine's own if it names another.
+    let mut posts: Vec<String> = Post::BUILTIN.iter().filter(|p| Post::builtin(p).is_some_and(|p| p.machine == kind)).map(|p| (*p).to_string()).collect();
+    posts.extend(app.preferences.cam_posts.0.iter().filter(|p| p.machine == kind).map(|p| p.name.clone()));
     if let Some(own) = &edit.post
         && !posts.contains(own)
     {
@@ -1976,14 +2106,14 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 let found = app.session.doc.cam.setup(&setup).and_then(|s| s.operations.iter().find(|o| o.name() == name).map(|o| (s, o)));
                 if let Some((setup, op)) = found {
                     let form = crate::dialogs_milling::Milling::edit(app, setup, op);
-                    app.dialog = Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::Milling(form), crate::dialogs_milling::inputs()));
+                    app.dialog = Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::Milling(Box::new(form)), crate::dialogs_milling::inputs()));
                 }
                 Ok(())
             }
             Action::EditSetup(name) => {
                 if let Some(setup) = app.session.doc.cam.setup(&name) {
                     let form = crate::dialogs_cam_setup::CamSetupForm::edit(app, setup);
-                    app.dialog = Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::CamSetup(form), crate::dialogs_cam_setup::inputs()));
+                    app.dialog = Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::CamSetup(Box::new(form)), crate::dialogs_cam_setup::inputs()));
                 }
                 Ok(())
             }
@@ -2013,9 +2143,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 d = app.cam_window.take().unwrap_or_default();
                 Ok(())
             }
-            Action::Sheet => {
-                let params = json!({"labels": sheet_labels(), "title": tr("ui.cam.sheet.title"), "overwrite": true});
-                app.pick_save_command("setup-sheet.html", &["html", "csv", "json"], "cam.sheet", params);
+            Action::Sheet(mut params, stem) => {
+                params["labels"] = sheet_labels();
+                params["title"] = json!(tr("ui.cam.sheet.title"));
+                params["overwrite"] = json!(true);
+                let file = program_file(&stem, "html");
+                app.pick_save_command(&file, &["html", "csv", "json"], "cam.sheet", params);
                 Ok(())
             }
             Action::ExportText(setup, text) => {

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>2D contour</title>
+  <path d="M6.95 29.59L32 44.05L32 48.88L6.95 34.41Z" fill="#b8c3cf"/>
+  <path d="M57.05 29.59L32 44.05L32 48.88L57.05 34.41Z" fill="#8e9faf"/>
+  <path d="M32 15.12L57.05 29.59L32 44.05L6.95 29.59Z" fill="#e2e8ef"/>
+  <path d="M32 15.12L57.05 29.59L57.05 34.41L32 48.88L6.95 34.41L6.95 29.59Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6.95 29.59L32 44.05L57.05 29.59" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 44.05L32 48.88" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 18.98L50.37 29.59L32 40.2L13.63 29.59Z" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M21.98 22.84L32 28.62L32 35.38L21.98 29.59Z" fill="#b8c3cf"/>
+  <path d="M42.02 22.84L32 28.62L32 35.38L42.02 29.59Z" fill="#8e9faf"/>
+  <path d="M32 17.05L42.02 22.84L32 28.62L21.98 22.84Z" fill="#e2e8ef"/>
+  <path d="M32 17.05L42.02 22.84L42.02 29.59L32 35.38L21.98 29.59L21.98 22.84Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M21.98 22.84L32 28.62L42.02 22.84" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 28.62L32 35.38" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.22 26.7L28.22 40.2A3.78 2.18 0 0 0 35.78 40.2L35.78 26.7Z" fill="#328bd3"/>
+  <path d="M33.32 26.7L33.32 42.24A3.78 2.18 0 0 0 35.78 40.2L35.78 26.7Z" fill="#236ead"/>
+  <path d="M28.22 26.7L28.22 40.2A3.78 2.18 0 0 0 35.78 40.2L35.78 26.7Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.22 26.7A3.78 2.18 0 1 0 35.78 26.7A3.78 2.18 0 1 0 28.22 26.7Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

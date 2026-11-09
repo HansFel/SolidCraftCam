@@ -1,14 +1,19 @@
-//! A CAM setup: name, work offset, part zero and axes picked on the model, stock, machine,
-//! material and highest spindle speed. OK runs `cam.setup` with the picks; the engine works out
-//! the frame and copies the chosen machine into the design.
+//! A CAM setup: the part it makes, what it does (milling, plasma cutting), name, work offset,
+//! part zero and axes picked on the model, stock, a machine of its kind with the post that
+//! writes its programs, material and highest spindle speed. OK runs `cam.setup` with the picks;
+//! the engine works out the frame and copies the chosen machine and post into the design.
 use crate::selection::{EDGES, PLANAR_FACES, SelInput, VERTICES};
 use crate::viewport::Proj;
 use crate::{theme::Tokens, ui_kit};
 use egui::Stroke;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
-use solidcraft_engine::cam::{MATERIALS, Machine};
-use solidcraft_engine::doc::cam::{BoxAxisRef, CamSetup, CamStock, StockOffsetMode, WcsOriginMode};
+use solidcraft_engine::cam::{MATERIALS, Machine, Post};
+use solidcraft_engine::doc::cam::{BoxAxisRef, CamSetup, CamStock, SetupOperationType, StockOffsetMode, WcsOriginMode};
+
+/// What a setup does, in the order the form offers it. Each runs on machines of its own kind.
+pub(crate) const TYPES: [(SetupOperationType, &str); 2] =
+    [(SetupOperationType::Milling, "ui.cam.type_milling"), (SetupOperationType::Plasma, "ui.cam.type_plasma")];
 
 /// How part zero is found, in the order the form offers them: one picked point, a pick per
 /// axis, the model's origin, a point of the model's or the stock's box.
@@ -22,6 +27,14 @@ const BOX_REFS: [&str; 3] = ["negative", "center", "positive"];
 #[derive(Clone, Debug)]
 pub struct CamSetupForm {
     pub(crate) name: String,
+    /// The part the setup makes; empty: the design's one part.
+    pub(crate) part: String,
+    /// What the setup does, as [`TYPES`] lists it; None keeps a type the form does not offer.
+    pub(crate) kind: Option<usize>,
+    /// A post of the setup's own instead of its machine's.
+    pub(crate) post: Option<String>,
+    /// That post in full when it is a personal one, copied into the design with the setup.
+    post_copy: Option<Post>,
     /// The setup being changed; None makes a new one.
     editing: Option<String>,
     /// Work offset 1…6 as 0…5 (G54…G59).
@@ -93,8 +106,13 @@ fn box_ref(r: BoxAxisRef) -> usize {
 impl CamSetupForm {
     /// A new setup: the next free name, part zero at the top of the model's box, the model's axes.
     pub fn new(app: &crate::SolveApp) -> Self {
+        let last = app.session.doc.cam.setups.last();
         Self {
             name: app.session.doc.cam.unused_setup_name(),
+            part: last.and_then(|s| s.part.clone()).unwrap_or_default(),
+            kind: Some(last.and_then(|s| TYPES.iter().position(|(t, _)| *t == s.operation_type)).unwrap_or(0)),
+            post: None,
+            post_copy: None,
             editing: None,
             offset: 0,
             zero: 3,
@@ -134,6 +152,10 @@ impl CamSetupForm {
         };
         Self {
             name: setup.name.clone(),
+            part: setup.part.clone().unwrap_or_default(),
+            kind: TYPES.iter().position(|(t, _)| *t == setup.operation_type),
+            post: setup.post.clone(),
+            post_copy: None,
             editing: Some(setup.name.clone()),
             offset: usize::from(setup.work_offset.clamp(1, 6) - 1),
             zero,
@@ -158,6 +180,14 @@ impl CamSetupForm {
         self.machine = machine;
     }
 
+    /// What the setup does as the form has it.
+    pub(crate) fn operation_type(&self, app: &crate::SolveApp) -> SetupOperationType {
+        match self.kind.and_then(|i| TYPES.get(i)) {
+            Some((t, _)) => *t,
+            None => self.editing.as_deref().and_then(|n| app.session.doc.cam.setup(n)).map(|s| s.operation_type).unwrap_or_default(),
+        }
+    }
+
     /// The setup the form shows in the viewport.
     pub fn name(&self) -> &str {
         self.editing.as_deref().unwrap_or(&self.name)
@@ -176,6 +206,15 @@ impl CamSetupForm {
             (zero, _) => zero,
         };
         let mut p = json!({"name": name, "work_offset": self.offset + 1, "wcs_origin_mode": ZERO.get(mode).copied().unwrap_or("selected_point")});
+        let part = self.part.trim();
+        p["part"] = if part.is_empty() { Value::Null } else { json!(part) };
+        if let Some((kind, _)) = self.kind.and_then(|i| TYPES.get(i)) {
+            p["operation_type"] = json!(kind.key());
+        }
+        p["post"] = self.post.as_ref().map_or(Value::Null, |n| json!(n));
+        if let Some(post) = self.post_copy.as_ref().filter(|c| self.post.as_ref() == Some(&c.name)) {
+            p["post_copy"] = serde_json::to_value(post).unwrap_or(Value::Null);
+        }
         // An edited setup keeps its name in `name`; a changed name field renames it.
         if let Some(old) = self.editing.as_deref().filter(|old| *old != name) {
             p["name"] = json!(old);
@@ -256,8 +295,17 @@ fn note(ui: &mut egui::Ui, text: &str) {
 }
 
 /// Above the pick rows: name, work offset and how part zero is found.
-pub fn head_rows(ui: &mut egui::Ui, form: &mut CamSetupForm) {
+pub fn head_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
     let tr = crate::i18n::tr;
+    part_row(app, ui, form);
+    let kinds: Vec<&str> = TYPES.iter().map(|(_, key)| tr(key)).collect();
+    let mut kind = form.kind.unwrap_or(usize::MAX);
+    if form.kind.is_some() || form.editing.is_none() {
+        ui_kit::choice_row(ui, tr("ui.cam.setup_type"), "cam-setup-type", &mut kind, &kinds);
+        if Some(kind) != form.kind && kind < TYPES.len() {
+            form.kind = Some(kind);
+        }
+    }
     ui_kit::text_row(ui, tr("ui.cam.setup"), &mut form.name, "");
     let offsets = ["G54", "G55", "G56", "G57", "G58", "G59"];
     ui_kit::choice_row(ui, tr("ui.cam.work_offset"), "cam-setup-offset", &mut form.offset, &offsets);
@@ -311,6 +359,11 @@ pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
     }
     fixture_rows(app, ui, form);
     machine_row(app, ui, form);
+    post_row(app, ui, form);
+    // A plasma table has no spindle and cuts no material groups.
+    if form.operation_type(app) == SetupOperationType::Plasma {
+        return;
+    }
     let names: Vec<String> =
         std::iter::once(tr("ui.cam.mat_none").to_string()).chain(MATERIALS.iter().map(|m| crate::cam_panel::material_label(m))).collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -346,14 +399,46 @@ fn fixture_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupFor
     }
 }
 
-/// The machine: none, one of the personal list, or one only the design has.
+/// The part the setup makes: one the design's setups already name, or a new one typed here.
+fn part_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
+    let tr = crate::i18n::tr;
+    let parts = crate::cam_panel::parts(&app.session.doc.cam);
+    let named: Vec<&str> = parts.iter().filter_map(|p| p.as_deref()).collect();
+    if named.is_empty() {
+        ui_kit::text_row(ui, tr("ui.cam.part"), &mut form.part, tr("ui.cam.part_hint"));
+        return;
+    }
+    let mut labels: Vec<&str> = std::iter::once(tr("ui.cam.part_default")).chain(named.iter().copied()).collect();
+    labels.push(tr("ui.cam.part_new"));
+    let typed = form.part.trim();
+    let current = if typed.is_empty() { 0 } else { named.iter().position(|n| *n == typed).map_or(labels.len() - 1, |i| i + 1) };
+    let mut chosen = current;
+    ui_kit::choice_row(ui, tr("ui.cam.part"), "cam-setup-part", &mut chosen, &labels);
+    if chosen != current {
+        form.part = match chosen {
+            0 => String::new(),
+            i if i == labels.len() - 1 => tr("ui.cam.part_new_name").to_string(),
+            i => named.get(i - 1).map(|n| (*n).to_string()).unwrap_or_default(),
+        };
+    }
+    if chosen == labels.len() - 1 {
+        ui_kit::text_row(ui, tr("ui.cam.part_name"), &mut form.part, "");
+    }
+}
+
+/// The machine: none, or one of its kind from the personal list or only the design has.
 fn machine_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
     let tr = crate::i18n::tr;
+    let kind = form.operation_type(app).machine_kind();
+    // A machine of another kind does not run this setup: changing what it does drops it.
+    if form.machine.as_ref().is_some_and(|m| Some(m.kind) != kind) {
+        form.machine = None;
+    }
     let list = &app.preferences.cam_machines.0;
-    let mut machines: Vec<&Machine> = list.iter().collect();
-    machines.extend(app.session.doc.cam.machines.iter().filter(|m| !list.iter().any(|l| l.name == m.name)));
+    let mut machines: Vec<&Machine> = list.iter().filter(|m| Some(m.kind) == kind).collect();
+    machines.extend(app.session.doc.cam.machines.iter().filter(|m| Some(m.kind) == kind && !list.iter().any(|l| l.name == m.name)));
     if machines.is_empty() && form.machine.is_none() {
-        note(ui, tr("ui.cam.no_machines"));
+        note(ui, tr("ui.cam.no_machines_of_kind"));
         return;
     }
     let names: Vec<&str> = std::iter::once(tr("ui.cam.machine_none")).chain(machines.iter().map(|m| m.name.as_str())).collect();
@@ -367,6 +452,32 @@ fn machine_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm
         note(ui, &crate::cam_panel::machine_label(machine));
     }
     form.machine_post = form.machine.as_ref().and_then(|m| crate::cam_panel::machine_post(&app.preferences.cam_posts, m)).cloned();
+}
+
+/// The post the setup's programs are written with: its machine's (or the type's default), or
+/// another post for that kind of machine.
+fn post_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
+    let tr = crate::i18n::tr;
+    let Some(kind) = form.operation_type(app).machine_kind() else { return };
+    let posts = crate::cam_panel::posts_for(app, kind);
+    if form.post.as_ref().is_some_and(|p| !posts.iter().any(|(n, _)| n == p)) {
+        form.post = None;
+    }
+    let inherited = form.machine.as_ref().and_then(|m| m.post.clone()).unwrap_or_else(|| match form.operation_type(app) {
+        SetupOperationType::Plasma => "plasma".into(),
+        _ => "rs274".into(),
+    });
+    let first = crate::i18n::format("ui.cam.post_of_machine", &[("post", &crate::cam_panel::post_label(&inherited))]);
+    let labels: Vec<String> = std::iter::once(first).chain(posts.iter().map(|(n, _)| crate::cam_panel::post_label(n))).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let current = form.post.as_ref().and_then(|p| posts.iter().position(|(n, _)| n == p)).map_or(0, |i| i + 1);
+    let mut chosen = current;
+    ui_kit::choice_row(ui, tr("ui.cam.post"), "cam-setup-post", &mut chosen, &refs);
+    if chosen != current {
+        let picked = chosen.checked_sub(1).and_then(|i| posts.get(i));
+        form.post = picked.map(|(n, _)| n.clone());
+        form.post_copy = picked.and_then(|(_, copy)| copy.clone());
+    }
 }
 
 /// Part zero with its axes and the stock's edges for setup `name`, as the design holds it.

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM tool</title>
+  <path d="M25.5 34.9L25.5 50.33A6.5 3.75 0 0 0 38.5 50.33L38.5 34.9Z" fill="#328bd3"/>
+  <path d="M34.27 34.9L34.27 53.84A6.5 3.75 0 0 0 38.5 50.33L38.5 34.9Z" fill="#236ead"/>
+  <path d="M25.5 34.9L25.5 50.33A6.5 3.75 0 0 0 38.5 50.33L38.5 34.9Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.5 34.9A6.5 3.75 0 1 0 38.5 34.9A6.5 3.75 0 1 0 25.5 34.9Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.5 13.68L25.5 34.9A6.5 3.75 0 0 0 38.5 34.9L38.5 13.68Z" fill="#b8c3cf"/>
+  <path d="M34.27 13.68L34.27 38.41A6.5 3.75 0 0 0 38.5 34.9L38.5 13.68Z" fill="#8e9faf"/>
+  <path d="M25.5 13.68L25.5 34.9A6.5 3.75 0 0 0 38.5 34.9L38.5 13.68Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.5 13.68A6.5 3.75 0 1 0 38.5 13.68A6.5 3.75 0 1 0 25.5 13.68Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.5 46.95L38.5 41.16" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.5 41.16L38.5 35.38" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

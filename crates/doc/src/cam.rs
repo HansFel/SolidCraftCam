@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use solidcore_record::{Loop2, Region2, Vec2, Vec3};
-use solidcraft_cam::{Machine, Post, Tool};
+use solidcraft_cam::{Machine, MachineKind, Post, Tool};
 use solidcraft_geom::prelude::*;
 
 use crate::{DocError, Expr, ProfileSel, Result};
@@ -88,6 +88,10 @@ impl CamSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CamSetup {
     pub name: String,
+    /// The part this setup makes, by name: the setups of one part are its steps, on whatever
+    /// machines. None: the design's one part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Work offset 1…6 (`G54`…`G59`).
     #[serde(default = "one")]
     pub work_offset: u8,
@@ -176,6 +180,7 @@ impl CamSetup {
     pub fn new(name: impl Into<String>) -> CamSetup {
         CamSetup {
             name: name.into(),
+            part: None,
             work_offset: 1,
             tool_axis: [0.0, 0.0, 1.0],
             x_axis: None,
@@ -205,6 +210,14 @@ impl CamSetup {
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() || self.name.len() > 128 {
             return Err(DocError::Invalid("a CAM setup name must be 1 to 128 characters".into()));
+        }
+        if let Some(part) = &self.part
+            && (part.trim().is_empty() || part.len() > 128 || part.trim() != part || part.chars().any(char::is_control))
+        {
+            return Err(DocError::Invalid("a part is named by 1 to 128 characters without surrounding spaces".into()));
+        }
+        if let Some(op) = self.operations.iter().find(|op| !self.operation_type.takes(op)) {
+            return Err(DocError::Invalid(format!("step `{}` does not belong in a {} setup", op.name(), self.operation_type.key())));
         }
         if !(1..=6).contains(&self.work_offset) {
             return Err(DocError::Invalid("the work offset must be 1 to 6 (G54 to G59)".into()));
@@ -435,6 +448,41 @@ pub enum SetupOperationType {
     Turning,
     Cutting,
     Additive,
+    /// Plasma cutting a sheet on a plasma table.
+    Plasma,
+}
+
+impl SetupOperationType {
+    /// The kind of machine a setup of this type runs on; None: no machine yet serves it.
+    pub fn machine_kind(self) -> Option<MachineKind> {
+        match self {
+            SetupOperationType::Milling => Some(MachineKind::Mill),
+            SetupOperationType::Turning => Some(MachineKind::Lathe),
+            SetupOperationType::Plasma => Some(MachineKind::Plasma),
+            SetupOperationType::Cutting | SetupOperationType::Additive => None,
+        }
+    }
+
+    /// Whether a setup of this type takes `op`: plasma cuts in plasma setups, milling and
+    /// drilling in milling setups.
+    pub fn takes(self, op: &CamOperation) -> bool {
+        match self {
+            SetupOperationType::Milling => !matches!(op, CamOperation::Plasma { .. }),
+            SetupOperationType::Plasma => matches!(op, CamOperation::Plasma { .. }),
+            _ => false,
+        }
+    }
+
+    /// The key commands and files use.
+    pub fn key(self) -> &'static str {
+        match self {
+            SetupOperationType::Milling => "milling",
+            SetupOperationType::Turning => "turning",
+            SetupOperationType::Cutting => "cutting",
+            SetupOperationType::Additive => "additive",
+            SetupOperationType::Plasma => "plasma",
+        }
+    }
 }
 
 /// Post Process tab on the Setup dialog.
@@ -714,9 +762,37 @@ pub struct CamContourParams {
     /// Closed contours: holding tabs left on each loop so the part stays in the stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<Box<CamTabs>>,
-    /// Plasma: closed cuts at most `diameter` wide (small holes) cut at `share` of the feed.
+}
+
+/// A plasma cut's torch data: the kerf the contour is offset by half of, the heights the arc is
+/// struck and cut at over the sheet, the wait for the pierce, and small holes cut slower.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CamTorch {
+    pub kerf: Expr,
+    pub pierce_height: Expr,
+    pub cut_height: Expr,
+    /// Seconds.
+    pub pierce_delay: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slow_holes: Option<Box<CamSlowHoles>>,
+    pub slow_holes: Option<CamSlowHoles>,
+}
+
+impl CamTorch {
+    fn validate(&self) -> Result<()> {
+        check_expr(&self.kerf, "kerf")?;
+        check_expr(&self.pierce_height, "pierce_height")?;
+        check_expr(&self.cut_height, "cut_height")?;
+        if !self.pierce_delay.is_finite() || !(0.0..=60.0).contains(&self.pierce_delay) {
+            return Err(DocError::Invalid("the pierce delay must be 0 to 60 s".into()));
+        }
+        if let Some(slow) = &self.slow_holes {
+            check_expr(&slow.diameter, "slow_holes.diameter")?;
+            if !(slow.share > 0.0 && slow.share <= 1.0) {
+                return Err(DocError::Invalid("small holes are cut at a share of the feed above 0 and at most 1".into()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Small holes cut slower by a plasma torch: those at most `diameter` wide, at `share` (above
@@ -1070,6 +1146,17 @@ pub enum CamOperation {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         coolant: bool,
     },
+    /// A plasma cut round the picked faces, sketch profiles or edges, by the setup's torch: no
+    /// tool, each cut pierced at the torch's heights over the sheet (`cut.top`), the holes first.
+    Plasma {
+        name: String,
+        geometry: CamGeometry,
+        /// Which side of the outline the kerf goes, leads, start point, open edge chains.
+        params: CamContourParams,
+        torch: Box<CamTorch>,
+        /// The sheet from `top` to `bottom`; `feed` cuts, `plunge_feed` lowers to the cut height.
+        cut: CamCut,
+    },
     /// Threads milled with a thread mill, one pitch a turn.
     ThreadMill {
         name: String,
@@ -1095,6 +1182,7 @@ impl CamOperation {
             | CamOperation::Engrave { name, .. }
             | CamOperation::HelicalBore { name, .. }
             | CamOperation::ThreadMill { name, .. }
+            | CamOperation::Plasma { name, .. }
             | CamOperation::Drill { name, .. } => name,
         }
     }
@@ -1110,6 +1198,7 @@ impl CamOperation {
             | CamOperation::Engrave { name, .. }
             | CamOperation::HelicalBore { name, .. }
             | CamOperation::ThreadMill { name, .. }
+            | CamOperation::Plasma { name, .. }
             | CamOperation::Drill { name, .. } => name,
         }
     }
@@ -1125,7 +1214,13 @@ impl CamOperation {
             | CamOperation::HelicalBore { tool, .. }
             | CamOperation::ThreadMill { tool, .. }
             | CamOperation::Drill { tool, .. } => *tool,
+            CamOperation::Plasma { .. } => 0,
         }
+    }
+
+    /// Whether the step cuts with a tool from the tool list; a plasma cut has the setup's torch.
+    pub fn uses_tool(&self) -> bool {
+        !matches!(self, CamOperation::Plasma { .. })
     }
 
     pub fn geometry(&self) -> &CamGeometry {
@@ -1138,6 +1233,7 @@ impl CamOperation {
             | CamOperation::Engrave { geometry, .. }
             | CamOperation::HelicalBore { geometry, .. }
             | CamOperation::ThreadMill { geometry, .. }
+            | CamOperation::Plasma { geometry, .. }
             | CamOperation::Drill { geometry, .. } => geometry,
         }
     }
@@ -1154,6 +1250,7 @@ impl CamOperation {
             | CamOperation::HelicalBore { spindle_rpm, .. }
             | CamOperation::ThreadMill { spindle_rpm, .. }
             | CamOperation::Drill { spindle_rpm, .. } => *spindle_rpm,
+            CamOperation::Plasma { .. } => None,
         }
     }
 
@@ -1168,6 +1265,7 @@ impl CamOperation {
             | CamOperation::HelicalBore { coolant, .. }
             | CamOperation::ThreadMill { coolant, .. }
             | CamOperation::Drill { coolant, .. } => *coolant,
+            CamOperation::Plasma { .. } => false,
         }
     }
 
@@ -1181,6 +1279,7 @@ impl CamOperation {
             | CamOperation::Engrave { cut, .. }
             | CamOperation::HelicalBore { cut, .. }
             | CamOperation::ThreadMill { cut, .. }
+            | CamOperation::Plasma { cut, .. }
             | CamOperation::Drill { cut, .. } => cut,
         }
     }
@@ -1230,16 +1329,23 @@ impl CamOperation {
                 if let Some(tabs) = &params.tabs {
                     tabs.validate()?;
                 }
-                if let Some(slow) = &params.slow_holes {
-                    check_expr(&slow.diameter, "slow_holes.diameter")?;
-                    if !(slow.share > 0.0 && slow.share <= 1.0) {
-                        return Err(DocError::Invalid("small holes are cut at a share of the feed above 0 and at most 1".into()));
-                    }
-                }
                 if params.start.iter().flatten().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                     return Err(DocError::Invalid("the start point must be finite and within 1e6 mm".into()));
                 }
                 check_spindle(*spindle_rpm)?;
+            }
+            CamOperation::Plasma { params, torch, .. } => {
+                params.lead_in.validate("lead_in")?;
+                params.lead_out.validate("lead_out")?;
+                check_expr(&params.overlap, "overlap")?;
+                check_expr(&params.tolerance, "tolerance")?;
+                if params.tabs.is_some() {
+                    return Err(DocError::Invalid("a plasma cut leaves no holding tabs".into()));
+                }
+                if params.start.iter().flatten().any(|x| !x.is_finite() || x.abs() > 1.0e6) {
+                    return Err(DocError::Invalid("the start point must be finite and within 1e6 mm".into()));
+                }
+                torch.validate()?;
             }
             CamOperation::Face { params, spindle_rpm, .. } => {
                 check_expr(&params.stepover, "stepover")?;
@@ -1315,7 +1421,6 @@ pub fn default_contour_params() -> CamContourParams {
         extend_start: zero_mm(),
         extend_end: zero_mm(),
         tabs: None,
-        slow_holes: None,
     }
 }
 

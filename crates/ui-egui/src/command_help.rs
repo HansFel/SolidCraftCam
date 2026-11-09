@@ -20,6 +20,7 @@ pub const DOCUMENTED: &[&str] = &[
     "cam.op.engrave",
     "cam.op.face",
     "cam.op.helix",
+    "cam.op.plasma",
     "cam.op.pocket",
     "cam.op.slot",
     "cam.op.tap",

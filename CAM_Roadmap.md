@@ -280,15 +280,18 @@ Generated from the design, as a printable HTML page (printed to PDF from the bro
 
 | Item | Status |
 |---|---|
-| Torch as a tool: kerf, thickest sheet, pierce height, cut height, pierce delay | Done: `kind: plasma` |
-| Contours cut once from above: pierce, cut height, holes before the outline, small holes slower | Done: a contour step with a torch (`slow_holes`) |
-| Torch on and off at every cut in every G-code post; a built-in `plasma` post | Done |
+| Plasma table as a machine kind with its torch's cutting data; no tool | Done: `kind: plasma`, `torch` |
+| Plasma cut as its own step in a plasma setup: pierce, cut height, holes before the outline, small holes slower | Done: `cam.op.plasma` (`slow_holes`) |
+| Torch on and off at every cut; a built-in `plasma` post, the only one for plasma tables | Done |
+| Parts over setups; a setup runs on a machine of its kind, written by a post for that kind | Done: `part`, `operation_type`, `Post::machine` |
+| Setup sheet per setup and per part, with the machine's kind and the torch data | Done |
 | Cut charts per material and sheet thickness (feed, kerf, heights, amperage) | Planned |
 | Height control (THC) on and off, off on small holes and corners | Planned |
 | Micro-joints (short uncut bridges) instead of holding tabs | Planned |
 | Lead-ins from the waste side picked automatically; overcut on holes | Planned |
 | Marking (low current, no pierce) along lines and text | Planned |
 | Parts on a sheet: rectangular arrangement, then true nesting | Planned |
+| Further machine kinds on the same rule: laser, waterjet, punching | Planned |
 | Kerf shown in the preview | Partial: the simulation cuts the kerf through the stock |
 
 ## Turning and mill-turn

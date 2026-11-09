@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM machine</title>
+  <path d="M8.62 34.7L32 48.2L32 52.7L8.62 39.2Z" fill="#b8c3cf"/>
+  <path d="M55.38 34.7L32 48.2L32 52.7L55.38 39.2Z" fill="#8e9faf"/>
+  <path d="M32 21.2L55.38 34.7L32 48.2L8.62 34.7Z" fill="#e2e8ef"/>
+  <path d="M32 21.2L55.38 34.7L55.38 39.2L32 52.7L8.62 39.2L8.62 34.7Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M8.62 34.7L32 48.2L55.38 34.7" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 48.2L32 52.7" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M47.59 13.1L51.49 15.35L51.49 36.05L47.59 33.8Z" fill="#b8c3cf"/>
+  <path d="M54.6 13.55L51.49 15.35L51.49 36.05L54.6 34.25Z" fill="#8e9faf"/>
+  <path d="M50.71 11.3L54.6 13.55L51.49 15.35L47.59 13.1Z" fill="#e2e8ef"/>
+  <path d="M50.71 11.3L54.6 13.55L54.6 34.25L51.49 36.05L47.59 33.8L47.59 13.1Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M47.59 13.1L51.49 15.35L54.6 13.55" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M51.49 15.35L51.49 36.05" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M30.44 23L34.34 25.25L34.34 29.75L30.44 27.5Z" fill="#b8c3cf"/>
+  <path d="M51.49 15.35L34.34 25.25L34.34 29.75L51.49 19.85Z" fill="#8e9faf"/>
+  <path d="M47.59 13.1L51.49 15.35L34.34 25.25L30.44 23Z" fill="#e2e8ef"/>
+  <path d="M47.59 13.1L51.49 15.35L51.49 19.85L34.34 29.75L30.44 27.5L30.44 23Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M30.44 23L34.34 25.25L51.49 15.35" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M34.34 25.25L34.34 29.75" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M31.15 18.5L31.15 31.1A3.97 2.29 0 0 0 39.09 31.1L39.09 18.5Z" fill="#328bd3"/>
+  <path d="M36.51 18.5L36.51 33.25A3.97 2.29 0 0 0 39.09 31.1L39.09 18.5Z" fill="#236ead"/>
+  <path d="M31.15 18.5L31.15 31.1A3.97 2.29 0 0 0 39.09 31.1L39.09 18.5Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M31.15 18.5A3.97 2.29 0 1 0 39.09 18.5A3.97 2.29 0 1 0 31.15 18.5Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.32 24.8L31.22 27.05L31.22 47.75L27.32 45.5Z" fill="#b8c3cf"/>
+  <path d="M34.34 25.25L31.22 27.05L31.22 47.75L34.34 45.95Z" fill="#8e9faf"/>
+  <path d="M30.44 23L34.34 25.25L31.22 27.05L27.32 24.8Z" fill="#e2e8ef"/>
+  <path d="M30.44 23L34.34 25.25L34.34 45.95L31.22 47.75L27.32 45.5L27.32 24.8Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.32 24.8L31.22 27.05L34.34 25.25" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M31.22 27.05L31.22 47.75" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

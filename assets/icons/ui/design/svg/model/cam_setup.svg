@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM setup</title>
+  <path d="M6.95 37.63L32 52.09L32 58.84L6.95 44.38Z" fill="#b8c3cf"/>
+  <path d="M57.05 37.63L32 52.09L32 58.84L57.05 44.38Z" fill="#8e9faf"/>
+  <path d="M32 23.16L57.05 37.63L32 52.09L6.95 37.63Z" fill="#e2e8ef"/>
+  <path d="M32 23.16L57.05 37.63L57.05 44.38L32 58.84L6.95 44.38L6.95 37.63Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6.95 37.63L32 52.09L57.05 37.63" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 52.09L32 58.84" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 23.16L48.45 32.66" fill="none" stroke="#ffffff" stroke-width="6.45" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M55.38 36.66L45.34 36.06L49.84 28.26Z" fill="#ffffff" stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 23.16L48.45 32.66" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M55.38 36.66L45.34 36.06L49.84 28.26Z" fill="#236ead"/>
+  <path d="M32 23.16L15.55 32.66" fill="none" stroke="#ffffff" stroke-width="6.45" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M8.62 36.66L14.16 28.26L18.66 36.06Z" fill="#ffffff" stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 23.16L15.55 32.66" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M8.62 36.66L14.16 28.26L18.66 36.06Z" fill="#236ead"/>
+  <path d="M32 23.16L32 11.88" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 3.88L36.5 12.88L27.5 12.88Z" fill="#236ead"/>
+  <circle cx="32" cy="23.16" r="3.4" fill="#236ead"/>
+</svg>

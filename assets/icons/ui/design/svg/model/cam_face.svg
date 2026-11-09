@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Facing</title>
+  <path d="M6.95 30.44L32 44.9L32 51.65L6.95 37.19Z" fill="#b8c3cf"/>
+  <path d="M57.05 30.44L32 44.9L32 51.65L57.05 37.19Z" fill="#8e9faf"/>
+  <path d="M32 15.97L57.05 30.44L32 44.9L6.95 30.44Z" fill="#e2e8ef"/>
+  <path d="M32 15.97L57.05 30.44L57.05 37.19L32 51.65L6.95 37.19L6.95 30.44Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6.95 30.44L32 44.9L57.05 30.44" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 44.9L32 51.65" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M31.16 20.31L49.54 30.92L42.86 34.78L24.48 24.17L17.8 28.03L36.18 38.63" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M14.02 14.53L14.02 28.03A3.78 2.18 0 0 0 21.58 28.03L21.58 14.53Z" fill="#328bd3"/>
+  <path d="M19.13 14.53L19.13 30.07A3.78 2.18 0 0 0 21.58 28.03L21.58 14.53Z" fill="#236ead"/>
+  <path d="M14.02 14.53L14.02 28.03A3.78 2.18 0 0 0 21.58 28.03L21.58 14.53Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M14.02 14.53A3.78 2.18 0 1 0 21.58 14.53A3.78 2.18 0 1 0 14.02 14.53Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

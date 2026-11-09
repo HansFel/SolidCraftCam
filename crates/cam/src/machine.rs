@@ -15,9 +15,85 @@ pub const MAX_MACHINE_NAME: usize = 128;
 /// Largest travel or position (mm, degrees).
 const MAX_TRAVEL: f64 = 1.0e6;
 
+/// What a machine does. A setup is run on a machine of its own kind only, and a machine's
+/// programs are written by a post for its kind only ([`Post::machine`](crate::Post)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineKind {
+    /// A CNC mill or router: rotating tools, depth passes.
+    #[default]
+    Mill,
+    /// A CNC lathe.
+    Lathe,
+    /// A plasma table: a torch instead of tools, each cut pierced through the sheet.
+    Plasma,
+}
+
+impl MachineKind {
+    pub const ALL: &'static [MachineKind] = &[MachineKind::Mill, MachineKind::Lathe, MachineKind::Plasma];
+
+    /// The key commands and files use.
+    pub fn key(self) -> &'static str {
+        match self {
+            MachineKind::Mill => "mill",
+            MachineKind::Lathe => "lathe",
+            MachineKind::Plasma => "plasma",
+        }
+    }
+
+    pub fn is_mill(&self) -> bool {
+        *self == MachineKind::Mill
+    }
+}
+
+/// A plasma table's cutting data, suggested to each new plasma cut on it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Torch {
+    /// Width of the cut the arc burns (mm).
+    pub kerf: f64,
+    /// Cutting feed (mm/min).
+    pub feed: f64,
+    /// Height over the sheet the arc is struck at (mm).
+    pub pierce_height: f64,
+    /// Height over the sheet while cutting (mm).
+    pub cut_height: f64,
+    /// Wait after striking the arc until the sheet is pierced (s).
+    pub pierce_delay: f64,
+}
+
+impl Default for Torch {
+    fn default() -> Torch {
+        Torch { kerf: 1.5, feed: 2000.0, pierce_height: 3.8, cut_height: 1.5, pierce_delay: 0.5 }
+    }
+}
+
+impl Torch {
+    pub fn validate(&self) -> Result<()> {
+        if !(self.kerf > 0.0 && self.kerf <= 50.0) {
+            return invalid("the kerf must be above 0 and at most 50 mm");
+        }
+        if !(self.feed > 0.0 && self.feed <= MAX_TRAVEL) {
+            return invalid("the cutting feed must be above 0 and at most 1000000 mm/min");
+        }
+        if !(self.cut_height > 0.0 && self.cut_height <= 100.0) {
+            return invalid("the cut height must be above 0 and at most 100 mm");
+        }
+        if !(self.pierce_height >= self.cut_height && self.pierce_height <= 100.0) {
+            return invalid("the pierce height must be at least the cut height and at most 100 mm");
+        }
+        if !(0.0..=60.0).contains(&self.pierce_delay) {
+            return invalid("the pierce delay must be 0 to 60 s");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
     pub name: String,
+    /// What the machine does: which setups it serves and which posts write its programs.
+    #[serde(default, skip_serializing_if = "MachineKind::is_mill")]
+    pub kind: MachineKind,
     /// Travel of each linear axis as its lowest and highest position (mm): X−, X+ and so on.
     pub x: [f64; 2],
     pub y: [f64; 2],
@@ -34,6 +110,9 @@ pub struct Machine {
     /// whatever the caller writes by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post: Option<String>,
+    /// A plasma table's cutting data, suggested to new plasma cuts. Plasma tables only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torch: Option<Torch>,
 }
 
 /// A rotary axis: turning between two angles (degrees), or round without end.
@@ -49,6 +128,7 @@ impl Machine {
     pub fn new(name: impl Into<String>) -> Machine {
         Machine {
             name: name.into(),
+            kind: MachineKind::Mill,
             x: [0.0, 300.0],
             y: [0.0, 200.0],
             z: [-100.0, 0.0],
@@ -57,6 +137,24 @@ impl Machine {
             spindle_max: 24000.0,
             max_feed: 5000.0,
             post: None,
+            torch: None,
+        }
+    }
+
+    /// A plasma table of this name with a 1500 × 3000 mm bed and the default cutting data. Its
+    /// spindle range only lets the torch's on and off through.
+    pub fn plasma(name: impl Into<String>) -> Machine {
+        Machine {
+            kind: MachineKind::Plasma,
+            x: [0.0, 3000.0],
+            y: [0.0, 1500.0],
+            z: [-50.0, 0.0],
+            spindle_min: 0.0,
+            spindle_max: 1.0,
+            max_feed: 20000.0,
+            post: Some("plasma".into()),
+            torch: Some(Torch::default()),
+            ..Machine::new(name)
         }
     }
 
@@ -85,6 +183,11 @@ impl Machine {
             && (post.trim().is_empty() || post.len() > MAX_MACHINE_NAME || post.trim() != post || post.chars().any(char::is_control))
         {
             return invalid("a machine's post is named by 1 to 128 characters without surrounding spaces");
+        }
+        match (&self.torch, self.kind) {
+            (Some(torch), MachineKind::Plasma) => torch.validate()?,
+            (Some(_), _) => return invalid("cutting data for a torch are for plasma tables only"),
+            (None, _) => {}
         }
         Ok(())
     }

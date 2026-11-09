@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Engrave</title>
+  <path d="M6.95 28.84L32 43.3L32 50.05L6.95 35.59Z" fill="#b8c3cf"/>
+  <path d="M57.05 28.84L32 43.3L32 50.05L57.05 35.59Z" fill="#8e9faf"/>
+  <path d="M32 14.37L57.05 28.84L32 43.3L6.95 28.84Z" fill="#e2e8ef"/>
+  <path d="M32 14.37L57.05 28.84L57.05 35.59L32 50.05L6.95 35.59L6.95 28.84Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6.95 28.84L32 43.3L57.05 28.84" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 43.3L32 50.05" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.82 20.64L26.44 23.37L25.96 25.58L27.01 26.9L29.78 27.23L33.94 26.75L38.77 25.89L43.32 25.19L46.75 25.14L48.54 26.04L48.65 27.9L47.55 30.47" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M44 25.65L47.55 30.47L51.09 25.65Z" fill="#236ead"/>
+  <path d="M44 25.65L47.55 30.47L51.09 25.65Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M44 16L44 25.65A3.54 2.05 0 0 0 51.09 25.65L51.09 16Z" fill="#328bd3"/>
+  <path d="M48.79 16L48.79 27.56A3.54 2.05 0 0 0 51.09 25.65L51.09 16Z" fill="#236ead"/>
+  <path d="M44 16L44 25.65A3.54 2.05 0 0 0 51.09 25.65L51.09 16Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M44 16A3.54 2.05 0 1 0 51.09 16A3.54 2.05 0 1 0 44 16Z" fill="#b9ddf8" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

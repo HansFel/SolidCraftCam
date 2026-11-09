@@ -11,7 +11,7 @@ use solidcraft_doc::cam::{CamOperation, CamSetup};
 use super::CommandSpec;
 use super::cam;
 use crate::params::bad;
-use crate::schema::cam::{SheetHolder, SheetParams, SheetResult, SheetSetup, SheetStep, SheetStock, SheetTool};
+use crate::schema::cam::{SheetHolder, SheetParams, SheetResult, SheetSetup, SheetStep, SheetStock, SheetTool, SheetTorch};
 use crate::{EngineError, Result, Session};
 
 const SHEET: crate::schema::TypedContract<SheetParams> = crate::schema::TypedContract::new();
@@ -22,13 +22,13 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("cam.sheet", "Tool List
     .contract(&SHEET)
     .output(crate::schema::output_schema_for::<SheetResult>)
     .params(
-        "setup?: one setup (default every setup); path?: write a .html (printable setup sheet and tool list), .csv (tool \
+        "setup?: one setup; part?: the setups of one part (\"\" for setups that name none); default every setup; path?: write a .html (printable setup sheet and tool list), .csv (tool \
          list) or .json file; format?: html|csv|json (default from the path); overwrite?: false; title?: the page's heading; \
          labels?: {key: text} for the page's headings (`tools`, `setups`, `number`, `kind`, … and `kind.<tool kind>`, \
          `op.<step type>`) → tools: [{number, kind, description, diameter, flute_length, flutes, corner_radius, tip_angle, \
          tip_diameter, pitch, shank_diameter, overall_length, stick_out, holder, used_in: [\"setup / step\"]}] by number, \
-         setups: [{name, work_offset, origin, tool_axis, x_axis, part_zero, material, machine, post, fixtures, model_bodies, \
-         stock: {kind, min, max, size} (work coordinates), steps: [{name, type, tool, skipped, seconds}], seconds, problem}], \
+         setups: [{name, part, operation_type, machine_kind, work_offset, origin, tool_axis, x_axis, part_zero, material, machine, post, fixtures, model_bodies, \
+         stock: {kind, min, max, size} (work coordinates), steps: [{name, type, tool (none for a plasma cut), torch?: {kerf, pierce_height, cut_height, pierce_delay, feed}, skipped, seconds}], seconds, problem}], \
          seconds (all setups), path?, bytes?. A setup whose program cannot be posted has no run time and says why in `problem`.",
     )];
 
@@ -41,16 +41,25 @@ fn sheet(s: &mut Session, p: &Value) -> Result<Value> {
     if a.title.as_ref().is_some_and(|t| t.chars().count() > 256) {
         return Err(bad(cmd, "the title is at most 256 characters"));
     }
-    let setups: Vec<CamSetup> = match &a.setup {
-        Some(name) => vec![s.doc.cam.setup(name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{name}`")))?],
-        None => s.doc.cam.setups.clone(),
+    let setups: Vec<CamSetup> = match (&a.setup, &a.part) {
+        (Some(_), Some(_)) => return Err(bad(cmd, "give `setup` or `part`, not both")),
+        (Some(name), None) => vec![s.doc.cam.setup(name).cloned().ok_or_else(|| bad(cmd, format!("no setup `{name}`")))?],
+        (None, Some(part)) => {
+            let part = part.trim();
+            let found: Vec<CamSetup> = s.doc.cam.setups.iter().filter(|x| x.part.as_deref().unwrap_or("") == part).cloned().collect();
+            if found.is_empty() {
+                return Err(bad(cmd, format!("no setup makes part `{part}`")));
+            }
+            found
+        }
+        (None, None) => s.doc.cam.setups.clone(),
     };
     let mut out = SheetResult { tools: Vec::new(), setups: Vec::new(), seconds: None, path: None, bytes: None };
     let mut used: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     let mut all_timed = !setups.is_empty();
     let mut total = 0.0;
     for setup in &setups {
-        for op in &setup.operations {
+        for op in setup.operations.iter().filter(|op| op.uses_tool()) {
             used.entry(op.tool()).or_default().push(format!("{} / {}", setup.name, op.name()));
         }
         let row = setup_row(s, setup);
@@ -133,7 +142,7 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
         },
         _ => None,
     };
-    let post = cam::chosen_post(&s.doc.cam, setup).unwrap_or_else(|| "linuxcnc".into());
+    let post = cam::chosen_post(&s.doc.cam, setup).unwrap_or_else(|| cam::default_post(setup.operation_type).into());
     let skipped = |op: &CamOperation| setup.skipped.iter().any(|n| n == op.name());
     let mut per_step: BTreeMap<String, f64> = BTreeMap::new();
     let mut seconds = None;
@@ -159,8 +168,12 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
         seconds = Some(0.0);
     }
     let live = live.as_ref().unwrap_or(setup);
+    let machine = s.doc.cam.setup_machine(setup);
     SheetSetup {
         name: setup.name.clone(),
+        part: setup.part.clone(),
+        operation_type: setup.operation_type.key().to_string(),
+        machine_kind: machine.map(|m| m.kind.key().to_string()),
         work_offset: format!("G{}", 53 + u32::from(setup.work_offset)),
         origin: live.work_origin,
         tool_axis: frame.as_ref().map_or(live.tool_axis, |f| [f.z.x, f.z.y, f.z.z]),
@@ -178,7 +191,8 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
             .map(|op| SheetStep {
                 name: op.name().to_string(),
                 kind: tag(op, "type"),
-                tool: op.tool(),
+                tool: op.uses_tool().then(|| op.tool()),
+                torch: torch_row(s, op),
                 skipped: skipped(op),
                 seconds: per_step.get(op.name()).copied(),
             })
@@ -186,6 +200,20 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
         seconds,
         problem: (!problems.is_empty()).then(|| problems.join("; ")),
     }
+}
+
+/// A plasma cut's torch data as the design has them now; None for a step with a tool, or when an
+/// expression does not evaluate (the setup's note says why).
+fn torch_row(s: &Session, op: &CamOperation) -> Option<SheetTorch> {
+    let CamOperation::Plasma { torch, cut, .. } = op else { return None };
+    let len = |e: &solidcraft_doc::Expr| s.doc.eval(e.as_str(), solidcraft_doc::expr::Kind::Length).ok();
+    Some(SheetTorch {
+        kerf: len(&torch.kerf)?,
+        pierce_height: len(&torch.pierce_height)?,
+        cut_height: len(&torch.cut_height)?,
+        pierce_delay: torch.pierce_delay,
+        feed: len(&cut.feed)?,
+    })
 }
 
 /// How part zero is found: the origin mode, and the box point it names.
@@ -281,13 +309,17 @@ const HEADINGS: &[(&str, &str)] = &[
     ("fixtures", "Fixtures"),
     ("flute_length", "Flute length"),
     ("flutes", "Flutes"),
+    ("heights", "Pierce / cut height"),
     ("holder", "Holder"),
+    ("kerf", "Kerf"),
     ("kind", "Kind"),
     ("machine", "Machine"),
     ("material", "Material"),
     ("none", "none"),
     ("number", "T"),
+    ("operation_type", "Machining"),
     ("origin", "Part zero (model)"),
+    ("part", "Part"),
     ("part_zero", "Part zero"),
     ("post", "Post"),
     ("problem", "Note"),
@@ -323,7 +355,8 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
          section{break-inside:avoid}@media print{body{margin:0}section.setup{break-before:page}}</style></head><body>\n",
     );
     h.push_str(&format!("<h1>{}</h1>\n", esc(title)));
-    // The tool list.
+    // The tool list, when a step uses a tool (a plasma cut needs none).
+    if !sheet.tools.is_empty() {
     h.push_str(&format!("<section><h2>{}</h2>\n<table><tr>", esc(&l("tools"))));
     for key in ["number", "kind", "description", "diameter", "flute_length", "flutes", "sizes", "stick_out", "holder", "used_in"] {
         h.push_str(&format!("<th>{}</th>", esc(&l(key))));
@@ -359,13 +392,19 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
         ));
     }
     h.push_str("</table></section>\n");
+    }
     // A sheet per setup.
     h.push_str(&format!("<h2>{}</h2>\n", esc(&l("setups"))));
     for s in &sheet.setups {
         h.push_str(&format!("<section class=\"setup\"><h3>{}</h3>\n<table>", esc(&s.name)));
         let none = l("none");
         let list = |v: &[String]| if v.is_empty() { none.clone() } else { v.join(", ") };
-        let mut rows: Vec<(String, String)> = vec![
+        let mut rows: Vec<(String, String)> = Vec::new();
+        if let Some(part) = &s.part {
+            rows.push((l("part"), part.clone()));
+        }
+        rows.extend([
+            (l("operation_type"), kind("type", &s.operation_type)),
             (l("work_offset"), s.work_offset.clone()),
             (l("part_zero"), s.part_zero.replace('_', " ")),
             (l("origin"), v3(s.origin)),
@@ -379,10 +418,17 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
             ),
             (l("fixtures"), list(&s.fixtures)),
             (l("bodies"), list(&s.model_bodies)),
-            (l("machine"), s.machine.clone().unwrap_or_else(|| none.clone())),
+            (
+                l("machine"),
+                match (&s.machine, &s.machine_kind) {
+                    (Some(m), Some(k)) => format!("{m} ({})", kind("machine", k)),
+                    (Some(m), None) => m.clone(),
+                    (None, _) => none.clone(),
+                },
+            ),
             (l("post"), s.post.clone()),
             (l("run_time"), s.seconds.map(clock).unwrap_or_else(|| "—".into())),
-        ];
+        ]);
         if let Some(p) = &s.problem {
             rows.push((l("problem"), p.clone()));
         }
@@ -398,11 +444,24 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
         for (i, step) in s.steps.iter().enumerate() {
             let skipped = if step.skipped { format!(" <span class=\"dim\">({})</span>", esc(&l("skipped"))) } else { String::new() };
             h.push_str(&format!(
-                "<tr><td>{}. {}{skipped}</td><td>{}</td><td class=\"n\">T{}</td><td class=\"n\">{}</td></tr>\n",
+                "<tr><td>{}. {}{skipped}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td></tr>\n",
                 i + 1,
                 esc(&step.name),
                 esc(&kind("op", &step.kind)),
-                step.tool,
+                match (&step.tool, &step.torch) {
+                    (Some(t), _) => format!("T{t}"),
+                    (None, Some(t)) => esc(&format!(
+                        "{} {} · {} {} / {} · {} s · {} mm/min",
+                        l("kerf"),
+                        mm(t.kerf),
+                        l("heights"),
+                        mm(t.pierce_height),
+                        mm(t.cut_height),
+                        mm(t.pierce_delay),
+                        mm(t.feed)
+                    )),
+                    (None, None) => String::new(),
+                },
                 step.seconds.map(clock).unwrap_or_default(),
             ));
         }

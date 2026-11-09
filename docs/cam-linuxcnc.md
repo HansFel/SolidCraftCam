@@ -218,12 +218,36 @@ model lacks are material in the way. A tool without a stick-out is taken to stic
 length, so give tools their stick-out and holder for the check to see them. A T-slot cutter's
 undercut and the stock are not checked yet.
 
+## Parts, setups and machines
+
+The job list is grouped by **part**: each part, then the setups that make it, in order. One
+part's setups can run on different machines, a mill for the drilling and a plasma table for the
+outline, say. A setup's **Part** is chosen in the setup form; setups that name none belong to
+the design's one part.
+
+A setup says what it does (**Machining**: milling or plasma cutting) and runs on a machine of
+that kind only; a machine says its **Kind of machine** (CNC mill, lathe, plasma table) in the
+machine list. The rule holds for everything that follows from it:
+
+- the setup form offers only machines of the setup's kind, and `cam.setup` refuses another;
+- a post writes for one kind of machine: the setup form offers only those under **Post** (the
+  machine's post first), the machine list only those for the machine's kind, and posting
+  refuses a post for another kind;
+- milling and drilling steps go in milling setups, plasma cuts in plasma setups; the step form
+  offers only setups that take the step, and a copy goes only into such a setup.
+
+Each setup has a **Setup sheet** button for its machine; the part's heading has one for all its
+setups. A lathe is a kind already; its steps come later (see the roadmap), and further kinds
+(laser, waterjet, punching) fit the same rule.
+
 ## Plasma cutting
 
-A **Plasma torch** in the tool library is a tool like any other: its **Kerf width** is its
-diameter, its **Thickest sheet** what it can cut through, and it needs its **Pierce height**,
-**Cut height** (both mm above the sheet) and **Pierce delay** (seconds), and a feed. A
-**Contour** step with a torch cuts the sheet once, from above it:
+A **plasma table** is a machine of the kind plasma: its bed, fastest feed and its torch's
+cutting data (**Kerf width**, **Feed**, **Pierce height**, **Cut height**, **Pierce delay**),
+which every new cut on it starts from. It has no spindle and no tool library: a **Plasma cut**
+needs no tool. Make a setup with **Machining: Plasma cutting** on the table, then add plasma
+cuts to it; each cut can change the torch's data for itself. A plasma cut cuts the sheet once,
+from above it:
 
 - at each cut the torch comes down at rapid to the pierce height, is lit, waits the pierce
   delay, feeds down to the cut height (at the plunge feed) and cuts the lead-in, the loop, the
@@ -231,14 +255,15 @@ diameter, its **Thickest sheet** what it can cut through, and it needs its **Pie
 - holes are cut before the outline round them, so a part is never cut free before its holes;
 - **Small holes up to** a diameter can be cut at **Their feed** (a share of the feed); leave it
   empty to cut them all at the feed;
-- the step's top is the sheet's top; depth passes, ramps and floor stock do not apply, and
-  holding tabs are refused.
+- the step's top is the sheet's top and its bottom the sheet's underside; there are no depth
+  passes, ramps, allowances or holding tabs.
 
 The posts light the torch with their spindle-on block and put it out with their spindle-off
 block, at every cut; the torch gets `S1`. The built-in **plasma** post writes no tool change and
 no tool length offset (`M3 S1`, `M5`, pierce delays as `G4 P` in seconds); height control is
-left to the table's controller. Heidenhain refuses plasma cuts. The simulation cuts the kerf
-through the whole stock. Only contours are cut with a torch; other steps with one are refused.
+left to the table's controller; it is the only built-in post for plasma tables. The simulation
+cuts the kerf through the whole stock. The setup sheet gives each plasma cut its torch data
+instead of a tool.
 
 ## Tool list and setup sheet
 

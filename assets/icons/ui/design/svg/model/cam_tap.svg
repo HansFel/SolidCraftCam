@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>CAM tap</title>
+  <path d="M9.37 33.92L32 46.98L32 53.08L9.37 40.02Z" fill="#b8c3cf"/>
+  <path d="M54.63 33.92L32 46.98L32 53.08L54.63 40.02Z" fill="#8e9faf"/>
+  <path d="M32 20.85L54.63 33.92L32 46.98L9.37 33.92Z" fill="#e2e8ef"/>
+  <path d="M32 20.85L54.63 33.92L54.63 40.02L32 53.08L9.37 40.02L9.37 33.92Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M9.37 33.92L32 46.98L54.63 33.92" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 46.98L32 53.08" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M27.2 33.92A4.8 2.77 0 1 0 36.8 33.92A4.8 2.77 0 1 0 27.2 33.92Z" fill="#236ead"/>
+  <path d="M28.45 36.1A3.55 1.72 0 1 0 35.55 36.1A3.55 1.72 0 1 0 28.45 36.1Z" fill="#328bd3"/>
+  <path d="M27.2 33.92A4.8 2.77 0 1 0 36.8 33.92A4.8 2.77 0 1 0 27.2 33.92Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 29.55L32 31.73L35.63 29.55Z" fill="#8e9faf"/>
+  <path d="M28.37 29.55L32 31.73L35.63 29.55Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 13.02L28.37 29.55A3.63 2.09 0 0 0 35.63 29.55L35.63 13.02Z" fill="#b8c3cf"/>
+  <path d="M33.27 13.02L33.27 31.53A3.63 2.09 0 0 0 35.63 29.55L35.63 13.02Z" fill="#8e9faf"/>
+  <path d="M28.37 13.02L28.37 29.55A3.63 2.09 0 0 0 35.63 29.55L35.63 13.02Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 13.02A3.63 2.09 0 1 0 35.63 13.02A3.63 2.09 0 1 0 28.37 13.02Z" fill="#e2e8ef" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 28.26L35.63 26.34" fill="none" stroke="#236ead" stroke-width="2.95" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 25.21L35.63 23.29" fill="none" stroke="#236ead" stroke-width="2.95" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.37 22.16L35.63 20.24" fill="none" stroke="#236ead" stroke-width="2.95" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>
