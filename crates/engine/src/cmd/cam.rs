@@ -4554,25 +4554,45 @@ mod tests {
         };
         let mut side = 0usize;
         let mut cuts: Vec<Vec3> = Vec::new();
+        let mut own: Vec<Vec3> = Vec::new();
         for ((p, cp), (q, cq)) in pts.iter().zip(pts.iter().skip(1)) {
             if !(*cp && *cq) {
                 continue;
             }
             // Walk the segment at half a millimetre: the samples are the moves' vertices.
             let n = (p.dist(*q) / 0.5).ceil().max(1.0) as usize;
+            own.clear();
             for i in 0..=n {
                 let t = i as f64 / n as f64;
-                cuts.push(Vec3::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t, p.z + (q.z - p.z) * t));
+                own.push(Vec3::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t, p.z + (q.z - p.z) * t));
             }
             if (p.z - q.z).abs() > 1e-9 || p.dist(*q) < 1e-6 {
+                cuts.extend(own.iter().copied());
                 continue;
             }
             side += 1;
             let (dx, dy) = (q.x - p.x, q.y - p.y);
             let l = dx.hypot(dy);
-            assert!((dx / l) * d.0 + (dy / l) * d.1 > 1e-6, "a pass feeds the other way: {p:?} to {q:?}");
+            if (dx / l) * d.0 + (dy / l) * d.1 <= 1e-6 {
+                // A cut never feeds the other way, so this is the next band beginning
+                // while the ground the bands have just cut is still under the tool: every
+                // sample of the link must stand within the tool's radius of a cut at its
+                // own height, where it bites nothing on the way.
+                for w in &own {
+                    assert!(
+                        cuts.iter().any(|c| (c.z - w.z).abs() <= 1e-9 && (c.x - w.x).hypot(c.y - w.y) <= 1.0 + 1e-6),
+                        "a feed runs the other way, off the cut floor: {w:?}"
+                    );
+                }
+            }
+            cuts.extend(own.iter().copied());
         }
         assert!(side > 10, "{side} side feeds");
+        // The bands and the wall's ring follow one another at depth: the level is a few
+        // chains of passes, not a plunge for every band.
+        let levels = 1usize;
+        let plunges = pts.windows(2).filter(|w| w[0].0.dist(w[1].0) < 1e-6 && w[1].1 && (w[0].0.z - w[1].0.z).abs() > 1e-9).count();
+        assert!(plunges <= 4 * levels, "{plunges} plunges for a whole level of bands");
         // The opening is cut flush: a pass runs past its plane, and the floor is cleared.
         assert!(cuts.iter().any(|p| p.x < -0.05), "no pass crosses the opening's plane");
         for x in 2..20 {

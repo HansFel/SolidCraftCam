@@ -758,7 +758,8 @@ fn cut_open_chain(b: &mut Builder, chain: &[Piece], params: &OpenContourParams, 
 
 /// Clears `regions` (holes are islands) with rings parallel to the boundary, from the inside out.
 /// With `entry` set (an open pocket) the rings give way to bands of passes running along the
-/// opening, each entered through the air on the open side.
+/// opening, each entered through the air on the open side, and to rings off the wall where
+/// the bands would run out against it.
 pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut) -> Result<Toolpath> {
     tool.validate()?;
     mills(tool)?;
@@ -876,6 +877,22 @@ fn link_is_clear(shape: &Shape, a: Vec2, b: Vec2, wall: f64, r: f64) -> bool {
     (0..=n).all(|i| shape.clear(a.lerp(b, i as f64 / n as f64), wall))
 }
 
+/// Whether the tool, at the depth where `path` has just been cut, can feed straight from
+/// `from` to `to` biting nothing: every stretch of the link must stand where the disc is
+/// clear of the regions altogether, or above the floor `path` left, within its own radius
+/// of that path.
+fn link_down(shape: &Shape, r: f64, path: &[Vec2], from: Vec2, to: Vec2) -> bool {
+    let span = from.dist(to);
+    if span <= 1e-9 {
+        return true;
+    }
+    let n = ((span / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 2000.0) as usize;
+    (1..=n).all(|i| {
+        let p = from.lerp(to, i as f64 / n as f64);
+        !shape.inside(p, r - 1e-6) || path.windows(2).any(|w| p.extend(0.0).dist_to_segment(w[0].extend(0.0), w[1].extend(0.0)) <= r - 1e-6)
+    })
+}
+
 /// How squarely a boundary piece has to face the entry to belong to the open side a pass
 /// enters through: its outward normal must oppose the entry direction by more than 45°.
 const OPENING_FACE: f64 = std::f64::consts::FRAC_1_SQRT_2;
@@ -886,16 +903,18 @@ const OPENING_FACE: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// bites the standing metal by exactly one stepover wherever it feeds, and not even the
 /// first pass cuts a whole tool width: it grazes the opening one stepover deep. The bands
 /// are cut from the opening inwards, so every band descends beside the groove the previous
-/// one left, feeds along its floor where the pass begins further along, and retracts at
-/// the end; the metal still uncut lies to the right of every feed, as in a climb.
+/// one left, feeds along its floor where the pass begins further along, and is followed at
+/// depth, without coming up, where the way back to its beginning stays in air or above the
+/// floor just cut; the metal still uncut lies to the right of every feed, as in a climb.
 ///
 /// Boundary pieces of the outer loop facing the entry make up the opening: the tool cuts
 /// flush to them. Everything else, the rest of the wall and every hole standing as an
 /// island, keeps `wall` clear. A band split by an island descends at its beginning,
 /// along a ramp where `ramp_angle` leaves room and straight down otherwise, cutting no
-/// more than a stepover there either. Where the last band cannot reach the wall without
-/// biting deeper than a stepover, a final pass along the wall trims the band left
-/// standing, engaged by no more than a stepover.
+/// more than a stepover there either. What stands beyond the last band, beside the wall,
+/// goes as rings offset from the wall a stepover apart, cut from the innermost outwards:
+/// where the wall curves a ring finishes the pocket along that curve, and the last ring
+/// runs along the inside itself, none of them engaged by more than a stepover.
 fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: f64, wall: f64) -> Result<Toolpath> {
     if shape.inside(entry, r.max(1e-6)) || shape.dist(entry) < r - 1e-7 {
         return invalid("the entry point must be in air outside the pocket, clear of at least the tool radius");
@@ -903,7 +922,9 @@ fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: 
     // The direction the tool enters from: the centre of the outer loops, away from `entry`.
     let (mut cx, mut cy) = (0.0, 0.0);
     let mut outer_pts = 0usize;
-    for lp in shape.loops().iter().filter(|lp| lp.len() >= 3) {
+    // A pocket's outline can be as few as two pieces: a half-disc open across its diameter
+    // is a line and an arc. Any non-empty loop with area counts its centre.
+    for lp in shape.loops().iter().filter(|lp| !lp.is_empty()) {
         if lp.iter().map(Piece::area_term).sum::<f64>() > 0.0 {
             for piece in lp {
                 let p = piece.point_at(0.5);
@@ -1005,7 +1026,11 @@ fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: 
                 let end = capped[capped.len() - 1].end();
                 capped.push(Piece::Line { a: end, b: e_last });
                 let pts = densify(&loop_poly(&capped, 0.1), pitch);
-                let good = |p: Vec2| fits(p) && (shape.inside(p, 1e-6) || graze(p) <= 1e-6);
+                // A band's points sit where the offset puts them: one reach from the
+                // opening chain, and the chain's own ends bound that locus. Closing the
+                // loop to the opening's corners keeps out everything off the locus too,
+                // so a band never strays along its connector.
+                let good = |p: Vec2| fits(p) && (shape.inside(p, 1e-6) || graze(p) <= 1e-6) && (graze(p) - t).abs() <= 1e-3;
                 for run in band_runs(&pts, &good, s, &graze) {
                     // A band that has passed the closed end runs wholly in air beyond it:
                     // with its disc missing the metal everywhere (a graze below -r leaves
@@ -1038,21 +1063,40 @@ fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: 
                 blank += 1;
             }
         }
-        // The band left standing at the wall, where no band's reach and no further bite
-        // than a stepover can go: trim along the offset wall where it grazes past the
-        // last band by no more than a stepover.
+        // What stands beyond the last band, beside the wall, goes as rings offset from the
+        // wall: the loops at `wall` and one stepover further out from it, each kept where it
+        // runs past the last band. They are cut from the innermost outwards, so a ring feeds
+        // with the metal behind it no wider than a stepover, and the last one runs along the
+        // inside itself. Where the wall curves, a ring finishes the pocket along that curve
+        // in one long cut, where a band the same reach would stop short against the wall.
         if let Some(t_last) = t_last {
-            let strip = |p: Vec2| {
-                let f = graze(p);
-                f > t_last + 1e-6 && f <= t_last + s + 1e-6
-            };
-            for oc in &wall_loops {
-                let mut poly = loop_poly(oc, 0.1);
-                if let Some(first) = poly.first().copied() {
-                    poly.push(first);
+            let mut rings: Vec<Vec<Vec<Vec2>>> = Vec::new();
+            let mut blank = 0usize;
+            while rings.len() <= MAX_RINGS && blank < 2 {
+                let m = rings.len();
+                let loops = if m == 0 { wall_loops.clone() } else { shape.offset(wall + s * m as f64)? };
+                let mut runs: Vec<Vec<Vec2>> = Vec::new();
+                for oc in &loops {
+                    let mut poly = loop_poly(oc, 0.1);
+                    if let Some(first) = poly.first().copied() {
+                        poly.push(first);
+                    }
+                    let in_ring = |p: Vec2| fits(p) && graze(p) > t_last + 1e-6 && shape.inside(p, 1e-6);
+                    for run in band_runs(&densify(&poly, pitch), &in_ring, s, &graze) {
+                        if run.iter().any(|q| graze(*q) > -r) {
+                            runs.push(run);
+                        }
+                    }
                 }
-                let in_strip = |p: Vec2| fits(p) && strip(p) && shape.inside(p, 1e-6);
-                for run in band_runs(&densify(&poly, pitch), &in_strip, s, &graze) {
+                if runs.is_empty() {
+                    blank += 1;
+                }
+                rings.push(runs);
+            }
+            // From the innermost ring out to the wall: every ring but the last has the ring
+            // before it at a stepover on the right, and the metal the bands left beyond them.
+            for runs in rings.into_iter().rev() {
+                for run in runs {
                     let enter = match last_enter {
                         Some(p) if graze(p) <= t_last + 1e-6 && p.dist(run[0]) <= 2.0 * s + 1e-6 && link_is_clear(shape, p, run[0], wall, r) => p,
                         _ => run[0],
@@ -1079,27 +1123,34 @@ fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: 
     for (k, &z) in levels.iter().enumerate() {
         // The depth already cut wherever this level's passes stand.
         let cleared = if k == 0 { cut.heights.top } else { levels[k - 1] };
-        for pass in &passes {
-            let Some((&head, rest)) = pass.path.split_first() else { continue };
-            b.travel_to(head)?;
-            if pass.air {
-                b.plunge_to(z)?;
-                for p in rest {
-                    b.cut_to(*p, z)?;
-                }
+        for (i, pass) in passes.iter().enumerate() {
+            let Some((&head, _)) = pass.path.split_first() else { continue };
+            // Where the pass before ended, at this very depth: a pass may start from there
+            // across the air in front of the opening, or above the floor the pass before
+            // just cut, biting nothing on the way, instead of coming up and going down again.
+            let keep = i > 0 && passes[i - 1].path.last().is_some_and(|&from| link_down(shape, r, &passes[i - 1].path, from, head));
+            let resume = if keep {
+                b.cut_to(head, z)?;
+                1usize
             } else {
-                b.plunge_to(cleared)?;
-                // Along the floor and the pass itself, no steeper than the ramp; the
-                // first pass of a chain and the wall's band come down cutting where no
-                // floor reaches, at no more than a stepover engaged.
-                let resume = ramp_down(&mut b, &pass.path, cleared, z, params.ramp_angle, pitch)?;
-                for p in &pass.path[resume.min(pass.path.len())..] {
-                    b.cut_to(*p, z)?;
+                b.travel_to(head)?;
+                if pass.air {
+                    b.plunge_to(z)?;
+                    1
+                } else {
+                    b.plunge_to(cleared)?;
+                    // Along the floor and the pass itself, no steeper than the ramp; the
+                    // first pass of a chain and the wall's rings come down cutting where no
+                    // floor reaches, at no more than a stepover engaged.
+                    ramp_down(&mut b, &pass.path, cleared, z, params.ramp_angle, pitch)?
                 }
+            };
+            for p in &pass.path[resume.min(pass.path.len())..] {
+                b.cut_to(*p, z)?;
             }
-            // Retract after every pass: each one is fed down again before it cuts, so
-            // all passes run the same way and none turns to cut the other.
-            b.retract()?;
+            // No retract here: the pass that follows keeps the tool down where it can. The
+            // ones that cannot are lifted by their own travel, and each still cuts its band
+            // the one way, so none of them turns out conventional.
         }
     }
     b.finish()
