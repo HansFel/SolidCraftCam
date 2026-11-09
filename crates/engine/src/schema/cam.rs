@@ -305,9 +305,10 @@ pub struct MillingParams {
     /// Facing: how far the tool's edge runs past the stock.
     pub overrun: Option<NumberExpr>,
     /// Facing: a point in air beside the area (model coordinates) where the tool goes down
-    /// before feeding into the cut.
+    /// before feeding into the cut. Pocket: a point in air beside an opening in the wall,
+    /// which makes the pocket an open one entered through it.
     pub entry: Option<[f64; 3]>,
-    /// Facing: the entry point as a sketch point, `{sketch, point}`.
+    /// Facing or pocket: the entry point as a sketch point, `{sketch, point}`.
     pub entry_at: Option<SketchPointParams>,
     /// Slot: its width (default the tool's diameter). Chamfer: its width on the face.
     pub width: Option<NumberExpr>,
@@ -708,7 +709,8 @@ pub struct JobParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<[f64; 3]>,
     /// Facing: a point in air beside the area (model coordinates) where the tool goes down
-    /// before feeding into the cut.
+    /// before feeding into the cut. Pocket: a point in air beside an opening in the wall,
+    /// which makes the pocket an open one entered through it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<[f64; 3]>,
     /// The contour's side: auto, outside, inside or on.

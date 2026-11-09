@@ -20,7 +20,11 @@
 //! written with) and the operations left out when posting (`skipped`);
 //! the operations' order is the machining order. A contour's `side` is `auto` (around an outline,
 //! inside a hole picked as its own contour), `outside`, `inside` or `on`; contours and pockets
-//! can leave stock on the walls (`stock_to_leave`) and on the floor (`floor_stock`). A facing
+//! can leave stock on the walls (`stock_to_leave`) and on the floor (`floor_stock`). A pocket can
+//! name an `entry` point (model coordinates) in air beside an opening in its wall: the pocket is
+//! then cut one stepover-wide pass at a time, each going down in air and entering through the
+//! opening toward the closed walls, which keep their stock; the opening is cut flush and every
+//! pass feeds the same way. A facing
 //! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) as a rectangle with a
 //! `stepover` and an `overrun` past the stock's edges; picked faces, sketch contours and explicit
 //! polylines are faced as their exact outlines, inner loops standing as islands the tool keeps out.

@@ -925,6 +925,11 @@ pub struct CamPocketParams {
     pub tolerance: Expr,
     #[serde(default = "zero_deg")]
     pub ramp_angle: Expr,
+    /// Where the tool goes down before each cut: a model point in air beside an opening in
+    /// the pocket's wall, so the pocket is entered through that opening one stepover-wide
+    /// pass at a time and every pass feeds the same way. Absent: the usual concentric rings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<[f64; 3]>,
 }
 
 /// Facing settings held as expressions.
@@ -1465,7 +1470,15 @@ pub fn default_contour_params() -> CamContourParams {
 
 /// Default pocket params; `stepover` must still be set by the caller.
 pub fn default_pocket_params(stepover: Expr) -> CamPocketParams {
-    CamPocketParams { stepover, climb: true, stock_to_leave: zero_mm(), floor_stock: zero_mm(), tolerance: tol_mm(), ramp_angle: zero_deg() }
+    CamPocketParams {
+        stepover,
+        climb: true,
+        stock_to_leave: zero_mm(),
+        floor_stock: zero_mm(),
+        tolerance: tol_mm(),
+        ramp_angle: zero_deg(),
+        entry: None,
+    }
 }
 
 /// Default facing params; `stepover` must still be set by the caller.

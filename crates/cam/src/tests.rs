@@ -585,7 +585,7 @@ fn polygon_with_many_shallow_corners_offsets_to_one_loop() {
 #[test]
 fn pocket_stays_inside_the_walls_and_clears_everything_the_tool_can_reach() {
     let regions = [rect(0.0, 0.0, 40.0, 30.0)];
-    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -5.0, 2.0)).unwrap();
     let stats = path.stats();
     assert_eq!(stats.lowest_z, Some(-5.0));
@@ -610,7 +610,7 @@ fn pocket_stays_inside_the_walls_and_clears_everything_the_tool_can_reach() {
 fn pocket_goes_round_an_island() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: false, stock_to_leave: 0.5, tolerance: 0.01, ramp_angle: 0.0 };
+    let params = PocketParams { stepover: 3.0, climb: false, stock_to_leave: 0.5, tolerance: 0.01, ramp_angle: 0.0, entry: None };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let pts = cutting_points(&path, 0.0);
@@ -693,7 +693,7 @@ fn ramps_replace_plunges_into_material() {
     assert_eq!(path.stats().lowest_z, Some(-6.0));
 
     // In a pocket the first ring is short, so the ramp goes round it several times.
-    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: ramp };
+    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: ramp, entry: None };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -5.0, 2.5)).unwrap();
     let (angle, plunges) = steepest(&path, 0.0);
     assert!(!plunges && angle <= ramp + 1e-6 && angle > 0.01, "{angle} {plunges}");
@@ -712,7 +712,7 @@ fn ramps_replace_plunges_into_material() {
     let tight = pocket(&[rect(0.0, 0.0, 6.004, 6.004)], &tool(6.0), &params, &cut(0.0, -5.0, 2.5)).unwrap();
     assert_eq!(tight.stats().lowest_z, Some(-5.0));
     assert!(steepest(&tight, 0.0).1);
-    assert!(pocket(&regions, &tool(6.0), &PocketParams { ramp_angle: 2.0, ..params }, &c).is_err());
+    assert!(pocket(&regions, &tool(6.0), &PocketParams { ramp_angle: 2.0, entry: None, ..params }, &c).is_err());
 }
 
 #[test]
@@ -721,7 +721,7 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
     // leaves a strip down the middle (15 from the long walls) more than a radius from it.
     let regions = [rect(0.0, 0.0, 40.0, 30.0)];
     for (stepover, name) in [(5.0, "wide"), (6.0, "a diameter"), (4.0, "moderate")] {
-        let params = PocketParams { stepover, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+        let params = PocketParams { stepover, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
         let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
         for p in cutting_points(&path, 0.0) {
             assert!(p.x >= 3.0 - 1e-6 && p.x <= 37.0 + 1e-6 && p.y >= 3.0 - 1e-6 && p.y <= 27.0 + 1e-6, "{name}: gouge at {p:?}");
@@ -739,7 +739,7 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
         outer: polygon(&[(0.0, 0.0), (30.0, 0.0), (30.0, 8.0), (60.0, 8.0), (60.0, 26.0), (30.0, 26.0), (30.0, 40.0), (0.0, 40.0)]).outer,
         holes: vec![Loop2::circle(v(15.0, 20.0), 4.0)],
     };
-    let params = PocketParams { stepover: 5.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let params = PocketParams { stepover: 5.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
     let path = pocket(std::slice::from_ref(&rooms), &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
     let shape = Shape::from_regions(std::slice::from_ref(&rooms), 0.01).unwrap();
     for p in cutting_points(&path, 0.0) {
@@ -754,8 +754,180 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
             }
         }
     }
-    let too_wide = PocketParams { stepover: 6.5, ..params };
+    let too_wide = PocketParams { stepover: 6.5, entry: None, ..params };
     assert!(pocket(&regions, &tool(6.0), &too_wide, &cut(0.0, -2.0, 2.0)).is_err(), "passes more than a diameter apart");
+}
+
+#[test]
+fn open_pocket_enters_through_the_air_and_feeds_one_way() {
+    // A 20 × 10 pocket open on its left side, entered from the lower left along one line.
+    // Every pass goes down in the air outside the opening and runs along the opening's
+    // length, and nothing ever feeds the other way.
+    let regions = [rect(0.0, 0.0, 20.0, 10.0)];
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let entry = v(-12.0, -2.0);
+    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let c = cut(0.0, -3.0, 1.5);
+    let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let d = (v(10.0, 5.0) - entry).normalized().unwrap();
+    // The closed walls; the tool's centre never comes nearer to them than its own radius.
+    let walls = [
+        Piece::Line { a: v(20.0, 0.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 10.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 0.0), b: v(20.0, 0.0) },
+    ];
+    let mut pos = v(0.0, 0.0);
+    let (mut side, mut down, mut air_entries) = (0usize, 0usize, 0usize);
+    for m in &path.moves {
+        if let Move::Rapid { to } = *m {
+            pos = v(to.x, to.y);
+        }
+        if let Move::Feed { to, .. } = *m {
+            let q = v(to.x, to.y);
+            for w in &walls {
+                assert!(w.dist(q) >= 0.5 - 1e-6, "the disc touches a closed wall at ({}, {})", to.x, to.y);
+            }
+            if q.dist(pos) < 1e-9 {
+                down += 1;
+                // Passes go down in the air outside the opening. Only a band whose air is
+                // cut off by a wall corner beside the opening comes down inside instead,
+                // as a closed pocket does; nearly all of them enter through the air.
+                if shape.dist(q) >= 0.5 - 1e-6 {
+                    air_entries += 1;
+                }
+            } else {
+                side += 1;
+                // Every side feed runs its band the same way: the pocket is always entered
+                // the same way, so a pass is never conventional.
+                assert!((q - pos).normalized().unwrap().dot(d) > 1e-6, "a pass feeds the other way: ({}, {}) to ({}, {})", pos.x, pos.y, to.x, to.y);
+            }
+            pos = q;
+        }
+    }
+    assert!(side > 50 && down > 20, "{side} side feeds and {down} plunges");
+    assert!(air_entries * 10 >= down * 9, "{air_entries} of {down} passes enter through the air");
+    // Both depth passes reach the floor and it is cleared wherever the tool can reach.
+    assert_eq!(path.stats().lowest_z, Some(-3.0));
+    let cuts = cutting_points(&path, -3.0 + 1e-6);
+    assert!(cuts.iter().any(|p| (p.z + 3.0).abs() < 1e-9));
+    for i in 0..=40 {
+        for j in 0..=20 {
+            let q = v(i as f64 * 0.5, j as f64 * 0.5);
+            if shape.clear(q, 0.5 + 1e-3) {
+                let dd = dist_to_cuts(&path, -3.0 + 1e-6, q);
+                assert!(dd <= 0.5 + 0.01, "{q:?} is {dd} from the nearest pass");
+            }
+        }
+    }
+}
+
+#[test]
+fn open_pocket_leaves_the_stock_on_the_closed_walls() {
+    // The same pocket with 0.25 mm left on the walls: the opening is still cut flush.
+    let regions = [rect(0.0, 0.0, 20.0, 10.0)];
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let entry = v(-12.0, -2.0);
+    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.25, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let c = cut(0.0, -2.0, 2.0);
+    let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let walls = [
+        Piece::Line { a: v(20.0, 0.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 10.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 0.0), b: v(20.0, 0.0) },
+    ];
+    for p in cutting_points(&path, 0.0) {
+        for w in &walls {
+            assert!(w.dist(v(p.x, p.y)) >= 0.75 - 1e-6, "the stock on a closed wall is broken at ({}, {})", p.x, p.y);
+        }
+    }
+    // The first band's centre sits one tool radius less one stepover outside the opening's
+    // plane, so every band's disc crosses that plane: the opening is cut flush, with no
+    // ledge standing at its face.
+    assert!(cutting_points(&path, 0.0).iter().any(|p| p.x < -1e-6), "no pass crosses the opening's plane");
+    // Everything deeper than the stock is cleared.
+    for i in 0..=40 {
+        for j in 0..=20 {
+            let q = v(i as f64 * 0.5, j as f64 * 0.5);
+            if shape.clear(q, 0.75 + 0.5 + 1e-3) {
+                let dd = dist_to_cuts(&path, -2.0 + 1e-6, q);
+                assert!(dd <= 0.5 + 0.01, "{q:?} is {dd} from the nearest pass");
+            }
+        }
+    }
+}
+
+#[test]
+fn open_pocket_refuses_an_entry_that_is_not_air_or_not_facing() {
+    let regions = [rect(0.0, 0.0, 20.0, 10.0)];
+    let ok = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(v(-12.0, -2.0)) };
+    // In air, but not clear of the tool's radius.
+    let near = PocketParams { entry: Some(v(-0.3, 5.0)), ..ok };
+    let err = pocket(&regions, &tool(1.0), &near, &cut(0.0, -2.0, 2.0)).unwrap_err().to_string();
+    assert!(err.contains("in air outside"), "{err}");
+    // Inside the material.
+    let inside = PocketParams { entry: Some(v(10.0, 5.0)), ..ok };
+    assert!(pocket(&regions, &tool(1.0), &inside, &cut(0.0, -2.0, 2.0)).unwrap_err().to_string().contains("in air outside"));
+    // Conventional milling has no meaning once the open side fixes which way each pass runs.
+    let down = PocketParams { climb: false, ..ok };
+    let err = pocket(&regions, &tool(1.0), &down, &cut(0.0, -2.0, 2.0)).unwrap_err().to_string();
+    assert!(err.contains("climb"), "{err}");
+    // A tool wider than the pocket, entered far enough out to stand clear of the walls.
+    let wide = PocketParams { entry: Some(v(-30.0, -2.0)), ..ok };
+    let err = pocket(&regions, &tool(30.0), &wide, &cut(0.0, -2.0, 2.0)).unwrap_err().to_string();
+    assert!(err.contains("does not fit"), "{err}");
+}
+
+#[test]
+fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
+    // A 40 × 10 pocket open on its left with a hole standing in the middle; the entry faces
+    // square onto the opening, so the bands run along it and every pass feeds +y. An island
+    // across a band splits it: the far stretch is descended into, and it too feeds +y.
+    let regions = [Region2 { outer: rect(0.0, 0.0, 40.0, 10.0).outer, holes: vec![Loop2::circle(v(20.0, 5.0), 2.0)] }];
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let entry = v(-12.0, 5.0);
+    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let c = cut(0.0, -2.0, 1.0);
+    let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+    let d = v(0.0, 1.0);
+    let mut pos = v(0.0, 0.0);
+    let mut side = 0usize;
+    // The disc may stand past the opening's plane, where the first band cuts the pocket
+    // flush; it may never come nearer to a closed wall or the island than its own radius.
+    let walls = [
+        Piece::Line { a: v(40.0, 0.0), b: v(40.0, 10.0) },
+        Piece::Line { a: v(0.0, 10.0), b: v(40.0, 10.0) },
+        Piece::Line { a: v(0.0, 0.0), b: v(40.0, 0.0) },
+    ];
+    let island = v(20.0, 5.0);
+    for m in &path.moves {
+        if let Move::Rapid { to } = *m {
+            pos = v(to.x, to.y);
+        }
+        if let Move::Feed { to, .. } = *m {
+            let q = v(to.x, to.y);
+            let closed = |p: Vec2| walls.iter().all(|w| w.dist(p) >= 0.5 - 1e-6) && p.dist(island) - 2.0 >= 0.5 - 1e-6;
+            assert!(closed(q) || q.dist(pos) < 1e-9, "the disc gouges at ({}, {})", to.x, to.y);
+            if q.dist(pos) > 1e-9 {
+                side += 1;
+                assert!((q - pos).normalized().unwrap().dot(d) > 1e-6, "a pass feeds the other way: ({}, {}) to ({}, {})", pos.x, pos.y, to.x, to.y);
+            }
+            pos = q;
+        }
+    }
+    assert!(side > 50, "{side} side feeds");
+    // The floor behind the island is cut too.
+    for i in 0..=80 {
+        for j in 0..=20 {
+            let q = v(i as f64 * 0.5, j as f64 * 0.5);
+            if shape.clear(q, 0.5 + 1e-3) {
+                let dd = dist_to_cuts(&path, -2.0 + 1e-6, q);
+                assert!(dd <= 0.5 + 0.01, "{q:?} is {dd} from the nearest pass");
+            }
+        }
+    }
 }
 
 /// Two holes plunged at 200 mm/min with a quarter-second dwell, written out move by move.
@@ -845,7 +1017,7 @@ M30
 fn written_program_reads_back_as_the_same_path() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -4.0, 2.0)).unwrap();
     let program = Program {
         work_offset: None,
@@ -877,7 +1049,7 @@ fn written_program_reads_back_as_the_same_path() {
 fn every_post_writes_within_its_own_precision() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 3.0f64.to_radians() };
+    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 3.0f64.to_radians(), entry: None };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -4.0, 2.0)).unwrap();
     let mut program = Program {
         work_offset: None,
@@ -988,7 +1160,7 @@ fn hostile_values_are_errors_never_panics() {
         let _ = offset_regions(&[rect(0.0, 0.0, b, b)], 1.0, 0.01);
         let _ = offset_regions(&[Region2 { outer: Loop2::circle(v(b, b), b), holes: vec![Loop2::circle(v(0.0, b), b)] }], b, 0.01);
         let t = Tool::new(1, ToolKind::FlatEndmill, b, b);
-        let pocket_params = PocketParams { stepover: b, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b };
+        let pocket_params = PocketParams { stepover: b, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b, entry: None };
         let contour_params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b };
         let bad_cut = Cut { heights: Heights { clearance: b, retract: b, top: b, bottom: -b }, feeds: Feeds { cut: b, plunge: b }, stepdown: b };
         let slot_params_bad = SlotParams { width: Some(b), stepover: b, stock_to_leave: b, tolerance: b, ramp_angle: b };
@@ -996,7 +1168,12 @@ fn hostile_values_are_errors_never_panics() {
         for c in [good_cut, bad_cut, Cut { stepdown: b, ..good_cut }] {
             for tl in [&t, &tool(6.0)] {
                 let _ = pocket(&regions, tl, &pocket_params, &c);
-                let _ = pocket(&regions, tl, &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }, &c);
+                let _ = pocket(
+                    &regions,
+                    tl,
+                    &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+                    &c,
+                );
                 let _ = contour(&regions, tl, &contour_params, &c);
                 let _ = slot(std::slice::from_ref(&slot_path), tl, &slot_params_bad, &c);
             }
@@ -1024,23 +1201,38 @@ fn hostile_values_are_errors_never_panics() {
     }
     // Things that must be refused outright.
     assert!(
-        pocket(&regions, &tool(6.0), &PocketParams { stepover: 1e-9, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }, &good_cut)
-            .is_err()
+        pocket(
+            &regions,
+            &tool(6.0),
+            &PocketParams { stepover: 1e-9, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &good_cut
+        )
+        .is_err()
     );
     assert!(
-        pocket(&regions, &tool(60.0), &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }, &good_cut)
-            .is_err()
+        pocket(
+            &regions,
+            &tool(60.0),
+            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &good_cut
+        )
+        .is_err()
     );
     assert!(
-        pocket(&[], &tool(6.0), &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }, &good_cut)
-            .is_err()
+        pocket(
+            &[],
+            &tool(6.0),
+            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &good_cut
+        )
+        .is_err()
     );
     // A drill cuts only at its point: no contour or pocket with one.
     let drill = Tool::new(4, ToolKind::Drill, 6.0, 30.0);
     let square = [rect(0.0, 0.0, 20.0, 20.0)];
     let side = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
     assert!(contour(&square, &drill, &side, &good_cut).unwrap_err().to_string().contains("a drill cannot mill"));
-    let lanes = PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+    let lanes = PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
     assert!(pocket(&square, &drill, &lanes, &good_cut).is_err());
     let open = Region2 { outer: Loop2 { segs: rect(0.0, 0.0, 10.0, 10.0).outer.segs.into_iter().take(3).collect() }, holes: vec![] };
     assert!(offset_regions(&[open], 1.0, 0.01).is_err());
@@ -2083,7 +2275,7 @@ mod sim_tests {
     fn a_pocket_leaves_its_floor_and_the_stock_outside() {
         let cutter = tool(6.0);
         let regions = [rect(0.0, 0.0, 40.0, 30.0)];
-        let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
+        let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
         let c = cut(0.0, -5.0, 2.5);
         let path = pocket(&regions, &cutter, &params, &c).unwrap();
         let mut stock = StockMap::new_box(Vec3::new(-5.0, -5.0, -5.0), Vec3::new(45.0, 35.0, 0.0), 0.5).unwrap();

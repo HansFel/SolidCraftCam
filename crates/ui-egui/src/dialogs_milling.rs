@@ -544,6 +544,9 @@ impl Milling {
         if let CamOperation::Face { params, .. } = op {
             form.kept_entry = params.entry;
         }
+        if let CamOperation::Pocket { params, .. } = op {
+            form.kept_entry = params.entry;
+        }
         form.chain = matches!(op.geometry(), solidcraft_engine::doc::cam::CamGeometry::Edges { .. });
         (form.geometry, form.start) = (form.kept.clone(), form.kept_start);
         form.entry = form.kept_entry;
@@ -707,8 +710,9 @@ impl Milling {
         if let (true, Some(start)) = (self.outlined(), self.start) {
             p["start"] = json!(start);
         }
-        // Facing enters at the picked point: down in the air, then into the cut horizontally.
-        if let (3, Some(entry)) = (self.kind, self.entry) {
+        // Facing enters at the picked point: down in the air, then into the cut horizontally;
+        // a pocket picks an opening in its wall and is entered through it, pass by pass.
+        if let (3 | 1, Some(entry)) = (self.kind, self.entry) {
             p["entry"] = json!(entry);
         }
         if self.outlined() {
@@ -1165,9 +1169,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
-    if form.kind == 3 {
-        // Where the facing goes down: at the near end of a lane until a point is picked.
-        let entry_label = if form.entry.is_some() { tr("ui.cam.entry_set") } else { tr("ui.cam.entry_hint") };
+    if matches!(form.kind, 1 | 3) {
+        // Where the facing goes down: at the near end of a lane until a point is picked. A
+        // pocket stays closed until a point beside an opening makes it an open one.
+        let (hint, set) =
+            if form.kind == 1 { ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set") } else { ("ui.cam.entry_hint", "ui.cam.entry_set") };
+        let entry_label = if form.entry.is_some() { tr(set) } else { tr(hint) };
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(entry_label).wrap());
             if form.entry.is_some() && ui_kit::button(ui, tr("ui.cam.remove"), ui_kit::Button::Small).clicked() {
@@ -1237,7 +1244,11 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         }
     }
-    if form.kind < 2 || form.kind == 7 {
+    if form.kind == 1 && form.entry.is_some() {
+        // An open pocket runs every pass along the opening, so all passes feed the
+        // same way and there is no direction left to choose.
+        form.climb = true;
+    } else if form.kind < 2 || form.kind == 7 {
         let directions = [tr("ui.cam.climb"), tr("ui.cam.conventional")];
         let mut direction = usize::from(!form.climb);
         ui_kit::choice_row(ui, tr("ui.cam.direction"), "cam-direction", &mut direction, &directions);

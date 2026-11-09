@@ -106,6 +106,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.pocket", "2D Pocket", crate::checked!("cam.op.pocket", pocket_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_pocket").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?; faces?; edges?; or outer/regions; holes?; \
          stepover? (default half the tool diameter); climb?; stock_to_leave? (walls); floor_stock? (floor); tolerance?; ramp_angle?: deg; \
+         entry?: [x,y,z] a point in air beside an opening in the wall, or entry_at?: {sketch, point}: an open pocket, cut one stepover-wide pass \
+         at a time through that opening; \
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_slot").params(
@@ -1180,6 +1182,15 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
         }
         if let Some(v) = expr(p, "ramp_angle") {
             params.ramp_angle = v;
+        }
+        // The entry: an `entry` model point, or `entry_at`: a sketch point {sketch, point}.
+        if let Some(v) = p.get("entry") {
+            let at = vec3(v).ok_or_else(|| bad(cmd, "`entry` must be [x, y, z]"))?;
+            params.entry = Some([at.x, at.y, at.z]);
+        }
+        if let Some(v) = p.get("entry_at") {
+            let at = sketch_point_at(s, cmd, v)?;
+            params.entry = Some([at.x, at.y, at.z]);
         }
         CamOperation::Pocket { name: name.clone(), tool: tool_n, geometry, params, cut, spindle_rpm, coolant }
     };
@@ -3030,7 +3041,22 @@ fn engine_pocket(s: &Session, p: &CamPocketParams) -> std::result::Result<Pocket
         stock_to_leave: eval_len(s, &p.stock_to_leave, "stock_to_leave")?,
         tolerance: eval_len(s, &p.tolerance, "tolerance")?,
         ramp_angle: eval_ang(s, &p.ramp_angle, "ramp_angle")?,
+        entry: None,
     })
+}
+
+/// The entry: a model point, brought into work XY as a contour's start is.
+fn entry_xy(setup: &CamSetup, entry: Option<[f64; 3]>) -> std::result::Result<Option<Vec2>, String> {
+    match entry {
+        None => Ok(None),
+        Some(a) => {
+            if !a.iter().all(|v| v.is_finite()) {
+                return Err("the entry point must be finite".into());
+            }
+            let w = work_frame(setup)?.local(Vec3::new(a[0], a[1], a[2]));
+            Ok(Some(Vec2::new(w.x, w.y)))
+        }
+    }
 }
 
 /// A setup as the model has it now (part zero worked out again when it follows the model) and
@@ -3098,17 +3124,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         return drill(&points, tool, &cut, *dwell).map_err(|e| e.to_string());
     }
     if let CamOperation::Face { geometry, params, .. } = op {
-        // The entry: a model point, brought into work XY as a contour's start is.
-        let entry = match params.entry {
-            None => None,
-            Some(a) => {
-                if !a.iter().all(|v| v.is_finite()) {
-                    return Err("the entry point must be finite".into());
-                }
-                let w = work_frame(setup)?.local(Vec3::new(a[0], a[1], a[2]));
-                Some(Vec2::new(w.x, w.y))
-            }
-        };
+        let entry = entry_xy(setup, params.entry)?;
         let params = FaceParams { stepover: eval_len(s, &params.stepover, "stepover")?, overrun: eval_len(s, &params.overrun, "overrun")? };
         let path = match geometry {
             CamGeometry::Stock => {
@@ -3155,7 +3171,9 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         CamOperation::Contour { geometry, params, .. } => contour_path(s, setup, geometry, params, tool, &cut),
         CamOperation::Pocket { geometry, params, .. } => {
             let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
-            let params = engine_pocket(s, params)?;
+            let entry = entry_xy(setup, params.entry)?;
+            let mut params = engine_pocket(s, params)?;
+            params.entry = entry;
             let all: Vec<Region2> = regions.into_iter().chain(openings).collect();
             pocket(&all, tool, &params, &cut).map_err(|e| e.to_string())
         }
@@ -4486,6 +4504,106 @@ mod tests {
         // An entry on the material is refused, and so is one in no sketch.
         assert!(s.execute("cam.op.face", &face("Bad", json!({"entry": [20.0, 6.0, 0.0]}))).is_err());
         assert!(s.execute("cam.op.face", &face("Bad", json!({"entry_at": {"sketch": marks, "point": "nope"}}))).is_err());
+    }
+
+    #[test]
+    fn an_open_pocket_is_entered_at_the_chosen_point() {
+        // The sampled path of one operation, in model coordinates.
+        fn point_at(s: &Session, name: &str) -> Vec<(Vec3, bool)> {
+            let paths = s.cam_toolpaths();
+            let path = paths.iter().find(|p| p.operation == name).expect("the pocket's path");
+            path.points.as_ref().unwrap().clone()
+        }
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 2, "flute_length": 20, "feed": 600, "plunge_feed": 200}));
+        let pocket = |setup: &str, name: &str, extra: Value| {
+            let mut p = json!({"setup": setup, "name": name, "tool": 1, "outer": [[0, 0], [20, 0], [20, 10], [0, 10]], "stepover": 0.8, "bottom": -2, "stepdown": 2});
+            for (k, v) in extra.as_object().unwrap() {
+                p[k] = v.clone();
+            }
+            p
+        };
+        // The work frame sits 5 mm off the model in x and y, so an entry in model coordinates
+        // must be brought into work XY, where the pocket's outline already is. The model point
+        // (−7, 3) is work (−12, −2): in air at the lower left of the pocket.
+        run(&mut s, "cam.setup", json!({"name": "Open", "work_origin": [5, 5, 0]}));
+        run(&mut s, "cam.op.pocket", pocket("Open", "In", json!({"entry": [-7.0, 3.0, 0.0]})));
+        // The same pocket again with the part zero at the model's: the work piece, the entry
+        // and the path must come out the same, in work coordinates.
+        run(&mut s, "cam.setup", json!({"name": "Plain", "work_origin": [0, 0, 0]}));
+        run(&mut s, "cam.op.pocket", pocket("Plain", "Plain", json!({"entry": [-12.0, -2.0, 0.0]})));
+        let (mut a, mut b) = (point_at(&s, "In"), point_at(&s, "Plain"));
+        // The first sample rides high on the entry point's rapid: drop it before comparing.
+        while a[0].0.z > 9.0 {
+            a.remove(0);
+        }
+        while b[0].0.z > 9.0 {
+            b.remove(0);
+        }
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x.0.x - 5.0 - y.0.x).abs() < 1e-6 && (x.0.y - 5.0 - y.0.y).abs() < 1e-6 && (x.0.z - y.0.z).abs() < 1e-6, "{x:?} {y:?}");
+        }
+        // The bands run along the opening, and every pass feeds the same way along them,
+        // so no pass is ever conventional.
+        let pts = point_at(&s, "Plain");
+        let d = {
+            let (x, y) = (22.0f64, 7.0);
+            let l = x.hypot(y);
+            (x / l, y / l)
+        };
+        let mut side = 0usize;
+        let mut cuts: Vec<Vec3> = Vec::new();
+        for ((p, cp), (q, cq)) in pts.iter().zip(pts.iter().skip(1)) {
+            if !(*cp && *cq) {
+                continue;
+            }
+            // Walk the segment at half a millimetre: the samples are the moves' vertices.
+            let n = (p.dist(*q) / 0.5).ceil().max(1.0) as usize;
+            for i in 0..=n {
+                let t = i as f64 / n as f64;
+                cuts.push(Vec3::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t, p.z + (q.z - p.z) * t));
+            }
+            if (p.z - q.z).abs() > 1e-9 || p.dist(*q) < 1e-6 {
+                continue;
+            }
+            side += 1;
+            let (dx, dy) = (q.x - p.x, q.y - p.y);
+            let l = dx.hypot(dy);
+            assert!((dx / l) * d.0 + (dy / l) * d.1 > 1e-6, "a pass feeds the other way: {p:?} to {q:?}");
+        }
+        assert!(side > 10, "{side} side feeds");
+        // The opening is cut flush: a pass runs past its plane, and the floor is cleared.
+        assert!(cuts.iter().any(|p| p.x < -0.05), "no pass crosses the opening's plane");
+        for x in 2..20 {
+            for y in 2..10 {
+                let (x, y) = (x as f64, y as f64);
+                assert!(cuts.iter().any(|p| (p.x - x).hypot(p.y - y) <= 1.01), "({x}, {y}) stands uncut");
+            }
+        }
+        // The same entry as a sketch point, in model coordinates like any other pick.
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.point", json!({"point": [-7, 3], "id": "enter"}));
+        let marks = s.active_sketch.expect("sketch");
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "cam.op.pocket", pocket("Open", "At", json!({"entry_at": {"sketch": marks, "point": "enter"}})));
+        assert_eq!(point_at(&s, "At"), point_at(&s, "In"));
+        // Both entries are saved with the operation; a reopened design builds them again.
+        let saved: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
+        let ops = saved["cam"]["setups"][0]["operations"].as_array().unwrap().clone();
+        for name in ["In", "At"] {
+            let op = ops.iter().find(|o| o["name"] == json!(name)).expect("the saved pocket");
+            assert_eq!(op["params"]["entry"], json!([-7.0, 3.0, 0.0]), "{name}");
+        }
+        let cold = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        assert_eq!(cold.cam_toolpaths().len(), 3);
+        // An entry in the material, a sketch point that is not, and conventional milling with
+        // an entry (which fixes the way each pass goes) are all refused.
+        let err = s.execute("cam.op.pocket", &pocket("Open", "Bad", json!({"entry": [20.0, 10.0, 0.0]}))).unwrap_err().to_string();
+        assert!(err.contains("in air outside"), "{err}");
+        assert!(s.execute("cam.op.pocket", &pocket("Open", "Bad", json!({"entry_at": {"sketch": marks, "point": "nope"}}))).is_err());
+        let err = s.execute("cam.op.pocket", &pocket("Open", "Bad", json!({"entry": [-7.0, 3.0, 0.0], "climb": false}))).unwrap_err().to_string();
+        assert!(err.contains("climb"), "{err}");
     }
 
     #[test]

@@ -168,6 +168,19 @@ compensated step is refused with its post. Your own posts set the words (`comp_l
 `comp_right`, `comp_off`, `{register}` for the register; all empty: none). The setup sheet says
 for each compensated step what goes into the tool table.
 
+A **pocket open to one side** is cut in bands along the opening, not in rings. Pick a sketch
+point or a corner in the air outside the opening under **Entry point**: bands of passes lie
+along the opening, one stepover behind the next. Every pass goes down in the air outside the
+opening, runs along it and takes one stepover of width on the way; after each pass the tool
+lifts, steps in by one stepover and goes down again, so every pass feeds the same way and none
+of them is plunged or ramped into material across its whole width, as a ring pass is. The
+opening is cut flush while the closed walls keep their wall stock to leave; an island that
+stands across a band splits it, and the stretch behind the island is entered from above as a
+closed pocket enters it: along a ramp where the ramp angle
+leaves room, straight down otherwise. Since the open side fixes which way each
+pass goes, the direction is climb and is not asked. A point inside the pocket, or nearer to a
+wall than the tool's radius, is refused.
+
 ## Start and final depth from the model
 
 **Start depth Z** is where cutting starts. It begins at the top of the setup's stock; when an
@@ -573,7 +586,11 @@ default half the diameter), `stock_to_leave`, `tolerance` and `ramp_angle`; the 
 takes `kind: "slot"` with `slot_width`. Without `stepdown`, milling steps down one tool
 diameter. Contours take `side` (`auto`, `outside`, `inside`, `on`); contours and pockets take `climb`
 (false: conventional), `stock_to_leave` (walls) and `floor_stock` (floor), in the guided job
-too. Machines:
+too. A pocket takes `entry` / `entry_at` as a facing does; with it the pocket is an open one,
+cut one stepover-wide pass at a time through the opening the point faces, each pass entering
+through the air, the opening cut flush and the closed walls keeping `stock_to_leave`; passes
+then always climb, so `climb: false` with an entry is refused, and the guided job takes
+`entry` with `kind: "pocket"`. Machines:
 
 ```json
 {"name": "Portal", "x": [0, 600], "y": [0, 400], "z": [-120, 0], "a": {"kind": "endless"},

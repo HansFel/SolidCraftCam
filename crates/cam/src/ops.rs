@@ -9,7 +9,7 @@ use solidcraft_geom::prelude::*;
 
 use crate::check::verify;
 use crate::lead::{Leads, lead_in, lead_out};
-use crate::offset::{Shape, reversed};
+use crate::offset::{MAX_PIECES, Shape, reversed};
 use crate::open::{OpenContourParams, OpenPath, side_normal};
 use crate::path::{DrillCycle, MAX_MOVES, Move, Toolpath};
 use crate::piece::Piece;
@@ -237,6 +237,12 @@ pub struct PocketParams {
     pub tolerance: f64,
     /// Steepest descent into uncut material, along the first pass (radians); 0 plunges straight down.
     pub ramp_angle: f64,
+    /// Open pocket: a point in the air outside the pocket, on its open side (work XY). The
+    /// passes then run parallel to the contour the pocket is open through, in bands a
+    /// stepover apart from the opening inwards, each band grazing the standing metal by
+    /// one stepover and no more; without it the pocket is closed and entered as before, by
+    /// a plunge and ramp.
+    pub entry: Option<Vec2>,
 }
 
 /// Collects moves, keeping the tool's position.
@@ -751,6 +757,8 @@ fn cut_open_chain(b: &mut Builder, chain: &[Piece], params: &OpenContourParams, 
 }
 
 /// Clears `regions` (holes are islands) with rings parallel to the boundary, from the inside out.
+/// With `entry` set (an open pocket) the rings give way to bands of passes running along the
+/// opening, each entered through the air on the open side.
 pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut) -> Result<Toolpath> {
     tool.validate()?;
     mills(tool)?;
@@ -763,6 +771,15 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
     }
     let shape = Shape::from_regions(regions, params.tolerance)?;
     let wall = r + params.stock_to_leave;
+    if let Some(at) = params.entry {
+        if !params.climb {
+            return invalid("an open pocket feeds every pass parallel to its open side: the passes cannot run the other way, so it is always climb");
+        }
+        if !(at.is_finite() && at.x.abs() <= MAX_COORD && at.y.abs() <= MAX_COORD) {
+            return invalid("the entry point must be finite and within 1e6 mm");
+        }
+        return pocket_open(&shape, params, cut, at, r, wall);
+    }
     let mut rings: Vec<Vec<Vec<Piece>>> = Vec::new();
     loop {
         let ring = shape.offset(wall + params.stepover * rings.len() as f64)?;
@@ -857,6 +874,410 @@ fn corner_spur(piece: &Piece, next: &Piece, inward: f64, gap: f64, r: f64) -> Op
 fn link_is_clear(shape: &Shape, a: Vec2, b: Vec2, wall: f64, r: f64) -> bool {
     let n = ((a.dist(b) / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 2000.0) as usize;
     (0..=n).all(|i| shape.clear(a.lerp(b, i as f64 / n as f64), wall))
+}
+
+/// How squarely a boundary piece has to face the entry to belong to the open side a pass
+/// enters through: its outward normal must oppose the entry direction by more than 45°.
+const OPENING_FACE: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// The open pocket: `entry` is a point in the air outside the pocket, on its open side.
+/// The passes are bands parallel to the contour the pocket is open through, a stepover
+/// apart: each band is the locus a fixed distance from that opening contour, so the tool
+/// bites the standing metal by exactly one stepover wherever it feeds, and not even the
+/// first pass cuts a whole tool width: it grazes the opening one stepover deep. The bands
+/// are cut from the opening inwards, so every band descends beside the groove the previous
+/// one left, feeds along its floor where the pass begins further along, and retracts at
+/// the end; the metal still uncut lies to the right of every feed, as in a climb.
+///
+/// Boundary pieces of the outer loop facing the entry make up the opening: the tool cuts
+/// flush to them. Everything else, the rest of the wall and every hole standing as an
+/// island, keeps `wall` clear. A band split by an island descends at its beginning,
+/// along a ramp where `ramp_angle` leaves room and straight down otherwise, cutting no
+/// more than a stepover there either. Where the last band cannot reach the wall without
+/// biting deeper than a stepover, a final pass along the wall trims the band left
+/// standing, engaged by no more than a stepover.
+fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: f64, wall: f64) -> Result<Toolpath> {
+    if shape.inside(entry, r.max(1e-6)) || shape.dist(entry) < r - 1e-7 {
+        return invalid("the entry point must be in air outside the pocket, clear of at least the tool radius");
+    }
+    // The direction the tool enters from: the centre of the outer loops, away from `entry`.
+    let (mut cx, mut cy) = (0.0, 0.0);
+    let mut outer_pts = 0usize;
+    for lp in shape.loops().iter().filter(|lp| lp.len() >= 3) {
+        if lp.iter().map(Piece::area_term).sum::<f64>() > 0.0 {
+            for piece in lp {
+                let p = piece.point_at(0.5);
+                cx += p.x;
+                cy += p.y;
+                outer_pts += 1;
+            }
+        }
+    }
+    if outer_pts == 0 {
+        return invalid("the pocket is too small for the tool");
+    }
+    let d = ((Vec2::new(cx / outer_pts as f64, cy / outer_pts as f64) - entry).normalized())
+        .ok_or_else(|| CamError::Invalid("the entry point sits at the pocket's centre: pick one clear outside".into()))?;
+    // Opening and walls, told apart by how each piece faces the entry. Loops keep the
+    // region on their left, so (t.y, -t.x) is a piece's outward normal; the opening pieces
+    // of a loop are grouped into the chains its bands offset from, and every other piece,
+    // including every hole, is a wall.
+    let mut walls: Vec<Piece> = Vec::new();
+    let mut chains: Vec<Vec<Piece>> = Vec::new();
+    for lp in shape.loops() {
+        let outer = lp.iter().map(Piece::area_term).sum::<f64>() > 0.0;
+        let facing: Vec<bool> = lp
+            .iter()
+            .map(|piece| {
+                let t = piece.tangent_at(0.5);
+                outer && Vec2::new(t.y, -t.x).dot(d) < -(OPENING_FACE - 1e-9)
+            })
+            .collect();
+        if !outer {
+            walls.extend(lp.iter().copied());
+            continue;
+        }
+        let n = facing.len();
+        if n == 0 {
+            continue;
+        }
+        for (piece, f) in lp.iter().zip(&facing) {
+            if !f {
+                walls.push(*piece);
+            }
+        }
+        if facing.iter().all(|f| *f) {
+            chains.push(lp.clone());
+            continue;
+        }
+        for i in 0..n {
+            if facing[i] && !facing[(i + n - 1) % n] {
+                let mut ch = Vec::new();
+                for k in 0..n {
+                    if !facing[(i + k) % n] {
+                        break;
+                    }
+                    ch.push(lp[(i + k) % n]);
+                }
+                chains.push(ch);
+            }
+        }
+    }
+    if chains.is_empty() {
+        return invalid("the entry point does not face an opening: no pass can enter the pocket through the air");
+    }
+    let s = params.stepover;
+    let pitch = (r * 0.25).max(0.05);
+    // A pass goes down through the opening where its centre stands outside the metal; the
+    // disc may still graze the metal by its stepover there, which is the whole point.
+    let air = |p: Vec2| !shape.inside(p, 1e-6);
+    let fits = |p: Vec2| walls.iter().all(|w| w.dist(p) >= wall - 1e-6);
+    // Every pass at every depth: XY only, the depth levels wrap around them.
+    struct Pass {
+        path: Vec<Vec2>,
+        air: bool,
+    }
+    let mut passes: Vec<Pass> = Vec::new();
+    let wall_loops = shape.offset(wall)?;
+    for ch in &chains {
+        let (Some(ch0), Some(ch_last)) = (ch.first(), ch.last()) else { continue };
+        let (e0, e_last) = (ch0.start(), ch_last.end());
+        let graze = |p: Vec2| {
+            let f = ch.iter().map(|piece| piece.dist(p)).fold(f64::INFINITY, f64::min);
+            if shape.inside(p, 1e-6) { f } else { -f }
+        };
+        let sunk = |p: Vec2, t: f64| graze(p) <= t - s + 1e-6;
+        let mut last_enter: Option<Vec2> = None;
+        let mut blank = 0usize;
+        let mut t_last: Option<f64> = None;
+        let mut j = 1usize;
+        while j <= MAX_RINGS && blank < 2 {
+            // Band j sits at a reach of j stepovers from the opening face: its centre
+            // line, seen from the face, sits one stepover further in than the last.
+            let t = s * j as f64 - r;
+            j += 1;
+            let kept = chain_offset(ch, t)?;
+            let mut cuts = false;
+            if !kept.is_empty() {
+                let mut capped: Vec<Piece> = Vec::with_capacity(kept.len() + 2);
+                capped.push(Piece::Line { a: e0, b: kept[0].start() });
+                capped.extend(kept);
+                let end = capped[capped.len() - 1].end();
+                capped.push(Piece::Line { a: end, b: e_last });
+                let pts = densify(&loop_poly(&capped, 0.1), pitch);
+                let good = |p: Vec2| fits(p) && (shape.inside(p, 1e-6) || graze(p) <= 1e-6);
+                for run in band_runs(&pts, &good, s, &graze) {
+                    // A band that has passed the closed end runs wholly in air beyond it:
+                    // with its disc missing the metal everywhere (a graze below -r leaves
+                    // nothing bitten) its pass would cut nothing. Bands that bite nothing
+                    // for two in a row end the chain: the reach has crossed the pocket.
+                    if !run.iter().any(|q| graze(*q) > -r) {
+                        continue;
+                    }
+                    cuts = true;
+                    // Come down on the previous band's floor where that reaches this band's
+                    // beginning; otherwise at the pass's own first grazing point, and where
+                    // there is none, at its beginning, cutting no more than a stepover.
+                    let (enter, own) = match last_enter {
+                        Some(p) if sunk(p, t) && p.dist(run[0]) <= 2.0 * s + 1e-6 && link_is_clear(shape, p, run[0], wall, r) => (p, 0usize),
+                        _ => {
+                            let own = run.iter().position(|q| sunk(*q, t)).unwrap_or(0);
+                            (run[own], own)
+                        }
+                    };
+                    last_enter = Some(enter);
+                    let mut path = vec![enter];
+                    path.extend_from_slice(&run[own..]);
+                    passes.push(Pass { path, air: air(enter) });
+                }
+            }
+            if cuts {
+                blank = 0;
+                t_last = Some(t);
+            } else {
+                blank += 1;
+            }
+        }
+        // The band left standing at the wall, where no band's reach and no further bite
+        // than a stepover can go: trim along the offset wall where it grazes past the
+        // last band by no more than a stepover.
+        if let Some(t_last) = t_last {
+            let strip = |p: Vec2| {
+                let f = graze(p);
+                f > t_last + 1e-6 && f <= t_last + s + 1e-6
+            };
+            for oc in &wall_loops {
+                let mut poly = loop_poly(oc, 0.1);
+                if let Some(first) = poly.first().copied() {
+                    poly.push(first);
+                }
+                let in_strip = |p: Vec2| fits(p) && strip(p) && shape.inside(p, 1e-6);
+                for run in band_runs(&densify(&poly, pitch), &in_strip, s, &graze) {
+                    let enter = match last_enter {
+                        Some(p) if graze(p) <= t_last + 1e-6 && p.dist(run[0]) <= 2.0 * s + 1e-6 && link_is_clear(shape, p, run[0], wall, r) => p,
+                        _ => run[0],
+                    };
+                    last_enter = Some(enter);
+                    let path = std::iter::once(enter).chain(run).collect();
+                    passes.push(Pass { path, air: air(enter) });
+                }
+            }
+        }
+    }
+    if passes.is_empty() {
+        return invalid("the tool does not fit the pocket");
+    }
+    if !passes.iter().any(|p| p.air) {
+        return invalid("the entry point does not face an opening: no pass can enter the pocket through the air");
+    }
+    let levels = cut.levels()?;
+    let n_pts: usize = passes.iter().map(|p| p.path.len()).sum();
+    if levels.len().saturating_mul(passes.len().saturating_mul(8).saturating_add(n_pts).saturating_add(16)) > MAX_MOVES {
+        return Err(CamError::TooLarge("too many open pocket moves".into()));
+    }
+    let mut b = Builder::new(cut);
+    for (k, &z) in levels.iter().enumerate() {
+        // The depth already cut wherever this level's passes stand.
+        let cleared = if k == 0 { cut.heights.top } else { levels[k - 1] };
+        for pass in &passes {
+            let Some((&head, rest)) = pass.path.split_first() else { continue };
+            b.travel_to(head)?;
+            if pass.air {
+                b.plunge_to(z)?;
+                for p in rest {
+                    b.cut_to(*p, z)?;
+                }
+            } else {
+                b.plunge_to(cleared)?;
+                // Along the floor and the pass itself, no steeper than the ramp; the
+                // first pass of a chain and the wall's band come down cutting where no
+                // floor reaches, at no more than a stepover engaged.
+                let resume = ramp_down(&mut b, &pass.path, cleared, z, params.ramp_angle, pitch)?;
+                for p in &pass.path[resume.min(pass.path.len())..] {
+                    b.cut_to(*p, z)?;
+                }
+            }
+            // Retract after every pass: each one is fed down again before it cuts, so
+            // all passes run the same way and none turns to cut the other.
+            b.retract()?;
+        }
+    }
+    b.finish()
+}
+
+/// The chain of pieces moved `d` into the region its loop keeps on the left (away from it
+/// when negative), joined by arcs round the corners that bend away from the offset, and
+/// cut back where neighbouring offset pieces cross: what comes closer to the chain than
+/// `d` folds into the offset and goes. The pieces come back in chain order, unclosed; the
+/// band of a pocket opening hangs from its ends back to the chain itself.
+fn chain_offset(ch: &[Piece], d: f64) -> Result<Vec<Piece>> {
+    let ad = d.abs();
+    if !(ad > 1e-9) {
+        return Ok(ch.to_vec());
+    }
+    // Crossings nearer a piece's end than this are not cut, and folds this thin go with
+    // them: the same rule as the region offset (see offset.rs).
+    let tol = 2.0 * (ad * 1e-9).sqrt() + 1e-6;
+    let mut raw: Vec<Piece> = Vec::new();
+    for (i, piece) in ch.iter().enumerate() {
+        match *piece {
+            Piece::Line { a, b } => {
+                let n = piece.tangent_at(0.0).perp() * d;
+                raw.push(Piece::Line { a: a + n, b: b + n });
+            }
+            Piece::Arc { c, r, a0, sweep } => {
+                let r = r - d * sweep.signum();
+                if r > 1e-9 {
+                    raw.push(Piece::Arc { c, r, a0, sweep });
+                }
+            }
+        }
+        if let Some(next) = ch.get(i + 1) {
+            // A corner that opens away from the offset side: the offset rolls round the vertex.
+            let dir = piece.tangent_at(1.0);
+            let bend = crate::piece::turn(dir, next.tangent_at(0.0));
+            if bend * d < 0.0 && bend.abs() > 1e-9 {
+                raw.push(Piece::Arc { c: piece.end(), r: ad, a0: (dir.perp() * d.signum()).angle(), sweep: bend });
+            }
+        }
+    }
+    let mut cuts = vec![Vec::new(); raw.len()];
+    let mut hits = Vec::new();
+    for (i, a) in raw.iter().enumerate() {
+        for (j, b) in raw.iter().enumerate().skip(i + 1) {
+            hits.clear();
+            a.intersections(b, &mut hits);
+            for &(t, u) in &hits {
+                cuts[i].push(t);
+                cuts[j].push(u);
+            }
+        }
+    }
+    let folded = |p: Vec2| ch.iter().any(|piece| piece.dist(p) < ad - 1e-6);
+    let mut kept = Vec::new();
+    for (piece, ts) in raw.iter().zip(cuts.iter_mut()) {
+        let len = piece.length();
+        ts.retain(|t| t * len > tol && (1.0 - t) * len > tol);
+        ts.sort_by(f64::total_cmp);
+        let mut t0 = 0.0;
+        for &t in ts.iter().chain(std::iter::once(&1.0)) {
+            if t < 1.0 && !((t - t0) * len > tol) {
+                continue;
+            }
+            if kept.len() >= MAX_PIECES {
+                return Err(CamError::TooLarge("the offset profile crosses itself too often".into()));
+            }
+            let sub = piece.sub(t0, t);
+            if !folded(sub.point_at(0.5)) {
+                kept.push(sub);
+            }
+            t0 = t;
+        }
+    }
+    Ok(kept)
+}
+
+/// The polyline with points no further than `pitch` apart.
+fn densify(pts: &[Vec2], pitch: f64) -> Vec<Vec2> {
+    let mut out: Vec<Vec2> = Vec::with_capacity(pts.len() + 16);
+    for w in pts.windows(2) {
+        out.push(w[0]);
+        let n = (w[0].dist(w[1]) / pitch).ceil().max(1.0) as usize;
+        for k in 1..n {
+            out.push(w[0].lerp(w[1], k as f64 / n as f64));
+        }
+    }
+    out.extend(pts.last().copied());
+    out
+}
+
+/// The longest stretches of the polyline where `good` holds, each end found by bisection
+/// between the last bad and the first good sample, and every run facing the climb: the
+/// deeper graze, further from the opening, on the right of the feed.
+fn band_runs(pts: &[Vec2], good: &dyn Fn(Vec2) -> bool, stepover: f64, graze: &dyn Fn(Vec2) -> f64) -> Vec<Vec<Vec2>> {
+    let n = pts.len();
+    let mut out: Vec<Vec<Vec2>> = Vec::new();
+    if n < 2 {
+        return out;
+    }
+    // The edge between a good point and its bad neighbour, cut back to `good`'s border.
+    let edge = |a: Vec2, b: Vec2| {
+        let (mut lo, mut hi) = (0.0f64, 1.0);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if good(a.lerp(b, m)) {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        a.lerp(b, lo)
+    };
+    let mut i = 0usize;
+    while i < n {
+        if !good(pts[i]) {
+            i += 1;
+            continue;
+        }
+        let i0 = i;
+        while i < n && good(pts[i]) {
+            i += 1;
+        }
+        let i1 = i - 1;
+        let mut run = Vec::with_capacity(i1 - i0 + 3);
+        run.push(if i0 == 0 { pts[i0] } else { edge(pts[i0], pts[i0 - 1]) });
+        if i1 > i0 + 1 {
+            run.extend_from_slice(&pts[i0 + 1..i1]);
+        }
+        let end = if i1 == n - 1 { pts[i1] } else { edge(pts[i1], pts[i1 + 1]) };
+        if run.last().is_none_or(|q| q.dist(end) > 1e-9) {
+            run.push(end);
+        }
+        if run.len() < 2 || run.iter().zip(run.iter().skip(1)).map(|(a, b)| a.dist(*b)).sum::<f64>() < 1e-3 {
+            continue;
+        }
+        run.reverse();
+        let k = (run.len() - 1) / 2;
+        if let Some(h) = (run[k + 1] - run[k]).normalized() {
+            let right = -h.perp();
+            if graze(run[k] - right * stepover) > graze(run[k] + right * stepover) + 1e-9 {
+                run.reverse();
+            }
+        }
+        out.push(run);
+    }
+    out
+}
+
+/// Down from `cleared` to `z` along `path` at no steeper an angle than `angle`, feeding
+/// evenly as it goes where the path leaves room and straight down where it does not. The
+/// index of the first path point not yet fed through comes back.
+fn ramp_down(b: &mut Builder, path: &[Vec2], cleared: f64, z: f64, angle: f64, pitch: f64) -> Result<usize> {
+    let drop = cleared - z;
+    if !(drop > 1e-9) || path.len() < 2 {
+        b.plunge_to(z)?;
+        return Ok(1);
+    }
+    let ramp = if angle > 0.0 { drop / angle.tan() } else { f64::INFINITY };
+    let total: f64 = path.windows(2).map(|w| w[0].dist(w[1])).sum();
+    if !ramp.is_finite() || total < ramp + 1e-6 {
+        b.plunge_to(z)?;
+        return Ok(1);
+    }
+    let steps = (ramp / pitch).ceil().clamp(1.0, 4000.0) as usize;
+    let mut idx = 0usize;
+    let mut at = 0.0;
+    for st in 1..=steps {
+        let want = ramp * st as f64 / steps as f64;
+        while idx + 1 < path.len() && at + path[idx].dist(path[idx + 1]) < want {
+            at += path[idx].dist(path[idx + 1]);
+            idx += 1;
+        }
+        let seg = path[idx].dist(path[idx + 1]);
+        let p = if seg > 1e-9 { path[idx].lerp(path[idx + 1], ((want - at) / seg).min(1.0)) } else { path[idx + 1] };
+        b.cut_to(p, cleared - drop * st as f64 / steps as f64)?;
+    }
+    Ok(idx + 1)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

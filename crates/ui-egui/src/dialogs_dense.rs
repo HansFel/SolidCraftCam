@@ -1970,6 +1970,35 @@ mod tests {
         assert_eq!(again["entry"].as_array().map(|v| v[0].as_f64()), Some(Some(20.0)), "{again}");
     }
 
+    #[test]
+    fn cam_pocket_form_enters_at_a_picked_point_and_gives_up_the_direction() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h); // a 10 × 10 × 5 plate at the model's corner
+        // A sketch point in the air beside the plate, for the entry pick.
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.point", json!({"point": [16, 5], "id": "enter"})).unwrap();
+        let sketch = h.app.session.active_sketch.unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        d.active = 4;
+        d.pick(&h.app.session, Sel::ExternalSketchPoint { sketch, id: "enter".into() });
+        assert_eq!(d.inputs[4].items.len(), 1);
+        h.app.dialog = Some(d);
+        h.frames(2);
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the pocket form") };
+        // The entry travels with the parameters, and the way each pass feeds follows from
+        // it: every pass climbs, so the form stops asking for a direction.
+        let p = form.params().unwrap();
+        assert_eq!(p["entry"].as_array().map(|v| (v[0].as_f64(), v[1].as_f64())), Some((Some(16.0), Some(5.0))), "{p}");
+        assert_eq!(p["climb"].as_bool(), Some(true), "{p}");
+        assert!(h.widget("Entry point").is_some());
+        assert!(h.widget("Direction").is_none(), "the open side fixes the direction");
+    }
+
     /// The Entry point pick reaches the form only if the viewport offers it a hit: a sketch
     /// point of another sketch is hit-tested only while the active input accepts POINTS
     /// (`viewport::pick_hits`), while EXTERNAL_POINTS alone only maps a hit that never came.
