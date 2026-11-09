@@ -505,9 +505,9 @@ pub struct HoleMillParams {
     pub holes: Option<Vec<HolePickParams>>,
     /// The hole's diameter (helical boring) or the thread's major diameter.
     pub diameter: NumberExpr,
-    /// Thread milling: rise per turn (default the tool's pitch).
+    /// Rise per turn: a thread's (default the tool's pitch), or a helix's (default the stepdown).
     pub pitch: Option<NumberExpr>,
-    /// Thread milling: a thread in a hole (default) or on a stud.
+    /// In a hole (default), or on a stud: a thread on it, or a helix milling a round boss.
     pub internal: Option<bool>,
     pub left_hand: Option<bool>,
     /// Helical boring: climb milling (default).
@@ -707,10 +707,10 @@ pub struct JobParams {
     /// Helical boring: the hole's diameter; thread milling: the thread's major diameter (mm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hole_diameter: Option<f64>,
-    /// Thread milling: the pitch (mm; default the tool's).
+    /// Rise per turn (mm): a thread's (default the tool's pitch), or a helix's (default the stepdown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch: Option<f64>,
-    /// Thread milling: in a hole (default) or on a stud.
+    /// Thread milling and helix: in a hole (default) or on a stud (a round boss for a helix).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -150,7 +150,7 @@ Project
 | Facing a picked face's area to a finished height with a Z allowance, safety heights worked out | Done |
 | Slot along picked edges (open or closed chains) or around contours, wider than the tool with side passes | Done |
 | Chamfer and deburr along edges (chamfer cutter) | Done: `cam.op.chamfer`, width on the face and tip offset, depth from the cutter's angle |
-| Bore and helical bore | Partial: helical bore (`cam.op.helix`); no boring bar |
+| Bore and helical bore | Partial: helical bore (`cam.op.helix`) in a hole or round a boss, with its own rise per turn; no boring bar |
 | Thread milling and tapping (rigid or floating) | Partial: thread milling (`cam.op.thread`, inside or on a stud, right or left hand) and rigid tapping (`cam.op.tap`: G84, M29+G84, G33.1, G331/G332); no floating tapping |
 | Engraving along sketch text and curves | Done: `cam.op.engrave`, the cutter's tip on picked edges, sketch curves and text |
 | Tabs (bridges) on through contours | Done |

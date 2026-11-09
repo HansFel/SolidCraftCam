@@ -324,7 +324,7 @@ pub fn head_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupFo
         ui_kit::choice_row(ui, tr("ui.cam.zero_rest"), "cam-setup-rest", &mut form.rest, &rests);
     }
     if form.zero >= BOX_MODES {
-        ui_kit::checkbox(ui, tr("ui.cam.zero_follows"), &mut form.zero_follows);
+        crate::cam_manual::checkbox(ui, "ui.cam.zero_follows", &mut form.zero_follows);
     }
     if form.zero >= BOX_MODES || (form.zero == 1 && form.rest < 2) {
         let refs = [tr("ui.cam.box_low"), tr("ui.cam.box_mid"), tr("ui.cam.box_high")];
@@ -345,8 +345,8 @@ pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
     if form.editing.is_some() {
         note(ui, tr("ui.cam.kept_axes"));
     }
-    ui_kit::checkbox(ui, tr("ui.cam.flip_z"), &mut form.flip_z);
-    ui_kit::checkbox(ui, tr("ui.cam.flip_x"), &mut form.flip_x);
+    crate::cam_manual::checkbox(ui, "ui.cam.flip_z", &mut form.flip_z);
+    crate::cam_manual::checkbox(ui, "ui.cam.flip_x", &mut form.flip_x);
     let stock = [tr("ui.cam.stock_around"), tr("ui.cam.stock_box"), tr("ui.cam.stock_round")];
     ui_kit::choice_row(ui, tr("ui.cam.stock"), "cam-setup-stock", &mut form.stock, &stock);
     let labels: &[&str] = match form.stock {

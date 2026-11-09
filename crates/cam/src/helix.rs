@@ -15,14 +15,21 @@ const MAX_HOLES: usize = 10_000;
 /// Most half turns one hole takes.
 const MAX_HALF_TURNS: f64 = 200_000.0;
 
-/// A helically bored hole.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// A helically milled hole, or a round boss milled from outside.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HelixParams {
-    /// The finished hole's diameter (mm): more than the tool's, at most twice it (a wider hole
-    /// would leave a core standing in the middle).
+    /// The finished diameter (mm). A hole is wider than the tool and at most twice it (a wider
+    /// hole would leave a core standing in the middle); a boss is any size above 0.
     pub diameter: f64,
-    /// Climb milling (counter-clockwise inside a hole with the spindle turning clockwise).
+    /// Climb milling (counter-clockwise inside a hole, clockwise round a boss, with the spindle
+    /// turning clockwise).
     pub climb: bool,
+    /// Rise per turn (mm); none: the cut's stepdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// Round a boss (outside) instead of in a hole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// A milled thread.
@@ -69,40 +76,57 @@ fn half_turns(b: &mut Builder, c: Vec2, r: f64, from_z: f64, to_z: f64, half_ris
     Ok(())
 }
 
-/// Helical boring: for each hole the tool goes down a helix of `cut.stepdown` per turn from the
-/// top to the bottom, makes one full turn there to clean the floor's edge, moves to the centre
-/// and leaves straight up.
+/// Helical milling: for each centre the tool goes down a helix of `pitch` (else `cut.stepdown`)
+/// per turn from the top to the bottom and makes one full turn there to clean the ramp the helix
+/// leaves. In a hole it then moves to the centre and leaves straight up; round a boss it leaves
+/// straight up in its own groove, clear of the boss and of the stock round it.
 pub fn helical_bore(points: &[Vec2], tool: &Tool, params: &HelixParams, cut: &Cut) -> Result<Toolpath> {
     tool.validate()?;
     cut.validate()?;
     mills(tool)?;
     holes(points)?;
     let d = params.diameter;
-    if !d.is_finite() || d <= tool.diameter + 1e-6 {
-        return invalid("a helically bored hole is wider than the tool: drill or plunge a hole the tool's size");
+    if params.outside {
+        if !(d.is_finite() && d > 0.0 && d <= 2.0 * MAX_COORD) {
+            return invalid("a boss's diameter is above 0 and within the machine's range");
+        }
+    } else {
+        if !d.is_finite() || d <= tool.diameter + 1e-6 {
+            return invalid("a helically bored hole is wider than the tool: drill or plunge a hole the tool's size");
+        }
+        if d > 2.0 * tool.diameter {
+            return invalid("a hole more than twice as wide as the tool would leave a core standing: pocket it instead");
+        }
     }
-    if d > 2.0 * tool.diameter {
-        return invalid("a hole more than twice as wide as the tool would leave a core standing: pocket it instead");
+    let rise = params.pitch.unwrap_or(cut.stepdown);
+    if !(rise.is_finite() && rise > 0.0 && rise <= 1000.0) {
+        return invalid("the helix's rise per turn is above 0 and at most 1000 mm");
     }
     let h = cut.heights;
     if h.top - h.bottom > tool.flute_length {
         return invalid("cutting depth exceeds the tool's flute length");
     }
-    let r = (d - tool.diameter) * 0.5;
-    if points.len() as f64 * ((h.top - h.bottom) / (cut.stepdown * 0.5) + 8.0) > MAX_MOVES as f64 {
+    let r = if params.outside { (d + tool.diameter) * 0.5 } else { (d - tool.diameter) * 0.5 };
+    if points.len() as f64 * ((h.top - h.bottom) / (rise * 0.5) + 8.0) > MAX_MOVES as f64 {
         return Err(CamError::TooLarge("too many helix moves".into()));
     }
+    // Climb milling turns counter-clockwise inside a hole and clockwise round a boss.
+    let ccw = params.climb != params.outside;
     let mut b = Builder::new(cut);
     for c in points {
         let start = *c + Vec2::new(r, 0.0);
         b.travel_to(start)?;
         b.plunge_to(h.top)?;
-        half_turns(&mut b, *c, r, h.top, h.bottom, cut.stepdown * 0.5, params.climb, cut.feeds.cut)?;
+        half_turns(&mut b, *c, r, h.top, h.bottom, rise * 0.5, ccw, cut.feeds.cut)?;
         // One more turn at the bottom: the helix leaves a ramp there.
-        b.push(Move::Arc { to: (*c - Vec2::new(r, 0.0)).extend(h.bottom), center: *c, ccw: params.climb, feed: cut.feeds.cut })?;
-        b.push(Move::Arc { to: start.extend(h.bottom), center: *c, ccw: params.climb, feed: cut.feeds.cut })?;
-        b.push(Move::Feed { to: c.extend(h.bottom), feed: cut.feeds.cut })?;
-        b.push(Move::Rapid { to: c.extend(h.clearance) })?;
+        b.push(Move::Arc { to: (*c - Vec2::new(r, 0.0)).extend(h.bottom), center: *c, ccw, feed: cut.feeds.cut })?;
+        b.push(Move::Arc { to: start.extend(h.bottom), center: *c, ccw, feed: cut.feeds.cut })?;
+        if params.outside {
+            b.push(Move::Rapid { to: start.extend(h.clearance) })?;
+        } else {
+            b.push(Move::Feed { to: c.extend(h.bottom), feed: cut.feeds.cut })?;
+            b.push(Move::Rapid { to: c.extend(h.clearance) })?;
+        }
     }
     let path = Toolpath::new(b.into_moves());
     verify(&path, &h)?;

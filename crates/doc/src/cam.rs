@@ -952,12 +952,18 @@ pub struct CamEngraveParams {
     pub tolerance: Expr,
 }
 
-/// Helical boring: the finished hole's diameter.
+/// Helical milling: the finished diameter of a hole, or of a boss milled from outside.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CamHelixParams {
     pub diameter: Expr,
     #[serde(default = "true_val")]
     pub climb: bool,
+    /// Rise per turn; none: the cut's stepdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<Expr>,
+    /// Round a boss instead of in a hole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// Thread milling: the thread's major diameter and pitch, inside a hole or on a stud, right- or left-hand.
@@ -1374,6 +1380,9 @@ impl CamOperation {
             }
             CamOperation::HelicalBore { params, spindle_rpm, .. } => {
                 check_expr(&params.diameter, "diameter")?;
+                if let Some(pitch) = &params.pitch {
+                    check_expr(pitch, "pitch")?;
+                }
                 check_spindle(*spindle_rpm)?;
             }
             CamOperation::ThreadMill { params, spindle_rpm, .. } => {

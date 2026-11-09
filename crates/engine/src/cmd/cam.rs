@@ -251,7 +251,12 @@ fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<
         };
         CamOperation::ThreadMill { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
     } else {
-        let params = solidcraft_doc::cam::CamHelixParams { diameter, climb: args.climb.unwrap_or(true) };
+        let params = solidcraft_doc::cam::CamHelixParams {
+            diameter,
+            climb: args.climb.unwrap_or(true),
+            pitch: expr(&p, "pitch"),
+            outside: !args.internal.unwrap_or(true),
+        };
         CamOperation::HelicalBore { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
     };
     store_op(s, cmd, &args.setup, op)
@@ -3093,7 +3098,12 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             Ok(path)
         }
         CamOperation::HelicalBore { geometry, params, .. } => {
-            let params = solidcraft_cam::HelixParams { diameter: eval_len(s, &params.diameter, "diameter")?, climb: params.climb };
+            let params = solidcraft_cam::HelixParams {
+                diameter: eval_len(s, &params.diameter, "diameter")?,
+                climb: params.climb,
+                pitch: params.pitch.as_ref().map(|p| eval_len(s, p, "pitch")).transpose()?,
+                outside: params.outside,
+            };
             solidcraft_cam::helical_bore(&hole_centres(geometry)?, tool, &params, &cut).map_err(|e| e.to_string())
         }
         CamOperation::ThreadMill { geometry, params, .. } => {
@@ -4502,6 +4512,20 @@ mod tests {
             assert!(s.execute(id, &p).is_err(), "{id} {p}");
         }
         assert_eq!(s.doc.to_json(), before);
+        // A helix round a 20 mm boss (wider than twice the tool) with a rise of its own: the
+        // tool's centre runs 15 mm from the boss's axis, the design keeps both settings.
+        let boss = json!({"setup": "Top", "name": "Zapfen", "tool": 3, "points": [[30, 20]], "diameter": 20, "internal": false, "pitch": 3, "bottom": -6, "spindle_rpm": 8000});
+        run(&mut s, "cam.op.helix", boss);
+        let Some(CamOperation::HelicalBore { params, .. }) = s.doc.cam.setups[0].operations.last() else { panic!("the boss helix") };
+        assert!(params.outside && params.pitch.is_some(), "{params:?}");
+        let paths = s.cam_toolpaths();
+        let points = paths.iter().find(|p| p.operation == "Zapfen").unwrap().points.as_ref().unwrap().clone();
+        let cutting: Vec<_> = points.iter().filter(|(p, cutting)| *cutting && p.z < -1e-9).collect();
+        assert!(!cutting.is_empty() && cutting.iter().all(|(p, _)| ((p.x - 30.0).hypot(p.y - 20.0) - 15.0).abs() < 1e-6));
+        assert!((points.iter().map(|(p, _)| p.z).fold(f64::INFINITY, f64::min) + 6.0).abs() < 1e-9);
+        assert!(s.execute("cam.post", &json!({"setup": "Top", "post": "linuxcnc"})).is_ok());
+        let cold = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(cold.cam, s.doc.cam);
     }
 
     #[test]

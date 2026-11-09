@@ -251,8 +251,11 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                         }
                         cam::thread_cmd(&mut work, &op)?;
                     } else {
-                        if let Some(climb) = a.climb {
-                            map.insert("climb".into(), json!(climb));
+                        // A pitch replaces the stepdown as the rise per turn; `internal: false` mills a boss.
+                        for (key, value) in [("climb", a.climb.map(|v| json!(v))), ("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v)))] {
+                            if let Some(value) = value {
+                                map.insert(key.into(), value);
+                            }
                         }
                         cam::helix_cmd(&mut work, &op)?;
                     }

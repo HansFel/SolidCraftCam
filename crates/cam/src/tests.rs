@@ -2045,7 +2045,7 @@ mod time_tests {
 fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     let mill = tool(10.0);
     let heights = cut(0.0, -12.0, 2.0);
-    let path = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true }, &heights).unwrap();
+    let path = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, ..Default::default() }, &heights).unwrap();
     // Down the helix 2 mm a turn, one turn at the bottom, out through the middle.
     let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     assert_eq!(arcs.len(), 12 + 2);
@@ -2071,10 +2071,34 @@ fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     }
     // Too narrow, or so wide a core would stand; a drill cannot mill.
     for d in [10.0, 21.0, f64::NAN] {
-        assert!(helical_bore(&[v(0.0, 0.0)], &mill, &HelixParams { diameter: d, climb: true }, &heights).is_err(), "{d}");
+        assert!(helical_bore(&[v(0.0, 0.0)], &mill, &HelixParams { diameter: d, climb: true, ..Default::default() }, &heights).is_err(), "{d}");
     }
     let drill = Tool::new(2, ToolKind::Drill, 6.0, 30.0);
-    assert!(helical_bore(&[v(0.0, 0.0)], &drill, &HelixParams { diameter: 10.0, climb: true }, &heights).is_err());
+    assert!(helical_bore(&[v(0.0, 0.0)], &drill, &HelixParams { diameter: 10.0, climb: true, ..Default::default() }, &heights).is_err());
+    // A pitch of its own replaces the stepdown: 4 mm a turn is 3 turns down 12 mm.
+    let steep = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, pitch: Some(4.0), outside: false }, &heights).unwrap();
+    assert_eq!(steep.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count(), 6 + 2);
+    for pitch in [0.0, -1.0, f64::NAN] {
+        let params = HelixParams { diameter: 16.0, climb: true, pitch: Some(pitch), outside: false };
+        assert!(helical_bore(&[v(0.0, 0.0)], &mill, &params, &heights).is_err(), "{pitch}");
+    }
+    // Round a 20 mm boss: the tool's centre 15 mm out, climb milling clockwise, out up its own
+    // groove. The boss stands, the groove is 12 deep, and a boss wider than twice the tool is fine.
+    let boss = HelixParams { diameter: 20.0, climb: true, pitch: None, outside: true };
+    let path = helical_bore(&[v(20.0, 20.0)], &mill, &boss, &heights).unwrap();
+    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    assert!(arcs.iter().all(|(to, ccw)| !*ccw && (Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) - 15.0).abs() < 1e-9));
+    assert!(path.moves.iter().all(|m| !matches!(m, Move::Feed { to, .. } if Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) < 14.0)), "never into the boss");
+    let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -20.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
+    let report = stock.cut(&mill, &path, Vec3::new(20.0, 20.0, 10.0)).unwrap();
+    assert!(report.rapid_hits.is_empty(), "{report:?}");
+    close(sim_height(&stock, 20.0, 20.0), 0.0, 1e-6);
+    close(sim_height(&stock, 25.0, 20.0), 0.0, 1e-6);
+    close(sim_height(&stock, 32.0, 20.0), -12.0, 1e-6);
+    close(sim_height(&stock, 20.0, 8.0), -12.0, 1e-6);
+    // Climb milling round a boss turns the other way from climb milling in a hole.
+    let conventional = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { climb: false, ..boss }, &heights).unwrap();
+    assert!(conventional.moves.iter().all(|m| !matches!(m, Move::Arc { ccw: false, .. })));
 }
 
 #[test]
@@ -2139,7 +2163,7 @@ fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
     .unwrap();
     let drill_tool = Tool::new(3, ToolKind::Drill, 5.0, 40.0);
     let drill_path = drill(&[v(10.0, 15.0), v(25.0, 15.0)], &drill_tool, &cut(0.0, -5.0, 2.0), 0.25).unwrap();
-    let bore = helical_bore(&[v(20.0, 15.0)], &tool(6.0), &HelixParams { diameter: 10.0, climb: true }, &cut(0.0, -4.0, 2.0)).unwrap();
+    let bore = helical_bore(&[v(20.0, 15.0)], &tool(6.0), &HelixParams { diameter: 10.0, climb: true, ..Default::default() }, &cut(0.0, -4.0, 2.0)).unwrap();
     let mut program = Program {
         name: "Saugbacke S1".into(),
         operations: vec![

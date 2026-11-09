@@ -185,6 +185,25 @@ pub(super) fn publish(ui: &Ui, response: &Response, kind: egui::Role) {
     publish_geometry(ui, response);
 }
 
+/// The stack tag holding a form's row explanations, `(label, explanation)` pairs (`with_row_tips`).
+const ROW_TIPS: &str = "sc_row_tips";
+
+/// Rows drawn by `add` whose label (as passed to the row) is one of `tips`' labels explain
+/// themselves on hover: over the label, the label and its explanation; over the control, the
+/// explanation. A control with no row label (a checkbox) looks its own up with `tip_for`.
+pub(crate) fn with_row_tips<R>(ui: &mut Ui, tips: Vec<(String, String)>, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let tips = std::sync::Arc::new(tips);
+    ui.scope_builder(egui::UiBuilder::new().ui_stack_info(egui::UiStackInfo::default().with_tag_value(ROW_TIPS, tips)), add).inner
+}
+
+/// The explanation `with_row_tips` gave for the row labelled `label`, if any.
+pub(crate) fn tip_for(ui: &Ui, label: &str) -> Option<String> {
+    ui.stack()
+        .iter()
+        .find_map(|node| node.tags().get_downcast::<std::sync::Arc<Vec<(String, String)>>>(ROW_TIPS))
+        .and_then(|tips| tips.iter().find(|(l, _)| l == label).map(|(_, tip)| tip.clone()))
+}
+
 /// Aligned label/control row, 28 pt. Tokens: `control_height, form_label_width, font_label, dialog_label, space_8`.
 pub(crate) fn row<R>(ui: &mut Ui, text: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
     sized_row(ui, text, row_height(), control)
@@ -341,6 +360,7 @@ fn sized_row_body<R>(ui: &mut Ui, text: &str, height: f32, scrub: bool, control:
     let label_width = label_column(ui, text, width);
     let label_rect = egui::Rect::from_min_size(rect.min, vec2(label_width, rect.height()));
     let help = ui.stack().iter().find_map(|node| node.tags().get_downcast::<String>(super::preferences_small::ROW_HELP)).cloned();
+    let tip = if text.is_empty() { None } else { tip_for(ui, text) };
     if label_width > 0.0 {
         ui.scope_builder(egui::UiBuilder::new().max_rect(label_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             // Left aligned in the label column, as in the design.
@@ -362,8 +382,13 @@ fn sized_row_body<R>(ui: &mut Ui, text: &str, height: f32, scrub: bool, control:
                 scenario::publish_rect(&format!("dialog:row_label:{text}"), label.rect);
                 scenario::publish_rect(&format!("dialog:row_help:{text}"), help.rect);
             } else {
+                // A row with an explanation shows it under the label's own words.
+                let hover = match &tip {
+                    Some(tip) => format!("{shown}\n\n{tip}"),
+                    None => shown.clone(),
+                };
                 ui.add(egui::Label::new(RichText::new(shown.clone()).size(t.font_label).color(t.dialog_label)).truncate())
-                    .backing_on_hover_text(shown);
+                    .backing_on_hover_text(hover);
             }
         });
     }
@@ -388,6 +413,10 @@ fn sized_row_body<R>(ui: &mut Ui, text: &str, height: f32, scrub: bool, control:
             },
         )
         .inner;
+    // Over the control the explanation shows too; sensing hover only, it takes no click or drag.
+    if let Some(tip) = tip {
+        ui.interact(control_rect, ui.scope_id().with(("sc_row_tip", text)), egui::Sense::hover()).backing_on_hover_text(tip);
+    }
     scenario::publish_rect(&format!("dialog:row:{text}"), rect);
     scenario::publish_rect(&format!("dialog:label:{text}"), label_rect);
     scenario::publish_rect(&format!("dialog:control:{text}"), control_rect);

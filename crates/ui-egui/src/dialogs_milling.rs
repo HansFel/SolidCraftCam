@@ -401,7 +401,10 @@ impl Milling {
                 set("tip_offset", plain(&params.tip_offset));
             }
             CamOperation::Engrave { .. } => {}
-            CamOperation::HelicalBore { params, .. } => set("hole_diameter", plain(&params.diameter)),
+            CamOperation::HelicalBore { params, .. } => {
+                set("hole_diameter", plain(&params.diameter));
+                set("pitch", params.pitch.as_ref().map(plain).unwrap_or_default());
+            }
             CamOperation::ThreadMill { params, .. } => {
                 set("hole_diameter", plain(&params.diameter));
                 set("pitch", plain(&params.pitch));
@@ -483,7 +486,7 @@ impl Milling {
                     _ => 0,
                 };
             }
-            CamOperation::HelicalBore { params, .. } => form.climb = params.climb,
+            CamOperation::HelicalBore { params, .. } => (form.climb, form.internal) = (params.climb, !params.outside),
             CamOperation::ThreadMill { params, .. } => (form.internal, form.left_hand) = (params.internal, params.left_hand),
             CamOperation::Drill { .. } | CamOperation::Face { .. } | CamOperation::Slot { .. } | CamOperation::Engrave { .. } => {}
         }
@@ -604,7 +607,7 @@ impl Milling {
             // Each step's own sizes only; an empty pitch is the thread mill's.
             if (matches!(*key, "chamfer_width" | "tip_offset") && self.kind != 5)
                 || (*key == "hole_diameter" && !matches!(self.kind, 7 | 8))
-                || (*key == "pitch" && (self.kind != 8 || value.trim().is_empty()))
+                || (*key == "pitch" && (!matches!(self.kind, 7 | 8) || value.trim().is_empty()))
             {
                 continue;
             }
@@ -673,7 +676,7 @@ impl Milling {
             p["bottom"] = json!(top - 1.0);
         }
         if self.kind == 7 {
-            p["climb"] = json!(self.climb);
+            (p["climb"], p["internal"]) = (json!(self.climb), json!(self.internal));
         }
         if self.kind == 8 {
             (p["internal"], p["left_hand"]) = (json!(self.internal), json!(self.left_hand));
@@ -1066,9 +1069,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         form.side = form.side.min(2);
         ui_kit::choice_row(ui, tr("ui.cam.side"), "cam-side", &mut form.side, &sides);
     }
+    if form.kind == 7 {
+        ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.helix_internal", &mut form.internal));
+    }
     if form.kind == 8 {
-        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.thread_internal"), &mut form.internal));
-        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.thread_left"), &mut form.left_hand));
+        ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.thread_internal", &mut form.internal));
+        ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.thread_left", &mut form.left_hand));
     }
     if form.outlined() {
         let leads = [tr("ui.cam.lead_direct"), tr("ui.cam.lead_arc"), tr("ui.cam.lead_tangent"), tr("ui.cam.lead_perpendicular")];
@@ -1077,7 +1083,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     }
     // A plasma cut leaves no tabs: the part drops out of the sheet.
     if form.kind == 0 {
-        ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.tabs"), &mut form.tabs));
+        ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.tabs", &mut form.tabs));
     }
     // Picked edges can be the contour themselves instead of the faces they bound, and the chain
     // they start can be found and offered as picked. A chain that does not close is an open
@@ -1091,7 +1097,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     if matches!(form.kind, 0 | 1 | 4 | 5 | 6 | PLASMA) && edges_picked {
         // A slot always follows the picked edges themselves.
         if form.kind < 2 || form.plasma() {
-            ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.chain"), &mut form.chain));
+            ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.chain", &mut form.chain));
         }
         if ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_chain"), ui_kit::Button::Small)).clicked() {
             match find_chain(app, &form.setup, inputs) {
@@ -1199,15 +1205,19 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             continue;
         }
         if (form.kind == 5 && matches!(*key, "bottom" | "stepdown"))
-            || (form.kind == 8 && *key == "stepdown")
+            || (matches!(form.kind, 7 | 8) && *key == "stepdown")
             || (form.kind == 9 && matches!(*key, "stepdown" | "feed" | "plunge_feed"))
         {
             continue;
         }
         if (matches!(*key, "chamfer_width" | "tip_offset") && form.kind != 5)
             || (*key == "hole_diameter" && !matches!(form.kind, 7 | 8))
-            || (*key == "pitch" && form.kind != 8)
+            || (*key == "pitch" && !matches!(form.kind, 7 | 8))
         {
+            continue;
+        }
+        if *key == "pitch" && form.kind == 7 {
+            ui_kit::text_row(ui, tr("ui.cam.helix_pitch"), value, tr("ui.cam.helix_pitch_hint"));
             continue;
         }
         if *key == "pitch" {

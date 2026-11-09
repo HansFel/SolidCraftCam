@@ -69,7 +69,8 @@ setup's **Edit** button in the job list open the setup form:
 
 While the CAM window or the setup form is open, each setup shows its part zero with its
 axes (red X, green Y, blue Z) and the stock's outline in the viewport, and every step its
-toolpath: cutting moves in the preview colour, rapid moves thin, steps left out of the
+toolpath (a setup whose eye is closed in the job list hides its part zero and stock with its
+toolpaths, so what is shown belongs together): cutting moves in the preview colour, rapid moves thin, steps left out of the
 G-code dimmed. OK in the milling form opens the job list on the new step. The form's
 **Setup** list chooses the setup a step goes into; **New setup…** names a new one. Part zero and axes are
 worked out when the setup is saved; after a model change, open the setup and press OK again.
@@ -182,8 +183,12 @@ the final depth, in depth passes of **Stepdown**.
 ## Holes milled round their axis
 
 **Helical bore** mills a hole wider than the tool (and at most twice as wide, so no core is
-left standing) by going down a helix, **Stepdown** a turn, then one full turn round the
-bottom, and out through the middle. **Thread** mills a thread with a thread mill: down the
+left standing) by going down a helix, **Rise per turn** a turn (empty: the stepdown), then one
+full turn round the bottom, and out through the middle. Untick **In a hole** to mill round a
+round boss from outside instead: the tool's centre runs half a tool diameter outside the boss's
+diameter, any diameter is possible, climb milling turns clockwise, and after the turn at the
+bottom the tool leaves straight up its own groove (`internal: false` and `pitch` in
+`cam.op.helix` and `cam.job.create`). **Thread** mills a thread with a thread mill: down the
 middle of the drilled core hole (or beside a stud for an outside thread), out onto the
 thread, and up one **pitch** a turn to above the top, counter-clockwise for a right-hand
 thread. **Tapping** with a tap from the library feeds one pitch a turn and is always written

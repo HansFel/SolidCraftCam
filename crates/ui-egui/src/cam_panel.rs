@@ -2074,20 +2074,22 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         .resizable(height)
         .placed(egui::Align2::RIGHT_TOP, corner)
         .show_body(ctx, |ui| {
-            let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts")];
+            let tabs = [tr("ui.cam.tab_jobs"), tr("ui.cam.tab_tools"), tr("ui.cam.tab_machines"), tr("ui.cam.tab_posts"), tr("ui.cam.tab_manual")];
             if ui_kit::button(ui, tr("ui.cam.fold"), ui_kit::Button::Small).clicked() {
                 d.folded = true;
             }
             ui_kit::segmented(ui, &mut d.tab, &tabs, Default::default());
             ui.separator();
             // The window is sized by the user; its tabs scroll inside it.
+            // Each field explains itself on hover in the manual's words.
             egui::ScrollArea::vertical().id_salt("cam-body").auto_shrink([false, false]).show(ui, |ui| {
-                match d.tab {
+                crate::cam_manual::with_tips(ui, |ui| match d.tab {
                     0 => jobs_tab(app, ui, &mut d, &mut actions),
                     1 => tools_tab(app, ui, &mut d, &mut actions),
                     2 => machines_tab(app, ui, &mut d, &mut actions),
-                    _ => posts_tab(app, ui, &mut d, &mut actions),
-                }
+                    3 => posts_tab(app, ui, &mut d, &mut actions),
+                    _ => crate::cam_manual::manual_tab(ui),
+                });
                 if let Some(e) = &d.error {
                     // The window truncates text; a refusal is read in full.
                     ui_kit::text(ui, e, ui_kit::Text::Error("cam"));
@@ -2252,6 +2254,15 @@ const TOOL_MARK_LENGTH: f64 = 25.0;
 
 /// With the window open, every step's toolpath: cutting moves in the preview colour, rapid
 /// moves thin, the steps left out of the G-code dimmed. Made again only when the design changes.
+/// Whether setup `name` is drawn in the view: going through a setup's G-code shows that setup only;
+/// otherwise every setup whose eye in the job list is open.
+pub fn setup_shown(app: &SolveApp, name: &str) -> bool {
+    app.cam_window.as_ref().is_some_and(|w| match w.gcode.as_ref() {
+        Some(g) => g.setup == name,
+        None => !w.hidden.iter().any(|h| h == name),
+    })
+}
+
 pub fn draw_paths(app: &mut SolveApp, painter: &egui::Painter, proj: &crate::viewport::Proj) {
     let key = std::sync::Arc::as_ptr(&app.session.doc) as usize;
     let Some(window) = app.cam_window.as_mut() else { return };

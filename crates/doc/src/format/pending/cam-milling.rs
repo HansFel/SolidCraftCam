@@ -29,7 +29,8 @@
 //! `centre_drill`, `reamer`, `tap` and `thread_mill` (both with `pitch`); any tool can give `shank_diameter`,
 //! `overall_length`, `stick_out` and a `holder` (`{description, diameter, length}`). Further operations:
 //! `chamfer` (edges or contours, `params: {width, tip_offset, side, tolerance}`), `engrave` (`params:
-//! {tolerance}`), `helical_bore` (hole centres, `params: {diameter, climb}`) and `thread_mill` (hole
+//! {tolerance}`), `helical_bore` (hole centres, `params: {diameter, climb, pitch, outside}`: `pitch` the rise per turn, none for the
+//! cut's stepdown; `outside` mills round a boss) and `thread_mill` (hole
 //! centres, `params: {diameter, pitch, internal, left_hand}`); a drill operation whose tool is a tap taps.
 //! A setup can name `fixtures` (bodies the tools keep clear of, never part of the model's box) and
 //! `zero_follows` (a box-point part zero worked out again from the model as it is). A post can say how it

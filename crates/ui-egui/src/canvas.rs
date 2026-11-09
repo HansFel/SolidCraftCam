@@ -348,9 +348,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
     if app.dialog.is_none() && app.tool.is_none() {
         crate::browser::occurrence_triad(app, ui, painter, proj);
     }
-    // With the CAM panel open, every setup shows its part zero, axes and stock, and every step its path.
+    // With the CAM panel open, every shown setup has its part zero, axes and stock, and every step
+    // its path; a setup whose eye is closed hides its part zero with its paths.
     if app.dialog.is_none() && app.cam_window.is_some() {
-        for setup in &app.session.doc.cam.setups {
+        for setup in app.session.doc.cam.setups.iter().filter(|s| crate::cam_panel::setup_shown(app, &s.name)) {
             crate::dialogs_cam_setup::draw_setup(&app.session, painter, proj, &setup.name);
         }
     }

@@ -401,8 +401,8 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
     // The Hole dialog's dropdowns preview each choice on a copy of the form as it stands.
     let hole_form = matches!(d.kind, Kind::Hole { .. }).then(|| (d.kind.clone(), to_object_on(&d.inputs)));
     match &mut d.kind {
-        Kind::Milling(form) => crate::dialogs_milling::rows(app, ui, form, &mut d.inputs),
-        Kind::CamSetup(form) => crate::dialogs_cam_setup::rows(app, ui, form),
+        Kind::Milling(form) => crate::cam_manual::with_tips(ui, |ui| crate::dialogs_milling::rows(app, ui, form, &mut d.inputs)),
+        Kind::CamSetup(form) => crate::cam_manual::with_tips(ui, |ui| crate::dialogs_cam_setup::rows(app, ui, form)),
         Kind::Material { index, editor } => crate::material_editor::rows(app, ui, index, editor),
         Kind::Appearance(k) => enter |= crate::dialogs_appearance::rows(app, ui, k, &mut d.inputs),
         Kind::Motion(k) => enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs),
@@ -2008,6 +2008,16 @@ mod tests {
             assert!(h.widget(label).is_some(), "{label} is shown");
         }
         assert_eq!(crate::cam_panel::parts(&h.app.session.doc.cam), [Some("Bracket".to_string())]);
+        // A closed eye hides the setup's part zero with its toolpaths; the others stay.
+        assert!(crate::cam_panel::setup_shown(&h.app, &cut_setup.name) && crate::cam_panel::setup_shown(&h.app, "Drill first"));
+        h.app.cam_window.as_mut().unwrap().hidden.push(cut_setup.name.clone());
+        assert!(!crate::cam_panel::setup_shown(&h.app, &cut_setup.name) && crate::cam_panel::setup_shown(&h.app, "Drill first"));
+        // The Manual tab reads the CAM manual, and its fields explain themselves in its words.
+        h.app.cam_window.as_mut().unwrap().tab = 4;
+        h.frames(3);
+        for label in ["How CAM is organised", "Parts", "Plasma cutting", "Fields"] {
+            assert!(h.widget(label).is_some(), "{label} is shown");
+        }
     }
 
     #[test]
