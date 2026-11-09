@@ -930,6 +930,9 @@ pub struct CamPocketParams {
     /// pass at a time and every pass feeds the same way. Absent: the usual concentric rings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<[f64; 3]>,
+    /// Whether to use adaptive clearing with central entry, constant engagement loops and corner peeling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adaptive: bool,
 }
 
 /// Facing settings held as expressions.
@@ -962,6 +965,9 @@ pub struct CamSlotParams {
     /// Steepest descent into each depth pass, along the path; 0 plunges.
     #[serde(default = "zero_deg")]
     pub ramp_angle: Expr,
+    /// Whether to mill using trochoidal loops for low tool engagement.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trochoidal: bool,
 }
 
 /// Chamfer settings held as expressions: the chamfer's width on the face (a 90 degree cutter cuts
@@ -1478,6 +1484,7 @@ pub fn default_pocket_params(stepover: Expr) -> CamPocketParams {
         tolerance: tol_mm(),
         ramp_angle: zero_deg(),
         entry: None,
+        adaptive: false,
     }
 }
 
@@ -1488,7 +1495,7 @@ pub fn default_face_params(stepover: Expr) -> CamFaceParams {
 
 /// Default slot params; `stepover` must still be set by the caller.
 pub fn default_slot_params(stepover: Expr) -> CamSlotParams {
-    CamSlotParams { width: None, stepover, stock_to_leave: zero_mm(), tolerance: tol_mm(), ramp_angle: zero_deg() }
+    CamSlotParams { width: None, stepover, stock_to_leave: zero_mm(), tolerance: tol_mm(), ramp_angle: zero_deg(), trochoidal: false }
 }
 
 /// Default cut expressions. `bottom` and `stepdown` come from the command.

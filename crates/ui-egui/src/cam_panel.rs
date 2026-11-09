@@ -1620,11 +1620,7 @@ const SHEET_STEPS: &[(&str, &str)] = &[
 ];
 
 /// The stock kinds of the setup sheet, and their names in the setup form.
-const SHEET_STOCKS: &[(&str, &str)] = &[
-    ("box", "ui.cam.stock_box"),
-    ("cylinder", "ui.cam.stock_round"),
-    ("relative_box", "ui.cam.stock_around"),
-];
+const SHEET_STOCKS: &[(&str, &str)] = &[("box", "ui.cam.stock_box"), ("cylinder", "ui.cam.stock_round"), ("relative_box", "ui.cam.stock_around")];
 
 /// The setup sheet's words in the language shown: headings, tool kinds, step types, stocks.
 fn sheet_labels() -> Value {

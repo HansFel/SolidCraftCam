@@ -117,12 +117,15 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     if let (Some(entry), JobKind::Face | JobKind::Pocket) = (a.entry, &a.kind) {
         op["entry"] = json!(entry);
     }
-    if matches!(a.kind, JobKind::Contour | JobKind::Pocket | JobKind::Slot) {
+    if matches!(a.kind, JobKind::Contour | JobKind::Pocket | JobKind::Adaptive | JobKind::Slot) {
         if let (Some(side), JobKind::Contour) = (&a.side, &a.kind) {
             op["side"] = json!(side);
         }
         if let Some(climb) = a.climb {
             op["climb"] = json!(climb);
+        }
+        if let Some(ramp_angle) = a.ramp_angle {
+            op["ramp_angle"] = json!(ramp_angle);
         }
         for (key, value) in [("stock_to_leave", a.stock_to_leave), ("floor_stock", a.floor_stock)] {
             match value {
@@ -157,12 +160,22 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             cam::plasma_cmd(&mut work, &op)?;
         }
         JobKind::Pocket => {
+            if a.adaptive.unwrap_or(false) {
+                op["adaptive"] = json!(true);
+            }
             cam::pocket_cmd(&mut work, &op)?;
         }
-        JobKind::Slot => {
+        JobKind::Adaptive => {
+            op["adaptive"] = json!(true);
+            cam::pocket_cmd(&mut work, &op)?;
+        }
+        JobKind::Slot | JobKind::TrochoidSlot => {
             let map = op.as_object_mut().ok_or_else(|| bad(cmd, "invalid operation"))?;
             map.remove("floor_stock");
             map.remove("climb");
+            if matches!(a.kind, JobKind::TrochoidSlot) || a.trochoidal.unwrap_or(false) {
+                map.insert("trochoidal".into(), json!(true));
+            }
             if let Some(v) = a.slot_width {
                 if !v.is_finite() || !(v > 0.0 && v <= 1.0e4) {
                     return Err(bad(cmd, "`slot_width` must be more than 0 mm"));
@@ -200,7 +213,8 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                 // Its depth follows from its width; the stored bottom is the edge's height.
                 map.remove("bottom");
                 map.remove("stepdown");
-                let width = a.chamfer_width.filter(|w| w.is_finite() && *w > 0.0).ok_or_else(|| bad(cmd, "a chamfer needs its `chamfer_width` above 0"))?;
+                let width =
+                    a.chamfer_width.filter(|w| w.is_finite() && *w > 0.0).ok_or_else(|| bad(cmd, "a chamfer needs its `chamfer_width` above 0"))?;
                 map.insert("width".into(), json!(width));
                 if let Some(v) = a.tip_offset {
                     map.insert("tip_offset".into(), json!(v));
@@ -254,7 +268,11 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                     }
                     if matches!(a.kind, JobKind::Thread) {
                         map.remove("stepdown");
-                        for (key, value) in [("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v))), ("left_hand", a.left_hand.map(|v| json!(v)))] {
+                        for (key, value) in [
+                            ("pitch", a.pitch.map(|v| json!(v))),
+                            ("internal", a.internal.map(|v| json!(v))),
+                            ("left_hand", a.left_hand.map(|v| json!(v))),
+                        ] {
                             if let Some(value) = value {
                                 map.insert(key.into(), value);
                             }

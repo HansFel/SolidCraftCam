@@ -329,6 +329,8 @@ pub struct MillingParams {
     pub cut: Option<serde_json::Value>,
     pub spindle_rpm: Option<f64>,
     pub coolant: Option<bool>,
+    pub adaptive: Option<bool>,
+    pub trochoidal: Option<bool>,
 }
 
 /// `cam.op.plasma`: the outline as a contour takes it, the torch and the sheet. No tool.
@@ -610,11 +612,15 @@ pub struct SpeedsResult {
 pub enum JobKind {
     Contour,
     Pocket,
+    /// 2D Adaptive Clearing for constant tool engagement.
+    Adaptive,
     Drill,
     /// Facing the setup's stock.
     Face,
     /// A slot along picked edges or contours.
     Slot,
+    /// A slot milled with trochoidal loops for low tool engagement.
+    TrochoidSlot,
     /// A chamfer along picked edges or contours (`chamfer_width`, `tip_offset`).
     Chamfer,
     /// Engraving along picked edges or sketch curves, `bottom` deep.
@@ -731,6 +737,15 @@ pub struct JobParams {
     /// Slot: its width (mm; default the tool's diameter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_width: Option<f64>,
+    /// Whether pocketing uses adaptive clearing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<bool>,
+    /// Whether slotting uses trochoidal loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trochoidal: Option<bool>,
+    /// Ramp angle for helical or ramp entries (degrees).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp_angle: Option<f64>,
     /// Chamfer: its width on the face (mm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chamfer_width: Option<f64>,

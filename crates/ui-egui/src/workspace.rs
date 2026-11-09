@@ -236,7 +236,21 @@ pub const SECTIONS: &[Section] = &[
         promoted: 3,
         ids: &["cam.setup", "cam.list", "cam.tool.define", "cam.machine.define", "cam.job.create"],
     },
-    Section { tab: "MACHINING", panel: "MILLING", promoted: 4, ids: &["cam.op.face", "cam.op.contour", "cam.op.pocket", "cam.op.slot", "cam.op.chamfer", "cam.op.engrave"] },
+    Section {
+        tab: "MACHINING",
+        panel: "MILLING",
+        promoted: 5,
+        ids: &[
+            "cam.op.face",
+            "cam.op.contour",
+            "cam.op.pocket",
+            "cam.op.adaptive",
+            "cam.op.slot",
+            "cam.op.trochoid_slot",
+            "cam.op.chamfer",
+            "cam.op.engrave",
+        ],
+    },
     Section { tab: "MACHINING", panel: "DRILLING", promoted: 1, ids: &["cam.op.drill", "cam.op.helix", "cam.op.thread", "cam.op.tap"] },
     // Plasma cuts go into plasma setups: no tool, the table's torch.
     Section { tab: "MACHINING", panel: "PLASMA", promoted: 1, ids: &["cam.op.plasma"] },

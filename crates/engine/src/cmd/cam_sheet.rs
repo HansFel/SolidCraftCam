@@ -347,7 +347,11 @@ const HEADINGS: &[(&str, &str)] = &[
 /// The sheet as one printable HTML page, its own styles inline.
 fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> String {
     let l = |key: &str| -> String {
-        labels.get(key).cloned().or_else(|| HEADINGS.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_string())).unwrap_or_else(|| key.to_string())
+        labels
+            .get(key)
+            .cloned()
+            .or_else(|| HEADINGS.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_string()))
+            .unwrap_or_else(|| key.to_string())
     };
     let kind = |prefix: &str, key: &str| labels.get(&format!("{prefix}.{key}")).cloned().unwrap_or_else(|| key.replace('_', " "));
     let v3 = |v: [f64; 3]| format!("{} / {} / {}", mm(v[0]), mm(v[1]), mm(v[2]));
@@ -419,7 +423,15 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
             (
                 l("stock"),
                 s.stock.as_ref().map_or(none.clone(), |st| {
-                    format!("{}: {} × {} × {} ({} … {})", kind("stock", &st.kind), mm(st.size[0]), mm(st.size[1]), mm(st.size[2]), v3(st.min), v3(st.max))
+                    format!(
+                        "{}: {} × {} × {} ({} … {})",
+                        kind("stock", &st.kind),
+                        mm(st.size[0]),
+                        mm(st.size[1]),
+                        mm(st.size[2]),
+                        v3(st.min),
+                        v3(st.max)
+                    )
                 }),
             ),
             (l("fixtures"), list(&s.fixtures)),

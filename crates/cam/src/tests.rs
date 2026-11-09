@@ -585,7 +585,7 @@ fn polygon_with_many_shallow_corners_offsets_to_one_loop() {
 #[test]
 fn pocket_stays_inside_the_walls_and_clears_everything_the_tool_can_reach() {
     let regions = [rect(0.0, 0.0, 40.0, 30.0)];
-    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -5.0, 2.0)).unwrap();
     let stats = path.stats();
     assert_eq!(stats.lowest_z, Some(-5.0));
@@ -610,7 +610,7 @@ fn pocket_stays_inside_the_walls_and_clears_everything_the_tool_can_reach() {
 fn pocket_goes_round_an_island() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: false, stock_to_leave: 0.5, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+    let params = PocketParams { stepover: 3.0, climb: false, stock_to_leave: 0.5, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let pts = cutting_points(&path, 0.0);
@@ -693,7 +693,7 @@ fn ramps_replace_plunges_into_material() {
     assert_eq!(path.stats().lowest_z, Some(-6.0));
 
     // In a pocket the first ring is short, so the ramp goes round it several times.
-    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: ramp, entry: None };
+    let params = PocketParams { stepover: 2.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: ramp, entry: None, adaptive: false };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -5.0, 2.5)).unwrap();
     let (angle, plunges) = steepest(&path, 0.0);
     assert!(!plunges && angle <= ramp + 1e-6 && angle > 0.01, "{angle} {plunges}");
@@ -721,7 +721,7 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
     // leaves a strip down the middle (15 from the long walls) more than a radius from it.
     let regions = [rect(0.0, 0.0, 40.0, 30.0)];
     for (stepover, name) in [(5.0, "wide"), (6.0, "a diameter"), (4.0, "moderate")] {
-        let params = PocketParams { stepover, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+        let params = PocketParams { stepover, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
         let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
         for p in cutting_points(&path, 0.0) {
             assert!(p.x >= 3.0 - 1e-6 && p.x <= 37.0 + 1e-6 && p.y >= 3.0 - 1e-6 && p.y <= 27.0 + 1e-6, "{name}: gouge at {p:?}");
@@ -739,7 +739,7 @@ fn pocket_with_passes_up_to_a_diameter_apart_still_clears_the_middle() {
         outer: polygon(&[(0.0, 0.0), (30.0, 0.0), (30.0, 8.0), (60.0, 8.0), (60.0, 26.0), (30.0, 26.0), (30.0, 40.0), (0.0, 40.0)]).outer,
         holes: vec![Loop2::circle(v(15.0, 20.0), 4.0)],
     };
-    let params = PocketParams { stepover: 5.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+    let params = PocketParams { stepover: 5.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
     let path = pocket(std::slice::from_ref(&rooms), &tool(6.0), &params, &cut(0.0, -2.0, 2.0)).unwrap();
     let shape = Shape::from_regions(std::slice::from_ref(&rooms), 0.01).unwrap();
     for p in cutting_points(&path, 0.0) {
@@ -767,7 +767,8 @@ fn open_pocket_enters_through_the_air_and_feeds_one_way() {
     let regions = [rect(0.0, 0.0, 20.0, 10.0)];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-12.0, -2.0);
-    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let params =
+        PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: false };
     let c = cut(0.0, -3.0, 1.5);
     let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
     verify(&path, &c.heights).unwrap();
@@ -852,7 +853,8 @@ fn open_pocket_leaves_the_stock_on_the_closed_walls() {
     let regions = [rect(0.0, 0.0, 20.0, 10.0)];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-12.0, -2.0);
-    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.25, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let params =
+        PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.25, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: false };
     let c = cut(0.0, -2.0, 2.0);
     let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
     verify(&path, &c.heights).unwrap();
@@ -885,7 +887,15 @@ fn open_pocket_leaves_the_stock_on_the_closed_walls() {
 #[test]
 fn open_pocket_refuses_an_entry_that_is_not_air_or_not_facing() {
     let regions = [rect(0.0, 0.0, 20.0, 10.0)];
-    let ok = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(v(-12.0, -2.0)) };
+    let ok = PocketParams {
+        stepover: 0.4,
+        climb: true,
+        stock_to_leave: 0.0,
+        tolerance: 0.01,
+        ramp_angle: 0.0,
+        entry: Some(v(-12.0, -2.0)),
+        adaptive: false,
+    };
     // In air, but not clear of the tool's radius.
     let near = PocketParams { entry: Some(v(-0.3, 5.0)), ..ok };
     let err = pocket(&regions, &tool(1.0), &near, &cut(0.0, -2.0, 2.0)).unwrap_err().to_string();
@@ -912,7 +922,8 @@ fn open_pocket_goes_round_an_island_and_still_feeds_one_way() {
     let regions = [Region2 { outer: rect(0.0, 0.0, 40.0, 10.0).outer, holes: vec![Loop2::circle(v(20.0, 5.0), 2.0)] }];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-12.0, 5.0);
-    let params = PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let params =
+        PocketParams { stepover: 0.4, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: false };
     let c = cut(0.0, -2.0, 1.0);
     let path = pocket(&regions, &tool(1.0), &params, &c).unwrap();
     verify(&path, &c.heights).unwrap();
@@ -999,7 +1010,15 @@ fn open_pocket_finishes_along_its_curved_wall() {
         holes: vec![],
     }];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
-    let params = PocketParams { stepover: 0.8, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(v(-12.0, 0.0)) };
+    let params = PocketParams {
+        stepover: 0.8,
+        climb: true,
+        stock_to_leave: 0.0,
+        tolerance: 0.01,
+        ramp_angle: 0.0,
+        entry: Some(v(-12.0, 0.0)),
+        adaptive: false,
+    };
     let c = cut(0.0, -2.0, 2.0);
     let path = pocket(&regions, &tool(2.0), &params, &c).unwrap();
     verify(&path, &c.heights).unwrap();
@@ -1252,7 +1271,7 @@ M30
 fn written_program_reads_back_as_the_same_path() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -4.0, 2.0)).unwrap();
     let program = Program {
         work_offset: None,
@@ -1284,7 +1303,15 @@ fn written_program_reads_back_as_the_same_path() {
 fn every_post_writes_within_its_own_precision() {
     let island = Loop2::circle(v(30.0, 20.0), 5.0);
     let regions = [Region2 { outer: rect(0.0, 0.0, 60.0, 40.0).outer, holes: vec![island] }];
-    let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 3.0f64.to_radians(), entry: None };
+    let params = PocketParams {
+        stepover: 3.0,
+        climb: true,
+        stock_to_leave: 0.0,
+        tolerance: 0.01,
+        ramp_angle: 3.0f64.to_radians(),
+        entry: None,
+        adaptive: false,
+    };
     let path = pocket(&regions, &tool(6.0), &params, &cut(0.0, -4.0, 2.0)).unwrap();
     let mut program = Program {
         work_offset: None,
@@ -1395,10 +1422,10 @@ fn hostile_values_are_errors_never_panics() {
         let _ = offset_regions(&[rect(0.0, 0.0, b, b)], 1.0, 0.01);
         let _ = offset_regions(&[Region2 { outer: Loop2::circle(v(b, b), b), holes: vec![Loop2::circle(v(0.0, b), b)] }], b, 0.01);
         let t = Tool::new(1, ToolKind::FlatEndmill, b, b);
-        let pocket_params = PocketParams { stepover: b, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b, entry: None };
+        let pocket_params = PocketParams { stepover: b, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b, entry: None, adaptive: false };
         let contour_params = ContourParams { side: Side::Outside, climb: true, stock_to_leave: b, tolerance: b, ramp_angle: b };
         let bad_cut = Cut { heights: Heights { clearance: b, retract: b, top: b, bottom: -b }, feeds: Feeds { cut: b, plunge: b }, stepdown: b };
-        let slot_params_bad = SlotParams { width: Some(b), stepover: b, stock_to_leave: b, tolerance: b, ramp_angle: b };
+        let slot_params_bad = SlotParams { width: Some(b), stepover: b, stock_to_leave: b, tolerance: b, ramp_angle: b, trochoidal: false };
         let slot_path = open_line((0.0, 0.0), (40.0, 0.0));
         for c in [good_cut, bad_cut, Cut { stepdown: b, ..good_cut }] {
             for tl in [&t, &tool(6.0)] {
@@ -1406,7 +1433,7 @@ fn hostile_values_are_errors_never_panics() {
                 let _ = pocket(
                     &regions,
                     tl,
-                    &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+                    &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false },
                     &c,
                 );
                 let _ = contour(&regions, tl, &contour_params, &c);
@@ -1439,7 +1466,7 @@ fn hostile_values_are_errors_never_panics() {
         pocket(
             &regions,
             &tool(6.0),
-            &PocketParams { stepover: 1e-9, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &PocketParams { stepover: 1e-9, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false },
             &good_cut
         )
         .is_err()
@@ -1448,7 +1475,7 @@ fn hostile_values_are_errors_never_panics() {
         pocket(
             &regions,
             &tool(60.0),
-            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false },
             &good_cut
         )
         .is_err()
@@ -1457,7 +1484,7 @@ fn hostile_values_are_errors_never_panics() {
         pocket(
             &[],
             &tool(6.0),
-            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None },
+            &PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false },
             &good_cut
         )
         .is_err()
@@ -1467,7 +1494,7 @@ fn hostile_values_are_errors_never_panics() {
     let square = [rect(0.0, 0.0, 20.0, 20.0)];
     let side = ContourParams { side: Side::Outside, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
     assert!(contour(&square, &drill, &side, &good_cut).unwrap_err().to_string().contains("a drill cannot mill"));
-    let lanes = PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+    let lanes = PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
     assert!(pocket(&square, &drill, &lanes, &good_cut).is_err());
     let open = Region2 { outer: Loop2 { segs: rect(0.0, 0.0, 10.0, 10.0).outer.segs.into_iter().take(3).collect() }, holes: vec![] };
     assert!(offset_regions(&[open], 1.0, 0.01).is_err());
@@ -1489,7 +1516,7 @@ fn length_at(path: &Toolpath, z: f64) -> f64 {
 }
 
 fn slot_params() -> SlotParams {
-    SlotParams { width: None, stepover: 3.0, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }
+    SlotParams { width: None, stepover: 3.0, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, trochoidal: false }
 }
 
 #[test]
@@ -2510,7 +2537,7 @@ mod sim_tests {
     fn a_pocket_leaves_its_floor_and_the_stock_outside() {
         let cutter = tool(6.0);
         let regions = [rect(0.0, 0.0, 40.0, 30.0)];
-        let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None };
+        let params = PocketParams { stepover: 3.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
         let c = cut(0.0, -5.0, 2.5);
         let path = pocket(&regions, &cutter, &params, &c).unwrap();
         let mut stock = StockMap::new_box(Vec3::new(-5.0, -5.0, -5.0), Vec3::new(45.0, 35.0, 0.0), 0.5).unwrap();
@@ -2891,7 +2918,8 @@ fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     let heights = cut(0.0, -12.0, 2.0);
     let path = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, ..Default::default() }, &heights).unwrap();
     // Down the helix 2 mm a turn, one turn at the bottom, out through the middle.
-    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    let arcs: Vec<(Vec3, bool)> =
+        path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     assert_eq!(arcs.len(), 12 + 2);
     assert!(arcs.iter().all(|(to, ccw)| *ccw && (Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) - 3.0).abs() < 1e-9));
     assert!(arcs.windows(2).all(|w| w[1].0.z <= w[0].0.z + 1e-9), "the helix only goes down");
@@ -2952,7 +2980,8 @@ fn a_milled_thread_rises_one_pitch_a_turn_in_its_hand() {
     let heights = cut(0.0, -10.0, 10.0);
     let m10 = ThreadParams { diameter: 10.0, pitch: 1.5, internal: true, left_hand: false };
     let path = thread_mill(&[v(0.0, 0.0)], &mill, &m10, &heights).unwrap();
-    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    let arcs: Vec<(Vec3, bool)> =
+        path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     // Up from the bottom, counter-clockwise for a right-hand thread, 0.75 mm a half turn, on a 2 mm radius.
     assert_eq!(arcs.len(), 14);
     for (i, (to, ccw)) in arcs.iter().enumerate() {
@@ -3048,7 +3077,11 @@ fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
 fn a_plasma_torch_cuts_holes_first_and_is_lit_only_from_pierce_to_rapid() {
     let mut torch = Tool::new(1, ToolKind::Plasma, 1.5, 10.0);
     (torch.pierce_height, torch.cut_height, torch.pierce_delay) = (Some(3.8), Some(1.5), Some(0.5));
-    let c = Cut { heights: Heights { clearance: 10.0, retract: 5.0, top: 0.0, bottom: -3.0 }, feeds: Feeds { cut: 2000.0, plunge: 500.0 }, stepdown: 3.0 };
+    let c = Cut {
+        heights: Heights { clearance: 10.0, retract: 5.0, top: 0.0, bottom: -3.0 },
+        feeds: Feeds { cut: 2000.0, plunge: 500.0 },
+        stepdown: 3.0,
+    };
     let outside = ContourParams { side: Side::Outside, climb: false, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
     let inside = ContourParams { side: Side::Inside, ..outside };
     // The outline first, then a 4 mm hole in it: the torch cuts the hole first, at half the feed.
@@ -3104,4 +3137,212 @@ fn a_plasma_torch_cuts_holes_first_and_is_lit_only_from_pierce_to_rapid() {
     assert!(plasma(&path, &mill, &p).is_err());
     mill.cut_height = Some(1.5);
     assert!(mill.validate().is_err(), "a cut height belongs to a torch");
+}
+
+#[test]
+fn trochoidal_arc_geometry_is_exact() {
+    let pos = v(10.0, 20.0);
+    let dir = v(1.0, 0.0);
+    let norm = v(0.0, 1.0);
+    let pitch = 2.0;
+    let r_lat = 3.0;
+
+    // Climb: clockwise forward arc.
+    let arc_climb = trochoid_arc_calc(pos, dir, norm, pitch, r_lat, true).unwrap();
+    assert!(!arc_climb.ccw, "climb is clockwise");
+    assert!((arc_climb.start.dist(arc_climb.center) - arc_climb.radius).abs() < 1e-9);
+    assert!((arc_climb.end.dist(arc_climb.center) - arc_climb.radius).abs() < 1e-9);
+    let apex = pos + dir * (pitch * 0.5);
+    assert!((apex.dist(arc_climb.center) - arc_climb.radius).abs() < 1e-9);
+    assert_eq!(arc_climb.start, v(10.0, 23.0));
+    assert_eq!(arc_climb.end, v(10.0, 17.0));
+
+    // Conventional: counter-clockwise forward arc.
+    let arc_conv = trochoid_arc_calc(pos, dir, norm, pitch, r_lat, false).unwrap();
+    assert!(arc_conv.ccw, "conventional is counter-clockwise");
+    assert_eq!(arc_conv.start, v(10.0, 17.0));
+    assert_eq!(arc_conv.end, v(10.0, 23.0));
+
+    // Piece arc sweeps match.
+    let piece_climb = crate::trochoid::trochoid_arc_piece(pos, dir, norm, pitch, r_lat, true).unwrap();
+    assert_eq!(piece_climb.start(), arc_climb.start);
+    assert!((piece_climb.end().dist(arc_climb.end)) < 1e-6);
+}
+
+#[test]
+fn trochoidal_channel_cuts_within_bounds_and_reads_back() {
+    let path = OpenPath { segs: vec![Seg2::Line { a: v(0.0, 10.0), b: v(50.0, 10.0) }] };
+    let t = tool(6.0);
+    let params = TrochoidParams { width: 14.0, stepover: 2.0, climb: true, stock_to_leave: 0.5, tolerance: 0.01 };
+    let c = cut(0.0, -3.0, 3.0);
+    let tp = trochoid_channel(&[path], &t, &params, &c).unwrap();
+    verify(&tp, &c.heights).unwrap();
+
+    // Max lateral extension from centerline y=10 must not exceed width/2 - stock = 7 - 0.5 = 6.5.
+    // Tool radius is 3, so tool center y must stay within 10 ± (6.5 - 3) = [6.5, 13.5].
+    for p in cutting_points(&tp, 0.0) {
+        assert!(p.y >= 6.5 - 1e-6 && p.y <= 13.5 + 1e-6, "lateral gouge at {p:?}");
+        assert!(p.x >= -1.0 && p.x <= 51.0, "longitudinal overrun at {p:?}");
+    }
+
+    // Emits G-code and reads back.
+    let prog = Program {
+        name: "TrochoidSlot".into(),
+        operations: vec![Operation { name: "Slot".into(), tool: t, spindle_rpm: 3000.0, coolant: true, path: tp }],
+        work_offset: None,
+    };
+    let post = Post::builtin("linuxcnc").unwrap();
+    let text = emit(&prog, &post).unwrap();
+    let back = readback(&text, &prog, &post).unwrap();
+    assert!(back.within(), "readback failed:\n{text}");
+}
+
+#[test]
+fn pocket_corner_peeling_clears_sharp_corners_in_progressive_steps() {
+    // An L-shaped pocket with inside corners. Passes 5 apart with a 6mm tool.
+    let l_shape =
+        Region2 { outer: polygon(&[(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (20.0, 20.0), (20.0, 40.0), (0.0, 40.0)]).outer, holes: Vec::new() };
+    let t = tool(6.0);
+    let params = PocketParams { stepover: 4.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: false };
+    let c = cut(0.0, -2.0, 2.0);
+    let path = pocket(std::slice::from_ref(&l_shape), &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    let shape = Shape::from_regions(std::slice::from_ref(&l_shape), 0.01).unwrap();
+    for p in cutting_points(&path, 0.0) {
+        assert!(shape.clear(v(p.x, p.y), 3.0 - 1e-4), "gouge at {p:?}");
+    }
+
+    // Ensure all points in the pocket reachable by tool are cleared.
+    for i in 0..=80 {
+        for j in 0..=80 {
+            let q = v(i as f64 * 0.5, j as f64 * 0.5);
+            if shape.clear(q, 3.0 + 1e-3) {
+                let d = dist_to_cuts(&path, -2.0 + 1e-6, q);
+                assert!(d <= 3.0 + 0.01, "{q:?} is {d} from nearest cut");
+            }
+        }
+    }
+}
+
+#[test]
+fn hostile_trochoid_parameters_are_refused() {
+    let t = tool(6.0);
+    let p_valid = TrochoidParams { width: 10.0, stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01 };
+    assert!(p_valid.validate(&t).is_ok());
+
+    let mut p_narrow = p_valid;
+    p_narrow.width = 5.0; // narrower than tool
+    assert!(p_narrow.validate(&t).is_err());
+
+    let mut p_zero_step = p_valid;
+    p_zero_step.stepover = 0.0;
+    assert!(p_zero_step.validate(&t).is_err());
+
+    let mut p_too_wide_step = p_valid;
+    p_too_wide_step.stepover = 8.0; // larger than tool diameter
+    assert!(p_too_wide_step.validate(&t).is_err());
+
+    let mut p_excess_stock = p_valid;
+    p_excess_stock.stock_to_leave = 3.0; // wall = 5 - 3 - 3 < 0
+    assert!(p_excess_stock.validate(&t).is_err());
+
+    let c = cut(0.0, -2.0, 2.0);
+    assert!(trochoid_channel(&[], &t, &p_valid, &c).is_err(), "empty path is refused");
+}
+
+#[test]
+fn adaptive_pocket_generates_central_helical_entry_and_peeled_corners() {
+    let regions = [rect(0.0, 0.0, 50.0, 50.0)];
+    let t = tool(6.0);
+    let c = cut(0.0, -4.0, 4.0);
+    let params = PocketParams {
+        stepover: 2.0,
+        climb: true,
+        stock_to_leave: 0.0,
+        tolerance: 0.01,
+        ramp_angle: 5.0f64.to_radians(),
+        entry: None,
+        adaptive: true,
+    };
+    let path = pocket(&regions, &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    // Check that cuts stay within safe pocket walls
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let pts = cutting_points(&path, 0.0);
+    assert!(!pts.is_empty());
+    for p in &pts {
+        assert!(shape.clear(v(p.x, p.y), 3.0 - 1e-4), "gouge at {p:?}");
+    }
+
+    // Has helical entry moves and peeled corner moves (which produce arc moves)
+    let arc_count = path.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count();
+    assert!(arc_count > 0, "adaptive pocket must contain circular arc moves from helical entry and peeled corners");
+}
+
+#[test]
+fn slot_trochoidal_flag_generates_trochoids() {
+    let t = tool(6.0);
+    let c = cut(0.0, -2.0, 2.0);
+    let line = open_line((0.0, 0.0), (50.0, 0.0));
+    let params = SlotParams { width: Some(10.0), stepover: 2.0, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, trochoidal: true };
+    let path = slot(&[line], &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    let arc_count = path.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count();
+    assert!(arc_count >= 10, "trochoidal slotting along 50mm line must generate forward trochoid arcs");
+}
+
+#[test]
+fn adaptive_pocket_clears_channel_pocket_with_radial_wavefront_and_return_links() {
+    // L-shaped pocket similar to Fusion 360 adaptive clearing channel image
+    let regions = [polygon(&[(0.0, 0.0), (50.0, 0.0), (50.0, 20.0), (20.0, 20.0), (20.0, 50.0), (0.0, 50.0)])];
+    let t = tool(6.0);
+    let c = cut(0.0, -3.0, 3.0);
+    let params = PocketParams {
+        stepover: 2.0,
+        climb: true,
+        stock_to_leave: 0.0,
+        tolerance: 0.01,
+        ramp_angle: 5.0f64.to_radians(),
+        entry: None,
+        adaptive: true,
+    };
+    let path = pocket(&regions, &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let pts = cutting_points(&path, 0.0);
+    assert!(!pts.is_empty());
+    for p in &pts {
+        assert!(shape.clear(v(p.x, p.y), 3.0 - 1e-4), "gouge at {p:?}");
+    }
+
+    let arc_count = path.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count();
+    assert!(arc_count >= 10, "adaptive channel clearing must produce radial wavefront arcs, found {arc_count}");
+}
+
+#[test]
+fn adaptive_pocket_defaults_to_helical_entry_and_spiral_with_zero_ramp_angle() {
+    let regions = [rect(0.0, 0.0, 40.0, 40.0)];
+    let t = tool(6.0);
+    let c = cut(0.0, -3.0, 3.0);
+    // Explicitly 0.0 ramp_angle
+    let params = PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: None, adaptive: true };
+    let path = pocket(&regions, &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    let shape = Shape::from_regions(&regions, 0.01).unwrap();
+    let pts = cutting_points(&path, 0.0);
+    assert!(!pts.is_empty());
+    for p in &pts {
+        assert!(shape.clear(v(p.x, p.y), 3.0 - 1e-4), "gouge at {p:?}");
+    }
+
+    let helical_arcs = path.moves.iter().filter(|m| if let Move::Arc { to, .. } = m { to.z > -3.0 + 1e-4 } else { false }).count();
+    assert!(
+        helical_arcs > 0,
+        "adaptive clearing must spiral down via helical entry even with ramp_angle 0, found {helical_arcs} helical descent arcs"
+    );
 }

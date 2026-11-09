@@ -69,10 +69,13 @@ pub struct Milling {
     pub(crate) thin_chips: bool,
     /// A contour's cutter compensation, as [`COMPENSATIONS`] lists them.
     pub(crate) compensation: usize,
+    /// Pocket strategy: adaptive clearing with low tool engagement vs concentric rings.
+    pub(crate) adaptive: bool,
 }
 
 /// The form's operations by their place in its list: contour 0, pocket 1, drill 2, face 3,
-/// slot 4, chamfer 5, engrave 6, helical bore 7, thread mill 8, tap 9, plasma cut 10.
+/// slot 4, chamfer 5, engrave 6, helical bore 7, thread mill 8, tap 9, plasma cut 10,
+/// trochoidal slot 11, adaptive clearing 12.
 const KIND_NAMES: &[(&str, &str)] = &[
     ("contour", "ui.cam.contour"),
     ("pocket", "ui.cam.pocket"),
@@ -85,10 +88,14 @@ const KIND_NAMES: &[(&str, &str)] = &[
     ("thread", "ui.cam.thread"),
     ("tap", "ui.cam.tap"),
     ("plasma", "ui.cam.plasma"),
+    ("trochoid_slot", "ui.cam.trochoid_slot"),
+    ("adaptive", "ui.cam.adaptive"),
 ];
 
 /// The plasma cut's place in [`KIND_NAMES`].
 const PLASMA: usize = 10;
+const TROCHOID_SLOT: usize = 11;
+const ADAPTIVE: usize = 12;
 
 /// Lead strategies: the kinds `cam.op.contour` takes.
 const LEADS: [&str; 4] = ["direct", "arc", "tangent", "perpendicular"];
@@ -174,6 +181,7 @@ const FIELDS: &[(&str, &str, &str)] = &[
     ("stepover", "ui.cam.stepover", "50 %"),
     ("stock_to_leave", "ui.cam.wall_stock", "0"),
     ("floor_stock", "ui.cam.floor_stock", "0"),
+    ("ramp_angle", "ui.cam.ramp_angle", "3"),
     ("lead_in_size", "ui.cam.lead_in_size", "3"),
     ("lead_out_size", "ui.cam.lead_out_size", "3"),
     ("overlap", "ui.cam.overlap", "0"),
@@ -251,6 +259,7 @@ impl Milling {
             left_hand: false,
             thin_chips: false,
             compensation: 0,
+            adaptive: false,
         }
         .starting_at_stock(app)
     }
@@ -354,9 +363,11 @@ impl Milling {
         let mut form = Self::new(app);
         let (kind, cut, rpm) = match op {
             CamOperation::Contour { cut, spindle_rpm, .. } => (0, cut, spindle_rpm),
+            CamOperation::Pocket { params, cut, spindle_rpm, .. } if params.adaptive => (11, cut, spindle_rpm),
             CamOperation::Pocket { cut, spindle_rpm, .. } => (1, cut, spindle_rpm),
             CamOperation::Drill { cut, spindle_rpm, .. } => (2, cut, spindle_rpm),
             CamOperation::Face { cut, spindle_rpm, .. } => (3, cut, spindle_rpm),
+            CamOperation::Slot { params, cut, spindle_rpm, .. } if params.trochoidal => (10, cut, spindle_rpm),
             CamOperation::Slot { cut, spindle_rpm, .. } => (4, cut, spindle_rpm),
             CamOperation::Chamfer { cut, spindle_rpm, .. } => (5, cut, spindle_rpm),
             CamOperation::Engrave { cut, spindle_rpm, .. } => (6, cut, spindle_rpm),
@@ -404,16 +415,22 @@ impl Milling {
                 set("stepover", plain(&params.stepover));
                 set("stock_to_leave", plain(&params.stock_to_leave));
                 set("floor_stock", plain(&params.floor_stock));
+                let deg_str = params.ramp_angle.as_str().trim().strip_suffix("deg").unwrap_or(params.ramp_angle.as_str()).trim();
+                set("ramp_angle", deg_str.to_string());
             }
             CamOperation::Drill { dwell, .. } => set("dwell", number(*dwell)),
             CamOperation::Contour { params, .. } => {
                 set("stock_to_leave", plain(&params.stock_to_leave));
                 set("floor_stock", plain(&params.floor_stock));
+                let deg_str = params.ramp_angle.as_str().trim().strip_suffix("deg").unwrap_or(params.ramp_angle.as_str()).trim();
+                set("ramp_angle", deg_str.to_string());
             }
             CamOperation::Slot { params, .. } => {
                 set("stepover", plain(&params.stepover));
                 set("stock_to_leave", plain(&params.stock_to_leave));
                 set("slot_width", params.width.as_ref().map(plain).unwrap_or_default());
+                let deg_str = params.ramp_angle.as_str().trim().strip_suffix("deg").unwrap_or(params.ramp_angle.as_str()).trim();
+                set("ramp_angle", deg_str.to_string());
             }
             CamOperation::Chamfer { params, .. } => {
                 set("chamfer_width", plain(&params.width));
@@ -502,7 +519,10 @@ impl Milling {
                     }
                 }
             }
-            CamOperation::Pocket { params, .. } => form.climb = params.climb,
+            CamOperation::Pocket { params, .. } => {
+                form.climb = params.climb;
+                form.adaptive = params.adaptive;
+            }
             CamOperation::Chamfer { params, .. } => {
                 use solidcraft_engine::doc::cam::CamSide;
                 form.side = match params.side {
@@ -574,6 +594,8 @@ impl Milling {
             "cam.op.drill" => (2, "ui.cam.drill"),
             "cam.op.face" => (3, "ui.cam.face"),
             "cam.op.slot" => (4, "ui.cam.slot"),
+            "cam.op.trochoid_slot" => (TROCHOID_SLOT, "ui.cam.trochoid_slot"),
+            "cam.op.adaptive" => (ADAPTIVE, "ui.cam.adaptive"),
             "cam.op.chamfer" => (5, "ui.cam.chamfer"),
             "cam.op.engrave" => (6, "ui.cam.engrave"),
             "cam.op.helix" => (7, "ui.cam.helix"),
@@ -638,7 +660,7 @@ impl Milling {
         let diameter = self.values.get(1).and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok()).unwrap_or(0.0);
         for ((key, _, _), value) in FIELDS.iter().zip(&self.values) {
             // A slot's width is the tool's diameter when left empty; only slots have one.
-            if *key == "slot_width" && (self.kind != 4 || value.trim().is_empty()) {
+            if *key == "slot_width" && (!matches!(self.kind, 4 | TROCHOID_SLOT) || value.trim().is_empty()) {
                 continue;
             }
             // A torch's small holes are one setting, below; its data belong to plasma cuts only.
@@ -652,12 +674,18 @@ impl Milling {
             if (matches!(*key, "chamfer_width" | "tip_offset") && self.kind != 5)
                 || (*key == "hole_diameter" && (!matches!(self.kind, 7 | 8) || (self.kind == 7 && value.trim().is_empty())))
                 || (*key == "pitch" && (!matches!(self.kind, 7 | 8) || value.trim().is_empty()))
+                || (*key == "ramp_angle" && !matches!(self.kind, 0 | 1 | 4 | TROCHOID_SLOT | ADAPTIVE))
             {
                 continue;
             }
             // Stepdown and stepover can be a share of the tool diameter.
-            let number =
-                if matches!(*key, "stepdown" | "stepover") { millimetres(value, diameter) } else { value.trim().replace(',', ".").parse().ok() };
+            let number = if matches!(*key, "stepdown" | "stepover") {
+                millimetres(value, diameter)
+            } else if *key == "ramp_angle" {
+                value.trim().replace(',', ".").strip_suffix('°').unwrap_or(value.trim()).trim().parse().ok()
+            } else {
+                value.trim().replace(',', ".").parse().ok()
+            };
             let number: f64 = number.ok_or_else(|| crate::i18n::tr("ui.cam.invalid_number").to_string())?;
             if !number.is_finite() {
                 return Err(crate::i18n::tr("ui.cam.invalid_number").into());
@@ -712,7 +740,7 @@ impl Milling {
         }
         // Facing enters at the picked point: down in the air, then into the cut horizontally;
         // a pocket picks an opening in its wall and is entered through it, pass by pass.
-        if let (3 | 1, Some(entry)) = (self.kind, self.entry) {
+        if let (3 | 1 | 11, Some(entry)) = (self.kind, self.entry) {
             p["entry"] = json!(entry);
         }
         if self.outlined() {
@@ -785,13 +813,22 @@ impl Milling {
                 }
             }
         }
-        if self.kind == 4 && p["stock_to_leave"].as_f64().is_some_and(|v| v < 0.0) {
+        if matches!(self.kind, 4 | TROCHOID_SLOT) && p["stock_to_leave"].as_f64().is_some_and(|v| v < 0.0) {
             return Err(crate::i18n::tr("ui.cam.stock_negative").into());
         }
         if self.plasma() && self.chain && p.get("edges").is_some() {
             p["chain"] = json!(true);
         }
-        if self.kind < 2 {
+        if self.kind == TROCHOID_SLOT {
+            p["trochoidal"] = json!(true);
+            if p.get("slot_width").is_none() {
+                p["slot_width"] = json!(diameter * 1.5);
+            }
+        }
+        if matches!(self.kind, 1 | ADAPTIVE) {
+            p["adaptive"] = json!(self.kind == ADAPTIVE || self.adaptive);
+        }
+        if self.kind < 2 || self.kind == ADAPTIVE {
             p["climb"] = json!(self.climb);
             if self.chain && p.get("edges").is_some() {
                 p["chain"] = json!(true);
@@ -1120,6 +1157,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             form.take_torch(app);
         }
     }
+    if form.kind == 1 {
+        let strategies = [tr("ui.cam.strategy_concentric"), tr("ui.cam.strategy_adaptive")];
+        let mut strategy = usize::from(form.adaptive);
+        ui_kit::choice_row(ui, tr("ui.cam.strategy"), "cam-strategy", &mut strategy, &strategies);
+        form.adaptive = strategy == 1;
+    }
     if form.kind == 3 && was != 3 {
         // Switched to facing: down to part zero, taking off what the stock has above it.
         form.facing_from(stock_top(&app.session, &form.setup), 0.0);
@@ -1169,11 +1212,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
-    if matches!(form.kind, 1 | 3) {
+    if matches!(form.kind, 1 | 3 | ADAPTIVE) {
         // Where the facing goes down: at the near end of a lane until a point is picked. A
         // pocket stays closed until a point beside an opening makes it an open one.
-        let (hint, set) =
-            if form.kind == 1 { ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set") } else { ("ui.cam.entry_hint", "ui.cam.entry_set") };
+        let (hint, set) = if matches!(form.kind, 1 | ADAPTIVE) {
+            ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set")
+        } else {
+            ("ui.cam.entry_hint", "ui.cam.entry_set")
+        };
         let entry_label = if form.entry.is_some() { tr(set) } else { tr(hint) };
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(entry_label).wrap());
@@ -1232,9 +1278,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::choice_row(ui, tr("ui.cam.open_side"), "cam-open-side", &mut form.open_side, &sides);
         ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.reverse"), &mut form.reverse));
     }
-    if matches!(form.kind, 0 | 1 | 4 | 5 | 6 | PLASMA) && edges_picked {
+    if matches!(form.kind, 0 | 1 | 4 | 5 | 6 | PLASMA | TROCHOID_SLOT | ADAPTIVE) && edges_picked {
         // A slot always follows the picked edges themselves.
-        if form.kind < 2 || form.plasma() {
+        if form.kind < 2 || form.plasma() || form.kind == ADAPTIVE {
             ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.chain", &mut form.chain));
         }
         if ui_kit::row(ui, "", |ui| ui_kit::button(ui, tr("ui.cam.find_chain"), ui_kit::Button::Small)).clicked() {
@@ -1244,11 +1290,11 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         }
     }
-    if form.kind == 1 && form.entry.is_some() {
+    if matches!(form.kind, 1 | ADAPTIVE) && form.entry.is_some() {
         // An open pocket runs every pass along the opening, so all passes feed the
         // same way and there is no direction left to choose.
         form.climb = true;
-    } else if form.kind < 2 || form.kind == 7 {
+    } else if form.kind < 2 || form.kind == 7 || form.kind == ADAPTIVE {
         let directions = [tr("ui.cam.climb"), tr("ui.cam.conventional")];
         let mut direction = usize::from(!form.climb);
         ui_kit::choice_row(ui, tr("ui.cam.direction"), "cam-direction", &mut direction, &directions);
@@ -1320,7 +1366,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
             continue;
         }
-        if torch && matches!(*key, "tool" | "diameter" | "flute_length" | "stepdown" | "stepover" | "floor_stock" | "stock_to_leave" | "spindle_rpm" | "dwell") {
+        if torch && matches!(*key, "tool" | "diameter" | "flute_length" | "stepdown" | "stepover" | "floor_stock" | "stock_to_leave" | "spindle_rpm" | "dwell" | "ramp_angle") {
             continue;
         }
         if (picked || form.kind == 3) && matches!(*key, "x" | "y" | "width" | "height") {
@@ -1341,7 +1387,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             continue;
         }
         // The new steps show only what they use.
-        if form.kind >= 5 && matches!(*key, "stepover" | "stock_to_leave" | "floor_stock") {
+        if form.kind >= 5 && !matches!(form.kind, TROCHOID_SLOT | ADAPTIVE) && matches!(*key, "stepover" | "stock_to_leave" | "floor_stock") {
             continue;
         }
         if matches!(form.kind, 7..=9) && matches!(*key, "x" | "y" | "width" | "height") {
@@ -1356,6 +1402,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         if (matches!(*key, "chamfer_width" | "tip_offset") && form.kind != 5)
             || (*key == "hole_diameter" && !matches!(form.kind, 7 | 8))
             || (*key == "pitch" && !matches!(form.kind, 7 | 8))
+            || (*key == "ramp_angle" && !matches!(form.kind, 0 | 1 | 4 | TROCHOID_SLOT | ADAPTIVE))
         {
             continue;
         }
@@ -1374,7 +1421,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         if form.kind != 2 && *key == "dwell" {
             continue;
         }
-        if (form.kind == 4) != (*key == "slot_width") && matches!(*key, "slot_width" | "floor_stock") {
+        if matches!(form.kind, 4 | TROCHOID_SLOT) != (*key == "slot_width") && matches!(*key, "slot_width" | "floor_stock") {
             continue;
         }
         if *key == "slot_width" {

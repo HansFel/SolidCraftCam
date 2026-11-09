@@ -36,6 +36,9 @@ pub struct SlotParams {
     /// Steepest descent into each depth pass, along the path (radians, 0..=PI/2); 0 plunges.
     /// An open path ramps back and forth (zigzag) along its first part.
     pub ramp_angle: f64,
+    /// Whether to mill using trochoidal loops for low tool engagement.
+    #[serde(default)]
+    pub trochoidal: bool,
 }
 
 impl SlotParams {
@@ -100,6 +103,17 @@ pub fn slot(paths: &[OpenPath], tool: &Tool, params: &SlotParams, cut: &Cut) -> 
     params.validate(tool)?;
     if paths.is_empty() || paths.len() > 1_000 {
         return invalid("slotting needs 1 to 1000 paths");
+    }
+    if params.trochoidal {
+        let width = params.width.unwrap_or(tool.diameter * 1.5);
+        let tp = crate::trochoid::TrochoidParams {
+            width,
+            stepover: params.stepover,
+            climb: true,
+            stock_to_leave: params.stock_to_leave,
+            tolerance: params.tolerance,
+        };
+        return crate::trochoid::trochoid_channel(paths, tool, &tp, cut);
     }
     let levels = cut.levels()?;
     let mut b = Builder::new(cut);

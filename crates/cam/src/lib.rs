@@ -13,6 +13,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod adaptive;
 mod check;
 mod comp;
 mod cutting;
@@ -34,6 +35,7 @@ mod slot;
 mod tabs;
 mod time;
 mod tool;
+mod trochoid;
 
 pub use check::verify;
 pub use comp::{CompParams, Compensation, ENTRY_DIAMETERS, contour_compensated};
@@ -57,6 +59,7 @@ pub use slot::{SlotParams, slot};
 pub use tabs::Tabs;
 pub use time::{BLEND_ANGLE, MoveTime, TimeEstimate, TimeModel, estimate, move_times};
 pub use tool::{LIBRARY_FORMAT, LIBRARY_VERSION, MAX_LIBRARY_TEXT, MAX_LIBRARY_TOOLS, MAX_TOOL_LENGTH, Tool, ToolHolder, ToolKind, ToolLibraryFile};
+pub use trochoid::{TrochoidArc, TrochoidParams, trochoid_arc_calc, trochoid_channel};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CamError {

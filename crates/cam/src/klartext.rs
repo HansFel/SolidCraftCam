@@ -380,7 +380,9 @@ pub fn parse_lines(text: &str) -> Result<Vec<(usize, Move)>> {
                 let (Some(px), Some(py), Some(pz)) = (x, y, z) else { continue };
                 let to = Vec3::new(px, py, pz);
                 if first == "C" {
-                    let (Some(c), Some(_)) = (center, from) else { return Err(CamError::Parse(n, "an arc before its centre CC or the position".into())) };
+                    let (Some(c), Some(_)) = (center, from) else {
+                        return Err(CamError::Parse(n, "an arc before its centre CC or the position".into()));
+                    };
                     let ccw = if rest.contains(&"DR+") {
                         true
                     } else if rest.contains(&"DR-") {

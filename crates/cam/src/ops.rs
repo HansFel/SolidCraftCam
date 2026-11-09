@@ -242,6 +242,9 @@ pub struct PocketParams {
     /// entered through the air at the opening and fed with the metal to its right as in a
     /// climb; without it the pocket is closed and entered as before, by a plunge and ramp.
     pub entry: Option<Vec2>,
+    /// Whether to use adaptive clearing with central entry, constant engagement loops and corner peeling.
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 /// Collects moves, keeping the tool's position.
@@ -819,34 +822,39 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
     // The depth already cut wherever this pass's rings run.
     let mut cleared = cut.heights.top;
     for z in cut.levels()? {
-        // Whether the tool is down in this level's cut.
-        let mut down: Option<Vec2> = None;
-        for lp in rings.iter().rev().flatten() {
-            // Offset loops keep the pocket on their left, so the wall is on the right: climb.
-            let lp = if params.climb { lp.clone() } else { reversed(lp) };
-            let lp = start_near(&lp, down.unwrap_or_default());
-            let Some(first) = lp.first() else { continue };
-            let start = first.start();
-            match down {
-                Some(from) if link_is_clear(&shape, from, start, wall, r) => b.cut_to(start, z)?,
-                _ => {
-                    b.travel_to(start)?;
-                    b.plunge_to(cleared)?;
-                    b.ramp_loop(&lp, z, params.ramp_angle)?;
+        if params.adaptive {
+            crate::adaptive::adaptive_pocket_level(&mut b, &shape, &rings, tool, params, z, cleared, wall, r)?;
+        } else {
+            // Whether the tool is down in this level's cut.
+            let mut down: Option<Vec2> = None;
+            for lp in rings.iter().rev().flatten() {
+                // Offset loops keep the pocket on their left, so the wall is on the right: climb.
+                let lp = if params.climb { lp.clone() } else { reversed(lp) };
+                let lp = start_near(&lp, down.unwrap_or_default());
+                let Some(first) = lp.first() else { continue };
+                let start = first.start();
+                match down {
+                    Some(from) if link_is_clear(&shape, from, start, wall, r) => b.cut_to(start, z)?,
+                    _ => {
+                        b.travel_to(start)?;
+                        b.plunge_to(cleared)?;
+                        b.ramp_loop(&lp, z, params.ramp_angle)?;
+                    }
                 }
-            }
-            // Rings far apart do not reach into a sharp corner between them: there the tool
-            // steps towards the next ring's corner and back.
-            let inward = if params.climb { 1.0 } else { -1.0 };
-            for (piece, next) in lp.iter().zip(lp.iter().cycle().skip(1)) {
-                b.cut_piece(piece, z, z)?;
-                if let Some(to) = corner_spur(piece, next, inward, params.stepover, r).filter(|to| link_is_clear(&shape, piece.end(), *to, wall, r)) {
-                    b.cut_to(to, z)?;
-                    b.cut_to(piece.end(), z)?;
+                // Rings far apart do not reach into a sharp corner between them: there the tool
+                // steps towards the next ring's corner and back.
+                let inward = if params.climb { 1.0 } else { -1.0 };
+                for (piece, next) in lp.iter().zip(lp.iter().cycle().skip(1)) {
+                    b.cut_piece(piece, z, z)?;
+                    if let Some(to) =
+                        corner_spur(piece, next, inward, params.stepover, r).filter(|to| link_is_clear(&shape, piece.end(), *to, wall, r))
+                    {
+                        crate::trochoid::peel_corner(&mut b, &shape, piece.end(), to, params.stepover, r, wall, z, params.climb)?;
+                    }
                 }
+                b.cut_to(start, z)?;
+                down = Some(start);
             }
-            b.cut_to(start, z)?;
-            down = Some(start);
         }
         cleared = z;
         b.retract()?;
@@ -871,7 +879,7 @@ fn corner_spur(piece: &Piece, next: &Piece, inward: f64, gap: f64, r: f64) -> Op
 }
 
 /// Whether the tool can feed straight from `a` to `b` without touching a wall.
-fn link_is_clear(shape: &Shape, a: Vec2, b: Vec2, wall: f64, r: f64) -> bool {
+pub(crate) fn link_is_clear(shape: &Shape, a: Vec2, b: Vec2, wall: f64, r: f64) -> bool {
     let n = ((a.dist(b) / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 2000.0) as usize;
     (0..=n).all(|i| shape.clear(a.lerp(b, i as f64 / n as f64), wall))
 }

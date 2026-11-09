@@ -110,8 +110,18 @@ pub static COMMANDS: &[CommandSpec] = &[
          at a time through that opening; \
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
+    CommandSpec::new("cam.op.adaptive", "Adaptive Clearing", crate::checked!("cam.op.adaptive", adaptive_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_pocket").params(
+        "setup; name; tool (number); sketch?: id or name, with profiles?; faces?; edges?; or outer/regions; holes?; \
+         stepover? (radial engagement, default half the tool diameter); climb?; stock_to_leave? (walls); floor_stock? (floor); tolerance?; ramp_angle?: deg; \
+         clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
+    ),
     CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_slot").params(
         "setup; name; tool (number); edges?: [{body, at}] the picked edges, joined end to end into chains seen along the tool          axis (open or closed); or sketch?/profiles?, faces? or outer/regions: their contours, each a closed path;          the tool centre runs on each path. width? (default the tool diameter: one pass; wider adds side passes);          stepover? (side passes, default half the tool diameter); stock_to_leave? (both walls); tolerance?; ramp_angle?: deg          (default 0: plunge; an open path ramps back and forth); clearance?; retract?; top?; bottom; stepdown?; feed?;          plunge_feed?; spindle_rpm?; coolant?",
+    ),
+    CommandSpec::new("cam.op.trochoid_slot", "Trochoidal Slot", crate::checked!("cam.op.trochoid_slot", trochoid_slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_slot").params(
+        "setup; name; tool (number); edges?: [{body, at}] the picked edges; width? (default 1.5x tool diameter); \
+         stepover? (advance per loop, default half tool diameter); stock_to_leave?; tolerance?; ramp_angle?: deg; \
+         clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_face").params(
         "setup; name; tool (number); faces?/edges?/sketch?: a picked face or profile, faced exactly to its outline, \
@@ -403,7 +413,10 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         let drills = matches!(op, CamOperation::Drill { .. });
         if drills != kind.cuts_down() {
             let what = if drills { "drills" } else { "mills" };
-            return Err(bad(cmd, format!("tool {number} {what} in operation `{}`, which a {} cannot do: give it another number", op.name(), kind.label())));
+            return Err(bad(
+                cmd,
+                format!("tool {number} {what} in operation `{}`, which a {} cannot do: give it another number", op.name(), kind.label()),
+            ));
         }
     }
     let diameter = num(p, "diameter").ok_or_else(|| bad(cmd, "`diameter` is required (mm)"))?;
@@ -1128,6 +1141,9 @@ pub(super) fn slot_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let stepover = expr(p, "stepover").unwrap_or_else(|| Expr::new(format!("{} mm", tool.diameter * 0.5)));
     let mut params = default_slot_params(stepover);
     params.width = expr(p, "width");
+    if let Some(trochoidal) = bool_(p, "trochoidal") {
+        params.trochoidal = trochoidal;
+    }
     for (key, slot) in [("stock_to_leave", &mut params.stock_to_leave), ("tolerance", &mut params.tolerance), ("ramp_angle", &mut params.ramp_angle)]
     {
         if let Some(v) = expr(p, key) {
@@ -1144,6 +1160,18 @@ pub(super) fn slot_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         coolant: bool_(p, "coolant").unwrap_or(false),
     };
     store_op(s, cmd, &setup_name, op)
+}
+
+pub(super) fn adaptive_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut p = p.clone();
+    p["adaptive"] = json!(true);
+    pocket_cmd(s, &p)
+}
+
+pub(super) fn trochoid_slot_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut p = p.clone();
+    p["trochoidal"] = json!(true);
+    slot_cmd(s, &p)
 }
 
 fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Value> {
@@ -1170,6 +1198,9 @@ fn op_cmd(s: &mut Session, p: &Value, cmd: &str, is_contour: bool) -> Result<Val
         let mut params = default_pocket_params(stepover);
         if let Some(c) = bool_(p, "climb") {
             params.climb = c;
+        }
+        if let Some(a) = bool_(p, "adaptive") {
+            params.adaptive = a;
         }
         if let Some(v) = expr(p, "stock_to_leave") {
             params.stock_to_leave = v;
@@ -3042,6 +3073,7 @@ fn engine_pocket(s: &Session, p: &CamPocketParams) -> std::result::Result<Pocket
         tolerance: eval_len(s, &p.tolerance, "tolerance")?,
         ramp_angle: eval_ang(s, &p.ramp_angle, "ramp_angle")?,
         entry: None,
+        adaptive: p.adaptive,
     })
 }
 
@@ -3162,6 +3194,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             stock_to_leave: eval_len(s, &params.stock_to_leave, "stock_to_leave")?,
             tolerance: eval_len(s, &params.tolerance, "tolerance")?,
             ramp_angle: eval_ang(s, &params.ramp_angle, "ramp_angle")?,
+            trochoidal: params.trochoidal,
         };
         let path = slot(&slot_paths(s, setup, geometry)?, tool, &params, &cut).map_err(|e| e.to_string())?;
         solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
@@ -3186,6 +3219,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
                 stock_to_leave: 0.0,
                 tolerance: eval_len(s, &params.tolerance, "tolerance")?,
                 ramp_angle: 0.0,
+                trochoidal: false,
             };
             let path = slot(&slot_paths(s, setup, geometry)?, tool, &params, &cut).map_err(|e| e.to_string())?;
             solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
@@ -4919,9 +4953,21 @@ mod tests {
         let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
         // A 1 mm chamfer round the outline: the tip 1.5 mm down, the centre 1 mm off the wall.
         run(&mut s, "cam.op.chamfer", json!({"setup": "Top", "name": "Fase", "tool": 1, "outer": outer, "width": 1, "spindle_rpm": 8000}));
-        run(&mut s, "cam.op.engrave", json!({"setup": "Top", "name": "Gravur", "tool": 2, "outer": [[10, 10], [50, 10], [50, 30], [10, 30]], "bottom": -0.3, "spindle_rpm": 12000}));
-        run(&mut s, "cam.op.helix", json!({"setup": "Top", "name": "Bohrung", "tool": 3, "points": [[30, 20]], "diameter": 16, "bottom": -12, "stepdown": 2, "spindle_rpm": 8000}));
-        run(&mut s, "cam.op.thread", json!({"setup": "Top", "name": "M10", "tool": 4, "points": [[10, 20]], "diameter": 10, "bottom": -10, "spindle_rpm": 6000}));
+        run(
+            &mut s,
+            "cam.op.engrave",
+            json!({"setup": "Top", "name": "Gravur", "tool": 2, "outer": [[10, 10], [50, 10], [50, 30], [10, 30]], "bottom": -0.3, "spindle_rpm": 12000}),
+        );
+        run(
+            &mut s,
+            "cam.op.helix",
+            json!({"setup": "Top", "name": "Bohrung", "tool": 3, "points": [[30, 20]], "diameter": 16, "bottom": -12, "stepdown": 2, "spindle_rpm": 8000}),
+        );
+        run(
+            &mut s,
+            "cam.op.thread",
+            json!({"setup": "Top", "name": "M10", "tool": 4, "points": [[10, 20]], "diameter": 10, "bottom": -10, "spindle_rpm": 6000}),
+        );
         run(&mut s, "cam.op.tap", json!({"setup": "Top", "name": "M10 Gewinde", "tool": 5, "points": [[50, 20]], "bottom": -12}));
         let paths = s.cam_toolpaths();
         let lowest = |name: &str| {
@@ -5002,7 +5048,8 @@ mod tests {
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
         // Round the plate the cutter stays 4 mm off the jaw; 4 mm further out it runs into it.
         let around = |w: f64| json!([[0, 0], [w, 0], [w, 30], [0, 30]]);
-        let contour = |name: &str, w: f64| json!({"setup": "Top", "name": name, "tool": 1, "outer": around(w), "side": "outside", "bottom": -3, "stepdown": 3});
+        let contour =
+            |name: &str, w: f64| json!({"setup": "Top", "name": name, "tool": 1, "outer": around(w), "side": "outside", "bottom": -3, "stepdown": 3});
         run(&mut s, "cam.op.contour", contour("Round", 40.0));
         run(&mut s, "cam.post", json!({"setup": "Top"}));
         run(&mut s, "cam.op.contour", contour("Wide", 44.0));
@@ -5010,14 +5057,22 @@ mod tests {
         assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("fixture `Jaw`")), "{refused:?}");
         // A holder wider than the cutter counts too: the cutter passes the jaw, its holder 5 mm above the tip does not.
         run(&mut s, "cam.op.remove", json!({"setup": "Top", "name": "Wide"}));
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "stick_out": 5, "holder": {"diameter": 40, "length": 50}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 20, "stick_out": 5, "holder": {"diameter": 40, "length": 50}}),
+        );
         assert!(s.execute("cam.post", &json!({"setup": "Top"})).is_err(), "the holder sweeps over the jaw");
         // Not a body, or both part and fixture: refused.
         assert!(s.execute("cam.setup", &json!({"name": "Top", "fixtures": ["Nope"]})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Top", "model_bodies": ["Jaw"]})).is_err());
         // Part zero kept where it was saved, or following the model when asked.
         run(&mut s, "cam.setup", json!({"name": "Kept", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner}));
-        run(&mut s, "cam.setup", json!({"name": "Live", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner, "zero_follows": true}));
+        run(
+            &mut s,
+            "cam.setup",
+            json!({"name": "Live", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner, "zero_follows": true}),
+        );
         block(&mut s, [0.0, 0.0], [10.0, 10.0], 20.0, "Boss");
         let z = |s: &Session, name: &str| s.cam_setup_outline(name).unwrap().origin.z;
         assert!((z(&s, "Kept") - 8.0).abs() < 1e-6 && (z(&s, "Live") - 20.0).abs() < 1e-6, "{} {}", z(&s, "Kept"), z(&s, "Live"));
@@ -5122,15 +5177,27 @@ mod tests {
         run(&mut s, "sketch.finish", json!({}));
         run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
         let holder = json!({"description": "ER16", "diameter": 28, "length": 40});
-        run(&mut s, "cam.tool.define", json!({"number": 3, "diameter": 6, "flute_length": 12, "description": "=6 mm, carbide", "stick_out": 30, "holder": holder}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 3, "diameter": 6, "flute_length": 12, "description": "=6 mm, carbide", "stick_out": 30, "holder": holder}),
+        );
         run(&mut s, "cam.tool.define", json!({"number": 7, "kind": "chamfer", "diameter": 10, "flute_length": 5, "tip_angle": 90}));
         run(&mut s, "cam.tool.define", json!({"number": 9, "diameter": 2, "flute_length": 5}));
         let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
         run(&mut s, "cam.setup", json!({"name": "Top", "wcs_origin_mode": "model_box_point", "box_point": corner, "material": "aluminium"}));
         run(&mut s, "cam.setup", json!({"name": "Bottom"}));
         let outer = json!([[0, 0], [40, 0], [40, 30], [0, 30]]);
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Outline", "tool": 3, "outer": outer, "side": "outside", "bottom": -3, "stepdown": 3}));
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Edge", "tool": 7, "outer": outer, "side": "outside", "bottom": -1, "stepdown": 1}));
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Outline", "tool": 3, "outer": outer, "side": "outside", "bottom": -3, "stepdown": 3}),
+        );
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Edge", "tool": 7, "outer": outer, "side": "outside", "bottom": -1, "stepdown": 1}),
+        );
         run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Edge", "skip": true}));
         let sheet = run(&mut s, "cam.sheet", json!({}));
         // Only the tools a step uses, by number, each with the steps it cuts in.
@@ -5194,14 +5261,26 @@ mod tests {
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10}));
         // Round the plate's left part, 3 mm off it: the cutter's centre runs at x = 23, 7 mm from the wall.
         let outer = json!([[0, 0], [20, 0], [20, 30], [0, 30]]);
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Near", "tool": 1, "outer": outer, "side": "outside", "clearance": 60, "retract": 10, "top": 8, "bottom": 5, "stepdown": 3}));
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Near", "tool": 1, "outer": outer, "side": "outside", "clearance": 60, "retract": 10, "top": 8, "bottom": 5, "stepdown": 3}),
+        );
         let post = |s: &mut Session| s.execute("cam.post", &json!({"setup": "Top"})).map(|_| ()).map_err(|e| e.to_string());
         // A 30 mm holder 25 mm above the tip reaches over the wall, which stands 10 mm higher.
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 25, "holder": {"diameter": 30, "length": 40}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 25, "holder": {"diameter": 30, "length": 40}}),
+        );
         let refused = post(&mut s);
         assert!(refused.as_ref().is_err_and(|e| e.contains("tool holder runs into body `Wall`")), "{refused:?}");
         // Sticking out 45 mm it clears the wall; the 6 mm shank keeps 4 mm off it.
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "holder": {"diameter": 30, "length": 40}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "holder": {"diameter": 30, "length": 40}}),
+        );
         assert_eq!(post(&mut s), Ok(()));
         // A 20 mm shank above the flutes does not.
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "shank_diameter": 20}));
@@ -5235,7 +5314,10 @@ mod tests {
         assert_eq!((order["setup"].clone(), order["order"].clone()), (json!("S4"), json!(["Drill", "Bore"])));
         // Renaming follows into the skipped list; the copy is its own step.
         let order = run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Core", "new_name": "  Kernloch "}));
-        assert_eq!((order["order"].clone(), order["skipped"].clone()), (json!(["Kernloch", "Core 2", "Core 3", "Drill"]), json!(["Kernloch", "Core 2", "Core 3"])));
+        assert_eq!(
+            (order["order"].clone(), order["skipped"].clone()),
+            (json!(["Kernloch", "Core 2", "Core 3", "Drill"]), json!(["Kernloch", "Core 2", "Core 3"]))
+        );
         run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Drill", "new_name": "Drill"}));
         assert_eq!(s.doc.cam.setup("S3").unwrap().operations.len(), 4);
         // Undo takes a copy back.
@@ -5248,8 +5330,11 @@ mod tests {
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "Core 2"})),
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": " "})),
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "x".repeat(129)})),
-            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "a
-b"})),
+            (
+                "cam.op.rename",
+                json!({"setup": "S3", "name": "Kernloch", "new_name": "a
+b"}),
+            ),
             ("cam.op.rename", json!({"setup": "S3", "name": "Missing", "new_name": "B"})),
             ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "to_setup": "Nope"})),
             ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "new_name": "Core 2"})),
@@ -5338,5 +5423,57 @@ b"})),
         let gcode = posted["gcode"].as_str().unwrap();
         assert!(gcode.contains("G2 ") || gcode.contains("G3 "), "{gcode}");
         assert!(posted["readback"]["within"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn adaptive_pocket_and_trochoidal_slot_execute_and_roundtrip() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200, "stepdown": 3}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "stock": {"min": [-5, -5, -10], "max": [55, 55, 0]}}));
+        run(
+            &mut s,
+            "cam.op.pocket",
+            json!({
+                "setup": "Top", "name": "AdPocket", "tool": 1,
+                "outer": [[0, 0], [40, 0], [40, 40], [0, 40]],
+                "bottom": -3, "stepover": 2, "adaptive": true, "ramp_angle": 5,
+            }),
+        );
+        let paths = s.cam_toolpaths();
+        assert_eq!(paths.len(), 1);
+        assert!(!paths[0].points.as_ref().unwrap().is_empty());
+
+        run(
+            &mut s,
+            "cam.op.trochoid_slot",
+            json!({
+                "setup": "Top", "name": "TrochSlot", "tool": 1,
+                "outer": [[5, 5], [45, 5], [45, 25], [5, 25]],
+                "bottom": -2, "width": 10, "stepover": 2,
+            }),
+        );
+        let paths = s.cam_toolpaths();
+        assert_eq!(paths.len(), 2);
+        assert!(!paths[1].points.as_ref().unwrap().is_empty());
+
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        let gcode = posted["gcode"].as_str().unwrap();
+        assert!(gcode.contains("G2 ") || gcode.contains("G3 "), "{gcode}");
+
+        let job_pocket = json!({
+            "setup": "Top", "name": "GuidedAdPocket", "kind": "pocket", "tool": 1, "diameter": 6, "flute_length": 20,
+            "x": 0, "y": 0, "width": 30, "height": 30, "top": 0, "bottom": -2, "clearance": 10, "retract": 2, "stepdown": 2,
+            "stepover": 2, "feed": 600, "plunge_feed": 150, "spindle_rpm": 6000, "work_offset": 1,
+            "adaptive": true
+        });
+        run(&mut s, "cam.job.create", job_pocket);
+
+        let job_slot = json!({
+            "setup": "Top", "name": "GuidedTrochSlot", "kind": "trochoid_slot", "tool": 1, "diameter": 6, "flute_length": 20,
+            "x": 0, "y": 0, "width": 30, "height": 10, "top": 0, "bottom": -2, "clearance": 10, "retract": 2, "stepdown": 2,
+            "stepover": 2, "feed": 600, "plunge_feed": 150, "spindle_rpm": 6000, "work_offset": 1,
+            "slot_width": 12
+        });
+        run(&mut s, "cam.job.create", job_slot);
     }
 }
