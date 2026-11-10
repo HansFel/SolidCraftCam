@@ -6,12 +6,12 @@
 use serde_json::{Value, json};
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
-    CommentStyle, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move, OpenContourParams, OpenPath, OpenSide,
-    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_open, contour_with_tabs,
+    CommentStyle, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move, OpenContourParams, OpenPath, OpenSide,
+    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_compensated, contour_open, contour_with_tabs,
     drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
-    BoxAxisRef, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
+    BoxAxisRef, CamCompensation, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
     CamSetup, CamSide, CamSlowHoles, CamStock, CamTabs, CamTorch, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
     SetupOperationType, WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params, default_slot_params,
 };
@@ -58,7 +58,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              else linuxcnc); then any of extension, units (mm|inch), decimals (0…6), feed_decimals (0…4), line_numbers (bool), \
              line_start, line_step, comments (parentheses|semicolon|none), header, tool_change, spindle_on, spindle_off, coolant_on, \
              coolant_off, footer (lists of lines with {placeholders}), tool_change_first, arcs, arc_tolerance (mm), helical_arcs, \
-             trailing_decimal, two_digit_codes, dwell, canned_cycles (each drilled hole as G81/G82/G83). Adds or replaces the design's post of that name.",
+             trailing_decimal, two_digit_codes, dwell, canned_cycles (each drilled hole as G81/G82/G83), comp_left, comp_right, comp_off (cutter compensation words, e.g. `G41 D{register}`, `G42 D{register}`, `G40`; all empty: none). Adds or replaces the design's post of that name.",
         ),
     CommandSpec::new("cam.post.remove", "Remove Post", crate::checked!("cam.post.remove", post_remove))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::PostRemoveParams>::new())
@@ -755,6 +755,11 @@ pub fn post_from(cam: &CamSettings, p: &crate::schema::cam::PostDefineParams) ->
     if let Some(v) = &p.dwell {
         post.dwell = v.trim().to_string();
     }
+    for (words, given) in [(&mut post.comp_left, &p.comp_left), (&mut post.comp_right, &p.comp_right), (&mut post.comp_off, &p.comp_off)] {
+        if let Some(v) = given {
+            *words = v.trim().to_string();
+        }
+    }
     post.validate().map_err(|e| e.to_string())?;
     Ok(post)
 }
@@ -1231,6 +1236,14 @@ fn contour_params(cmd: &str, p: &Value) -> Result<CamContourParams> {
         None => {}
         Some(Value::Null) => params.tabs = None,
         Some(v) => params.tabs = Some(Box::new(tabs_param(cmd, v)?)),
+    }
+    if let Some(c) = str_(p, "compensation") {
+        params.compensation = match c {
+            "cam" => CamCompensation::Cam,
+            "control" => CamCompensation::Control,
+            "wear" => CamCompensation::Wear,
+            _ => return Err(bad(cmd, "`compensation` must be cam, control or wear")),
+        };
     }
     Ok(params)
 }
@@ -3197,6 +3210,9 @@ fn contour_path(
     };
     let leads = engine_leads(s, p)?;
     let tabs = engine_tabs(s, p.tabs.as_deref())?;
+    if !p.compensation.is_cam() {
+        return compensated_contour_path(s, setup, geometry, p, tool, cut, start, [(&regions, &params), (&openings, &other)], &leads, &tabs);
+    }
     let mut moves = Vec::new();
     for (group, params) in [(&regions, &params), (&openings, &other)] {
         if !group.is_empty() {
@@ -3234,6 +3250,58 @@ fn contour_path(
     Ok(path)
 }
 
+/// A closed contour whose cutter radius the control compensates: no open chains or tabs, the
+/// tool coming on and leaving along a straight line square to the contour (a square lead gives
+/// its length).
+#[allow(clippy::too_many_arguments)]
+fn compensated_contour_path(
+    s: &Session,
+    setup: &CamSetup,
+    geometry: &CamGeometry,
+    p: &CamContourParams,
+    tool: &Tool,
+    cut: &Cut,
+    start: Option<Vec2>,
+    groups: [(&Vec<solidcore_record::Region2>, &ContourParams); 2],
+    leads: &Leads,
+    tabs: &Tabs,
+) -> std::result::Result<solidcraft_cam::Toolpath, String> {
+    if !tabs.is_empty() {
+        return Err("holding tabs lift the tool in the middle of the contour, which compensation on the control cannot follow: leave them out, or compensate in the CAM".into());
+    }
+    let length = |lead: &Lead| match *lead {
+        Lead::Direct => Ok(0.0),
+        Lead::Perpendicular { length } => Ok(length),
+        Lead::Arc { .. } | Lead::Tangent { .. } => Err(
+            "with compensation on the control the tool comes on and leaves along a straight line square to the contour: choose no lead or a square lead".to_string(),
+        ),
+    };
+    let lead = length(&leads.lead_in)?.max(length(&leads.lead_out)?);
+    if let CamGeometry::Edges { .. } = geometry {
+        let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(geometry))?;
+        if !chains.is_empty() {
+            return Err("compensation on the control is for closed contours: the picked edges leave this one open".into());
+        }
+    }
+    let mode = match p.compensation {
+        CamCompensation::Control => Compensation::Control,
+        CamCompensation::Wear => Compensation::Wear,
+        CamCompensation::Cam => Compensation::Cam,
+    };
+    let comp = CompParams { mode, register: tool.number, lead, overlap: leads.overlap };
+    let mut path = solidcraft_cam::Toolpath::default();
+    for (group, params) in groups {
+        if !group.is_empty() {
+            path.append(contour_compensated(group, tool, params, &comp, cut, start).map_err(|e| e.to_string())?);
+        }
+    }
+    if path.moves.is_empty() {
+        return Err("there is nothing to contour".into());
+    }
+    solidcraft_cam::verify(&path, &cut.heights).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 /// A contour cut by a plasma torch: the contour's loops cut once (no depth passes, no ramp, no
 /// tabs), then turned into torch cuts ([`solidcraft_cam::plasma`]): pierced at the torch's
 /// heights over the step's top, the holes first, small holes slower when the step says so.
@@ -3243,6 +3311,9 @@ fn plasma_path(s: &Session, setup: &CamSetup, op: &CamOperation, tool: &Tool, mu
     };
     if params.tabs.is_some() {
         return Err("a plasma cut leaves no holding tabs: take them off the step".into());
+    }
+    if !params.compensation.is_cam() {
+        return Err("a plasma cut is offset by half its kerf in the CAM: compensation on the control is for milled contours".into());
     }
     let mut params = params.clone();
     params.ramp_angle = Expr::new("0 deg");
@@ -4325,6 +4396,54 @@ mod tests {
         // Null takes them off again.
         run(&mut s, "cam.op.contour", op(Value::Null));
         assert!(s.doc.cam.setups[0].operations.iter().all(|o| !matches!(o, CamOperation::Contour { params, .. } if params.tabs.is_some())));
+    }
+
+    #[test]
+    fn contours_compensated_on_the_control_post_with_g41_and_the_sheet_says_what_to_enter() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 4, "diameter": 6, "flute_length": 20}));
+        run(&mut s, "cam.setup", json!({"name": "Top"}));
+        let op = |name: &str, extra: Value| {
+            let mut p = json!({"setup": "Top", "name": name, "tool": 4, "outer": [[0, 0], [40, 0], [40, 30], [0, 30]],
+                "bottom": -2, "stepdown": 1, "side": "outside"});
+            for (k, v) in extra.as_object().into_iter().flatten() {
+                p[k.as_str()] = v.clone();
+            }
+            p
+        };
+        run(&mut s, "cam.op.contour", op("Comp", json!({"compensation": "control"})));
+        let listed = run(&mut s, "cam.list", json!({}));
+        assert_eq!(listed["setups"][0]["operations"][0]["params"]["compensation"], "control");
+        // Each depth pass switches compensation on with the tool's number, and off again.
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top", "post": "linuxcnc"}));
+        let g = posted["gcode"].as_str().unwrap_or_default();
+        assert_eq!(g.matches("G41 D4 G1").count(), 2, "{g}");
+        assert_eq!(g.matches("G40 G1").count(), 2, "{g}");
+        let e = s.execute("cam.post", &json!({"setup": "Top", "post": "grbl"})).unwrap_err().to_string();
+        assert!(e.contains("writes no cutter compensation"), "{e}");
+        // A post of your own says how: Sinumerik's has no register.
+        run(&mut s, "cam.post.define", json!({"name": "Ohne D", "base": "linuxcnc", "comp_left": "G41", "comp_right": "G42", "comp_off": "G40"}));
+        let g = run(&mut s, "cam.post", json!({"setup": "Top", "post": "Ohne D"}))["gcode"].as_str().unwrap_or_default().to_string();
+        assert!(g.contains("G41 G1") && !g.contains("D4"), "{g}");
+        assert!(s.execute("cam.post.define", &json!({"name": "Halb", "base": "linuxcnc", "comp_off": ""})).is_err());
+        // The setup sheet says what goes into the control's tool table.
+        let sheet = run(&mut s, "cam.sheet", json!({"setup": "Top"}));
+        assert_eq!(sheet["setups"][0]["steps"][0]["compensation"], "control");
+        // What the control cannot follow is refused when the step is made.
+        for (extra, says) in [
+            (json!({"compensation": "control", "tabs": {"count": 4, "width": 5, "height": 1}}), "holding tabs"),
+            (json!({"compensation": "control", "lead_in": {"kind": "arc", "radius": 3, "sweep": 90}}), "square lead"),
+            (json!({"compensation": "control", "ramp_angle": "5 deg"}), "ramping"),
+            (json!({"compensation": "sideways"}), "cam, control or wear"),
+        ] {
+            let e = s.execute("cam.op.contour", &op("Bad", extra)).unwrap_err().to_string();
+            assert!(e.contains(says), "{says}: {e}");
+        }
+        // Wear compensation with a square lead: the nominal centre path, entered 10 mm off it.
+        run(&mut s, "cam.op.contour", op("Comp", json!({"compensation": "wear", "lead_in": {"kind": "perpendicular", "length": 10}})));
+        let g = run(&mut s, "cam.post", json!({"setup": "Top", "post": "fanuc"}))["gcode"].as_str().unwrap_or_default().to_string();
+        assert!(g.contains("G41 D4 G01") && g.contains("G40 G01"), "{g}");
+        assert_eq!(run(&mut s, "cam.sheet", json!({"setup": "Top"}))["setups"][0]["steps"][0]["compensation"], "wear");
     }
 
     #[test]

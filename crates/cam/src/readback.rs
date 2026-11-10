@@ -59,7 +59,8 @@ pub fn readback(text: &str, program: &Program, post: &Post) -> Result<Readback> 
         return Err(CamError::TooLarge("program has too many moves to check".into()));
     }
     let written = Toolpath::new(post.read_back(text)?.into_iter().map(|(_, m)| m).collect());
-    let planned = Toolpath::new(program.operations.iter().flat_map(|op| op.path.moves.iter().copied()).collect());
+    // The program says the compensated passes' programmed moves, not the tool centre's.
+    let planned = Toolpath::new(program.operations.iter().flat_map(|op| op.path.programmed()).collect());
     let allowed = allowed_deviation(post);
     let reach = (allowed * 10.0).max(1.0);
     let tol = post.arc_tolerance;

@@ -155,6 +155,7 @@ Project
 | Engraving along sketch text and curves | Done: `cam.op.engrave`, the cutter's tip on picked edges, sketch curves and text |
 | Tabs (bridges) on through contours | Done |
 | Lead-in and lead-out: tangent arc, tangent line, square line or direct/ramp, with overlap | Done |
+| Cutter radius compensation on the control (`G41`/`G42`/`G40`, Heidenhain `RL`/`RR`/`R0`): the contour or, for wear, the centre path in the program; every pass entered and left square on a straight line of at least 1.25 diameters; what the control could not offset refused before posting | Done (not yet run on a control: try it in the control's test run first) |
 | Open contours along an edge chain: side, direction, run-on at both ends | Done |
 | Edge chains: picked edges joined into contours, and a chain found in its plane from one edge | Done |
 | Final depth picked on the model (a face, edge or corner), then free to change | Done |

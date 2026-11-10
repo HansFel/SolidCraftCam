@@ -89,6 +89,8 @@ struct Writer<'a> {
     z: Option<String>,
     pos: Option<Vec3>,
     feed: Option<String>,
+    /// Words written in front of the next motion block: cutter compensation on or off.
+    prefix: Option<String>,
 }
 
 impl Writer<'_> {
@@ -159,7 +161,13 @@ impl Writer<'_> {
         }
         let feed = self.feed_word(feed);
         let code = self.motion(code);
-        self.block(&format!("{code}{words}{feed}"));
+        let prefix = self.take_prefix();
+        self.block(&format!("{prefix}{code}{words}{feed}"));
+    }
+
+    /// The words waiting for the next motion block, with a space after them.
+    fn take_prefix(&mut self) -> String {
+        self.prefix.take().map(|p| format!("{} ", p.trim())).unwrap_or_default()
     }
 
     /// ` F…` when the feed changes.
@@ -348,7 +356,7 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
     if program.operations.len() > MAX_OPERATIONS {
         return Err(CamError::TooLarge(format!("more than {MAX_OPERATIONS} operations")));
     }
-    let mut w = Writer { post, out: String::new(), line: post.line_numbers.map(|n| n.start), x: None, y: None, z: None, pos: None, feed: None };
+    let mut w = Writer { post, out: String::new(), line: post.line_numbers.map(|n| n.start), x: None, y: None, z: None, pos: None, feed: None, prefix: None };
     let offset = program.work_offset.unwrap_or(1);
     // A post that leaves the offset to the operator can only mean the first one.
     if offset != 1 && !post.writes_work_offset() {
@@ -405,6 +413,8 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
             coolant = op.coolant;
         }
         w.reset();
+        check_comp(op, post)?;
+        let mut runs = op.path.comp.iter().peekable();
         // Tapped holes are always written as their cycle; drilled ones when the post has canned cycles.
         let mut cycles = op.path.cycles.iter().filter(|c| post.canned_cycles || c.tap.is_some()).peekable();
         let mut skip_to = 0usize;
@@ -422,6 +432,35 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
                     w.template(&post.spindle_off, &values)?;
                     lit = false;
                 }
+            }
+            // A compensated pass: switched on with its entry line, off with its exit line.
+            if let Some(run) = runs.next_if(|r| r.start == index) {
+                values.register = run.register.to_string();
+                let on = fill(
+                    match run.side {
+                        crate::CompSide::Left => &post.comp_left,
+                        crate::CompSide::Right => &post.comp_right,
+                    },
+                    &values,
+                )?;
+                let off = fill(&post.comp_off, &values)?;
+                let last = run.programmed.len().saturating_sub(1);
+                for (i, m) in run.programmed.iter().enumerate() {
+                    if i == 0 {
+                        w.prefix = Some(on.clone());
+                    } else if i == last {
+                        w.prefix = Some(off.clone());
+                    }
+                    write_move(&mut w, &mut values, &op.name, m)?;
+                    if w.prefix.is_some() {
+                        return Err(CamError::Unsafe(format!(
+                            "operation `{}`: the entry or exit line of a compensated contour is too short to write",
+                            plain(&op.name)
+                        )));
+                    }
+                }
+                skip_to = run.end;
+                continue;
             }
             while cycles.next_if(|c| c.start < index).is_some() {}
             if let Some(c) = cycles.next_if(|c| c.start == index) {
@@ -457,6 +496,46 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
     w.template(&post.spindle_off, &values)?;
     w.template(&post.footer, &values)?;
     Ok(w.out)
+}
+
+/// Whether the compensated passes of `op` can be written by `post`: the post knows the words,
+/// and each pass is cutting moves only, entered and left on a straight line, in order and
+/// inside the toolpath, with a register of 1 to 9999.
+pub(crate) fn check_comp(op: &Operation, post: &Post) -> Result<()> {
+    if op.path.comp.is_empty() {
+        return Ok(());
+    }
+    if !post.compensates() {
+        return invalid(format!(
+            "post `{}` writes no cutter compensation (G41/G42): compensate step `{}` in the CAM, or choose a post for a control that has it",
+            plain(&post.name),
+            plain(&op.name)
+        ));
+    }
+    if op.tool.kind == crate::ToolKind::Plasma {
+        return invalid(format!("operation `{}`: a plasma cut is offset by its kerf in the CAM, not on the control", plain(&op.name)));
+    }
+    let mut end = 0usize;
+    for run in &op.path.comp {
+        let straight = |m: Option<&Move>| matches!(m, Some(Move::Feed { .. }));
+        if run.start < end
+            || run.start >= run.end
+            || run.end > op.path.moves.len()
+            || run.programmed.len() < 3
+            || !straight(run.programmed.first())
+            || !straight(run.programmed.last())
+            || run.programmed.iter().any(|m| matches!(m, Move::Rapid { .. } | Move::Dwell { .. }))
+            || !(1..=9999).contains(&run.register)
+            || op.path.cycles.iter().any(|c| c.start < run.end && run.start < c.end)
+        {
+            return Err(CamError::Unsafe(format!(
+                "operation `{}`: a compensated contour is not written as one cut from its entry to its exit line",
+                plain(&op.name)
+            )));
+        }
+        end = run.end;
+    }
+    Ok(())
 }
 
 /// One move as the post writes it.

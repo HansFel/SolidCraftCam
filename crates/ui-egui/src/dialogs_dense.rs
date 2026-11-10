@@ -1390,6 +1390,38 @@ mod tests {
     }
 
     #[test]
+    fn cam_contour_form_lets_the_control_compensate_and_edits_keep_it() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.app.run("cam.tool.define", json!({"number": 2, "diameter": 6, "flute_length": 20})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top"})).unwrap();
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(2);
+        // The choice is there; holding tabs are offered only while the CAM compensates.
+        assert!(h.widget("Radius compensation").is_some() && h.widget("Holding tabs").is_some());
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::Milling(form) = &mut d.kind else { panic!("the contour form") };
+        form.compensation = 1;
+        assert_eq!(form.params().unwrap()["compensation"], "control");
+        h.app.dialog = Some(d);
+        h.frames(2);
+        assert!(h.widget("Holding tabs").is_none(), "no tabs with compensation on the control");
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let setup = h.app.session.doc.cam.setups[0].clone();
+        let op = setup.operations.first().cloned().unwrap();
+        let solidcraft_engine::doc::cam::CamOperation::Contour { params, .. } = &op else { panic!("a contour") };
+        assert_eq!(params.compensation, solidcraft_engine::doc::cam::CamCompensation::Control);
+        // Editing brings the choice back; the CAM's own compensation is not written at all.
+        let again = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op);
+        assert_eq!(again.compensation, 1);
+        let mut cam = again.clone();
+        cam.compensation = 0;
+        assert!(cam.params().unwrap().get("compensation").is_none());
+    }
+
+    #[test]
     fn cam_slot_form_takes_a_width_and_mills_around_the_rectangle() {
         let mut h = Harness::new();
         h.app.home.open = false;

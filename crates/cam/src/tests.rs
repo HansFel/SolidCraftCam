@@ -168,7 +168,7 @@ fn drill_cycles_that_do_not_match_their_moves_are_written_move_by_move() {
         DrillCycle { start: 0, ..c },
     ];
     for cycle in bad {
-        let path = Toolpath { moves: good.moves.clone(), cycles: vec![cycle, cycle] };
+        let path = Toolpath { moves: good.moves.clone(), cycles: vec![cycle, cycle], comp: Vec::new() };
         let program = Program {
             name: "x".into(),
             operations: vec![Operation { name: "o".into(), tool: tool.clone(), spindle_rpm: 2000.0, coolant: false, path }],
@@ -286,6 +286,186 @@ fn dist_to_cuts(path: &Toolpath, below: f64, q: Vec2) -> f64 {
         .filter(|w| w[1].1 && w[0].0.z < below && w[1].0.z < below)
         .map(|w| q.extend(0.0).dist_to_segment(flat(w[0].0), flat(w[1].0)))
         .fold(f64::INFINITY, f64::min)
+}
+
+fn comp(mode: Compensation) -> CompParams {
+    CompParams { mode, register: 1, lead: 0.0, overlap: 0.0 }
+}
+
+fn contour_params(side: Side) -> ContourParams {
+    ContourParams { side, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 }
+}
+
+fn one_op(path: Toolpath, tool: Tool) -> Program {
+    Program { name: "Comp".into(), operations: vec![Operation { name: "Contour".into(), tool, spindle_rpm: 8000.0, coolant: false, path }], work_offset: None }
+}
+
+#[test]
+fn a_contour_compensated_on_the_control_writes_the_contour_with_g41_and_g40_round_each_pass() {
+    let part = [rect(0.0, 0.0, 40.0, 30.0)];
+    let shape = Shape::from_regions(&part, 0.01).unwrap();
+    let mill = tool(6.0);
+    let c = cut(0.0, -4.0, 2.0);
+    let path = contour_compensated(&part, &mill, &contour_params(Side::Outside), &comp(Compensation::Control), &c, None).unwrap();
+    // One compensated run per depth pass, climb milling round the outside: the tool left (G41).
+    assert_eq!(path.comp.len(), 2);
+    assert!(path.comp.iter().all(|r| r.side == CompSide::Left && r.register == 1));
+    // The tool centre stays a radius off the part, and touches it all round.
+    let below = cutting_points(&path, -1.0);
+    assert!(below.iter().all(|p| shape.dist(Vec2::new(p.x, p.y)) >= 3.0 - 1e-6));
+    for q in [v(20.0, -3.0), v(43.0, 15.0), v(20.0, 33.0), v(-3.0, 15.0)] {
+        assert!(dist_to_cuts(&path, -1.0, q) < 1e-3, "{q:?}");
+    }
+    // The program carries the contour itself, entered and left on a line 1.25 diameters long
+    // square to the longest side's middle.
+    for run in &path.comp {
+        let Some(Move::Feed { to: on, .. }) = run.programmed.first() else { panic!("an entry line") };
+        let Some(Move::Feed { to: off, .. }) = run.programmed.last() else { panic!("an exit line") };
+        close(on.x, 20.0, 1e-9);
+        close(on.y, 0.0, 1e-9);
+        close(off.x, 20.0, 1e-9);
+        close(off.y, -7.5, 1e-9);
+        let contour = &run.programmed[1..run.programmed.len() - 1];
+        assert!(contour.iter().filter_map(Move::target).all(|p| shape.dist(Vec2::new(p.x, p.y)) < 1e-9));
+        // Down to the pass depth at the entry point, before compensation goes on.
+        assert!(matches!(path.moves.get(run.start - 1), Some(Move::Feed { to, .. }) if (to.x - 20.0).abs() < 1e-9 && (to.y + 7.5).abs() < 1e-9));
+    }
+    let program = one_op(path.clone(), mill.clone());
+    for (post, on, off) in [(Post::linuxcnc(), "G41 D1 G1 Y0", "G40 G1 Y-7.5"), (Post::fanuc(), "G41 D1 G01 Y0.", "G40 G01 Y-7.5"), (Post::sinumerik(), "G41 G1 Y0", "G40 G1 Y-7.5")] {
+        let text = emit(&program, &post).unwrap();
+        assert_eq!(text.matches(on).count(), 2, "{}: {text}", post.name);
+        assert_eq!(text.matches(off).count(), 2, "{}: {text}", post.name);
+        assert!(readback(&text, &program, &post).unwrap().within(), "{}", post.name);
+        // Between switching on and off only cutting moves in the plane: no Z, no M words.
+        for block in text.split("G41").skip(1) {
+            let inside = block.split("G40").next().unwrap_or_default();
+            assert!(!inside.contains('Z') && !inside.contains('M') && !inside.contains("G0 ") && !inside.contains("G00"), "{inside}");
+        }
+    }
+    // Heidenhain: RL along the contour, R0 on the exit line.
+    let text = emit(&program, &Post::heidenhain()).unwrap();
+    assert!(text.contains("L Y+0 RL") && text.contains("L Y-7.5 R0"), "{text}");
+    assert!(readback(&text, &program, &Post::heidenhain()).unwrap().within());
+    // GRBL has no compensation: refused, saying what to do instead.
+    let e = emit(&program, &Post::grbl()).unwrap_err().to_string();
+    assert!(e.contains("writes no cutter compensation"), "{e}");
+    // Conventional milling puts the tool on the right (G42).
+    let conventional = ContourParams { climb: false, ..contour_params(Side::Outside) };
+    let path = contour_compensated(&part, &mill, &conventional, &comp(Compensation::Control), &c, None).unwrap();
+    assert!(path.comp.iter().all(|r| r.side == CompSide::Right));
+    // Inside an opening the corners are cut back and the entry stays inside.
+    let path = contour_compensated(&part, &mill, &contour_params(Side::Inside), &comp(Compensation::Control), &c, None).unwrap();
+    assert!(path.comp.iter().all(|r| r.side == CompSide::Left));
+    let below = cutting_points(&path, -1.0);
+    assert!(below.iter().all(|p| shape.clear(Vec2::new(p.x, p.y), 3.0 - 1e-6)));
+    assert!(below.iter().any(|p| (p.x - 3.0).abs() < 1e-6 && (p.y - 3.0).abs() < 1e-6), "the corner is cut to the tool");
+    let text = emit(&one_op(path.clone(), mill.clone()), &Post::linuxcnc()).unwrap();
+    assert!(readback(&text, &one_op(path, mill.clone()), &Post::linuxcnc()).unwrap().within());
+}
+
+#[test]
+fn wear_compensation_writes_the_nominal_centre_path_and_stock_and_overlap_are_kept() {
+    let part = [rect(0.0, 0.0, 40.0, 30.0)];
+    let shape = Shape::from_regions(&part, 0.01).unwrap();
+    let mill = tool(6.0);
+    let c = cut(0.0, -2.0, 2.0);
+    let path = contour_compensated(&part, &mill, &contour_params(Side::Outside), &comp(Compensation::Wear), &c, None).unwrap();
+    let run = &path.comp[0];
+    // The program is the tool centre's own path: what the CAM would write, with G41 round it.
+    assert_eq!(run.programmed.as_slice(), &path.moves[run.start..run.end]);
+    let contour = &run.programmed[1..run.programmed.len() - 1];
+    assert!(contour.iter().filter_map(Move::target).all(|p| (shape.dist(Vec2::new(p.x, p.y)) - 3.0).abs() < 1e-6));
+    let text = emit(&one_op(path.clone(), mill.clone()), &Post::linuxcnc()).unwrap();
+    assert!(text.contains("G41 D1 G1"));
+    // Stock on the wall: the program is the contour moved out by it, the tool a radius beyond.
+    let leave = ContourParams { stock_to_leave: 0.5, ..contour_params(Side::Outside) };
+    let path = contour_compensated(&part, &mill, &leave, &CompParams { overlap: 5.0, lead: 10.0, ..comp(Compensation::Control) }, &c, None).unwrap();
+    let run = &path.comp[0];
+    let contour = &run.programmed[1..run.programmed.len() - 1];
+    assert!(contour.iter().filter_map(Move::target).all(|p| (shape.dist(Vec2::new(p.x, p.y)) - 0.5).abs() < 1e-6));
+    assert!(cutting_points(&path, -1.0).iter().all(|p| shape.dist(Vec2::new(p.x, p.y)) >= 3.5 - 1e-6));
+    // The longer lead: 3 + 10 mm off the contour; the overlap runs 5 mm past the start.
+    let (Some(Move::Feed { to: on, .. }), Some(Move::Feed { to: off, .. })) = (run.programmed.first(), run.programmed.last()) else { panic!("entry and exit lines") };
+    close(shape.dist(Vec2::new(off.x, off.y)), 13.5, 1e-6);
+    let last_on_contour = contour.last().and_then(Move::target).unwrap();
+    close(Vec2::new(on.x, on.y).dist(Vec2::new(last_on_contour.x, last_on_contour.y)), 5.0, 1e-6);
+    let text = emit(&one_op(path.clone(), mill.clone()), &Post::linuxcnc()).unwrap();
+    assert!(readback(&text, &one_op(path, mill), &Post::linuxcnc()).unwrap().within());
+}
+
+#[test]
+fn compensation_the_control_could_not_make_is_refused_before_anything_is_written() {
+    let mill = tool(6.0);
+    let c = cut(0.0, -2.0, 2.0);
+    let control = comp(Compensation::Control);
+    let outside = contour_params(Side::Outside);
+    // A notch of radius 2 in the top edge: the CAM's tool bridges it, the control would gouge.
+    let notch = |radius: f64| Region2 {
+        outer: Loop2 {
+            segs: vec![
+                Seg2::Line { a: v(0.0, 0.0), b: v(40.0, 0.0) },
+                Seg2::Line { a: v(40.0, 0.0), b: v(40.0, 30.0) },
+                Seg2::Line { a: v(40.0, 30.0), b: v(20.0 + radius, 30.0) },
+                Seg2::Arc { center: v(20.0, 30.0), radius, start: 0.0, sweep: -PI },
+                Seg2::Line { a: v(20.0 - radius, 30.0), b: v(0.0, 30.0) },
+                Seg2::Line { a: v(0.0, 30.0), b: v(0.0, 0.0) },
+            ],
+        },
+        holes: vec![],
+    };
+    let e = contour_compensated(&[notch(2.0)], &mill, &outside, &control, &c, None).unwrap_err().to_string();
+    assert!(e.contains("tighter than the tool") && e.contains("(20.000, 28.000)"), "{e}");
+    // A notch the tool fits: the control's offset follows the CAM's.
+    let path = contour_compensated(&[notch(4.0)], &mill, &outside, &control, &c, None).unwrap();
+    assert!(dist_to_cuts(&path, -1.0, v(20.0, 29.0)) < 1e-3, "down into the notch");
+    // Two parts closer together than the tool: the CAM's tool goes round both at once.
+    let pair = [rect(0.0, 0.0, 20.0, 20.0), rect(22.0, 0.0, 42.0, 20.0)];
+    let e = contour_compensated(&pair, &mill, &outside, &control, &c, None).unwrap_err().to_string();
+    assert!(e.contains("closer together than the tool"), "{e}");
+    // An opening too small for the entry line square to its wall.
+    let e = contour_compensated(&[rect(0.0, 0.0, 40.0, 10.0)], &mill, &contour_params(Side::Inside), &control, &c, None).unwrap_err().to_string();
+    assert!(e.contains("no room"), "{e}");
+    // Ramps, contours on the line, bad registers and the CAM's own mode are refused.
+    let part = [rect(0.0, 0.0, 40.0, 30.0)];
+    for (params, comp, says) in [
+        (ContourParams { ramp_angle: 0.1, ..outside }, control, "ramping"),
+        (contour_params(Side::On), control, "no side"),
+        (outside, CompParams { register: 0, ..control }, "register"),
+        (outside, CompParams { lead: f64::NAN, ..control }, "entry and exit"),
+        (outside, comp(Compensation::Cam), "nothing for the control"),
+    ] {
+        let e = contour_compensated(&part, &mill, &params, &comp, &c, None).unwrap_err().to_string();
+        assert!(e.contains(says), "{says}: {e}");
+    }
+    // A start point near a corner is moved a tool diameter along the side.
+    let path = contour_compensated(&part, &mill, &outside, &control, &c, Some(v(39.0, -1.0))).unwrap();
+    let Some(Move::Feed { to, .. }) = path.comp[0].programmed.first() else { panic!("an entry line") };
+    close(to.x, 34.0, 1e-9);
+    close(to.y, 0.0, 1e-9);
+}
+
+#[test]
+fn compensated_runs_follow_their_moves_when_paths_are_joined() {
+    let part = [rect(0.0, 0.0, 40.0, 30.0)];
+    let mill = tool(6.0);
+    let c = cut(0.0, -2.0, 2.0);
+    let one = contour_compensated(&part, &mill, &contour_params(Side::Outside), &comp(Compensation::Control), &c, None).unwrap();
+    let mut joined = Toolpath::new(vec![Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }]);
+    joined.append(one.clone());
+    joined.append(one.clone());
+    assert_eq!(joined.comp.len(), 2);
+    assert_eq!(joined.comp[0].start, one.comp[0].start + 1);
+    assert_eq!(joined.comp[1].start, one.comp[0].start + 1 + one.moves.len());
+    // The programmed moves replace the tool centre's run by run.
+    let programmed = joined.programmed();
+    let lengths = |p: &Toolpath| p.comp.iter().map(|r| r.programmed.len() as i64 - (r.end - r.start) as i64).sum::<i64>();
+    assert_eq!(programmed.len() as i64, joined.moves.len() as i64 + lengths(&joined));
+    assert_eq!(Toolpath::new(joined.moves.clone()).programmed(), joined.moves);
+    // A run that no longer fits its moves is refused when posting.
+    let mut broken = one.clone();
+    broken.comp[0].end = broken.moves.len() + 5;
+    let e = emit(&one_op(broken, mill), &Post::linuxcnc()).unwrap_err().to_string();
+    assert!(e.contains("not written as one cut"), "{e}");
 }
 
 #[test]

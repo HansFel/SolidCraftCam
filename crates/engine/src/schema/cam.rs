@@ -141,6 +141,12 @@ pub struct PostDefineParams {
     pub dwell: Option<String>,
     /// Whether each drilled hole is written as one canned cycle (`G81`, `G82`, `G83`).
     pub canned_cycles: Option<bool>,
+    /// Cutter compensation words in front of a compensated pass's entry move, tool left
+    /// (`G41 D{register}`) or right (`G42 D{register}`), and in front of its exit move (`G40`);
+    /// all three empty: the post writes no compensation.
+    pub comp_left: Option<String>,
+    pub comp_right: Option<String>,
+    pub comp_off: Option<String>,
     /// How tapped holes are written: none (refused), g84, g84_rigid, g33_1 or g331.
     pub tapping: Option<String>,
     /// What the post writes: g_code or klartext (Heidenhain).
@@ -283,6 +289,10 @@ pub struct MillingParams {
     pub extend_end: Option<NumberExpr>,
     /// Closed contours: holding tabs `{count?, spacing?, width, height}`, or null for none.
     pub tabs: Option<serde_json::Value>,
+    /// Who offsets the contour by the tool's radius: `cam` (default), `control` (the program is
+    /// the contour, `G41`/`G42 D<tool>` and `G40` round each pass, the control adds the measured
+    /// radius) or `wear` (the program is the nominal centre path, the control adds the wear).
+    pub compensation: Option<String>,
     pub outer: Option<Vec<[f64; 2]>>,
     pub holes: Option<Vec<Vec<[f64; 2]>>>,
     pub regions: Option<serde_json::Value>,
@@ -667,6 +677,9 @@ pub struct JobParams {
     pub lead_out: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlap: Option<f64>,
+    /// Contours: who offsets by the tool's radius, `cam`, `control` or `wear` (as `cam.op.contour`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_side: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -838,6 +851,10 @@ pub struct SheetStep {
     /// A plasma cut's torch data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub torch: Option<SheetTorch>,
+    /// A contour the control compensates: `control` (its tool table holds the measured
+    /// diameter under the tool's number) or `wear` (the measured minus the nominal diameter).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<String>,
     pub skipped: bool,
     /// Its run time with the tool change before it (seconds); absent when not posted.
     pub seconds: Option<f64>,

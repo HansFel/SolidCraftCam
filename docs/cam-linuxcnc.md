@@ -127,6 +127,47 @@ than the gap between them, are refused; open contours take no tabs.
 stops the last pass that far above the bottom, so a later finishing step can take the rest:
 rough with stock left, then finish with a second contour at 0.
 
+## Radius compensation on the control
+
+**Radius compensation** says who moves the tool off a closed contour by its radius:
+
+- **In the CAM** (the default): the program is the tool centre's path for the tool's nominal
+  diameter, as before.
+- **On the control (G41/G42)**: the program is the contour itself (moved out by the wall stock),
+  and the control adds the radius from its tool table. A reground or undersized cutter then still
+  cuts the part to size: enter its measured diameter in the tool table under the tool's number
+  (`D` is the tool number).
+- **On the control, wear only**: the program is the nominal tool's centre path, as with the CAM,
+  and the tool table holds only the difference between the measured and the nominal diameter (a
+  value near zero). Every control that has `G41`/`G42` runs this without complaint.
+
+Controls are strict about compensation, and most trouble on the machine comes from it, so every
+compensated depth pass is written the same way: compensation off, a rapid to the entry point
+square off the contour on the tool's side, down to the pass depth there; `G41`/`G42` on a
+straight entry move onto the contour, at least 1.25 tool diameters long (a **Square line** lead
+makes it longer; other leads are refused); the contour at that depth with nothing else in
+between (no Z moves, no dwells, no tabs); `G40` on a straight exit move as long as the entry;
+then up. The entry lands in the middle of the contour's longest straight side, or nearest the
+start point you picked, at least a tool diameter from a corner. Arcs are split below half a turn.
+Ramps and holding tabs cannot be compensated on the control and are refused, as are open edge
+chains.
+
+Before anything is written the contour is offset here the way a control does it (lines moved
+square to themselves, arcs to a smaller or larger radius, a round corner added at outside
+corners, inside corners cut back to where the offsets meet). An arc or inside corner tighter than
+the tool, and contours or walls closer together than the tool, are refused with the place named,
+because the control would stop there with a gouging or interference alarm. The result must match
+the path the CAM works out for the tool; the preview, the material removal, the collision check
+and the run time all use that tool centre path, and the read-back compares the program with the
+contour it says.
+
+The built-in posts write `G41 D<tool>`, `G42 D<tool>` and `G40` (LinuxCNC, RS-274, Mach3,
+Centroid, Fanuc), `G41`/`G42`/`G40` with the edge `D1` of the tool change (Sinumerik), or `RL`,
+`RR` and `R0` on the `L` and `C` blocks (Heidenhain). GRBL has no cutter compensation: a
+compensated step is refused with its post. Your own posts set the words (`comp_left`,
+`comp_right`, `comp_off`, `{register}` for the register; all empty: none). The setup sheet says
+for each compensated step what goes into the tool table.
+
 ## Start and final depth from the model
 
 **Start depth Z** is where cutting starts. It begins at the top of the setup's stock; when an

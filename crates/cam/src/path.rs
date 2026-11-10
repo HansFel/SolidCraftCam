@@ -61,13 +61,70 @@ pub struct Toolpath {
     /// moves stay the truth: a post without canned cycles writes them as they are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cycles: Vec<DrillCycle>,
+    /// Runs of `moves` the control compensates for the tool's radius: the program carries
+    /// [`CompRun::programmed`] instead, and the moves are what the control makes of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comp: Vec<CompRun>,
 }
 
 impl Toolpath {
     /// A toolpath of plain moves.
     pub fn new(moves: Vec<Move>) -> Toolpath {
-        Toolpath { moves, cycles: Vec::new() }
+        Toolpath { moves, cycles: Vec::new(), comp: Vec::new() }
     }
+
+    /// `other`'s moves after this path's, its cycles and compensated runs kept with them.
+    pub fn append(&mut self, other: Toolpath) {
+        let shift = self.moves.len();
+        self.moves.extend(other.moves);
+        self.cycles.extend(other.cycles.into_iter().map(|c| DrillCycle { start: c.start + shift, end: c.end + shift, ..c }));
+        self.comp.extend(other.comp.into_iter().map(|r| CompRun { start: r.start + shift, end: r.end + shift, ..r }));
+    }
+
+    /// The moves as the program says them: each compensated run's programmed moves in place of
+    /// the tool centre's. The same as `moves` without compensation.
+    pub fn programmed(&self) -> Vec<Move> {
+        if self.comp.is_empty() {
+            return self.moves.clone();
+        }
+        let mut out = Vec::with_capacity(self.moves.len());
+        let mut index = 0;
+        for run in &self.comp {
+            if run.start < index || run.end > self.moves.len() || run.start > run.end {
+                continue;
+            }
+            out.extend_from_slice(&self.moves[index..run.start]);
+            out.extend_from_slice(&run.programmed);
+            index = run.end;
+        }
+        out.extend_from_slice(&self.moves[index.min(self.moves.len())..]);
+        out
+    }
+}
+
+/// Which side of the programmed path the control puts the tool, seen along the travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompSide {
+    /// `G41`: the tool left of the path.
+    Left,
+    /// `G42`: the tool right of the path.
+    Right,
+}
+
+/// One pass the control compensates: `moves[start..end]` are the tool centre's moves along the
+/// entry line, the contour and the exit line; `programmed` is what the program says instead
+/// (the contour itself, or the nominal centre path for wear compensation). The control switches
+/// compensation on with the first programmed move (the entry line) and off with the last (the
+/// exit line).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CompRun {
+    pub start: usize,
+    pub end: usize,
+    pub side: CompSide,
+    /// The control's offset register the radius is read from (`D`), by default the tool number.
+    pub register: u32,
+    pub programmed: Vec<Move>,
 }
 
 /// One hole drilled by `moves[start..end]`: from the initial height above `at` down to the

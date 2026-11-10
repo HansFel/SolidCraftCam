@@ -28,7 +28,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("cam.sheet", "Tool List
          `op.<step type>`) → tools: [{number, kind, description, diameter, flute_length, flutes, corner_radius, tip_angle, \
          tip_diameter, pitch, shank_diameter, overall_length, stick_out, holder, used_in: [\"setup / step\"]}] by number, \
          setups: [{name, part, operation_type, machine_kind, work_offset, origin, tool_axis, x_axis, part_zero, material, machine, post, fixtures, model_bodies, \
-         stock: {kind, min, max, size} (work coordinates), steps: [{name, type, tool (none for a plasma cut), torch?: {kerf, pierce_height, cut_height, pierce_delay, feed}, skipped, seconds}], seconds, problem}], \
+         stock: {kind, min, max, size} (work coordinates), steps: [{name, type, tool (none for a plasma cut), torch?: {kerf, pierce_height, cut_height, pierce_delay, feed}, compensation?: control|wear, skipped, seconds}], seconds, problem}], \
          seconds (all setups), path?, bytes?. A setup whose program cannot be posted has no run time and says why in `problem`.",
     )];
 
@@ -193,6 +193,10 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
                 kind: tag(op, "type"),
                 tool: op.uses_tool().then(|| op.tool()),
                 torch: torch_row(s, op),
+                compensation: match op {
+                    CamOperation::Contour { params, .. } if !params.compensation.is_cam() => serde_json::to_value(params.compensation).ok().and_then(|v| v.as_str().map(str::to_string)),
+                    _ => None,
+                },
                 skipped: skipped(op),
                 seconds: per_step.get(op.name()).copied(),
             })
@@ -304,6 +308,8 @@ fn esc(s: &str) -> String {
 const HEADINGS: &[(&str, &str)] = &[
     ("axes", "Axes"),
     ("bodies", "Model bodies"),
+    ("comp_control", "the control compensates the radius: D = measured diameter"),
+    ("comp_wear", "the control compensates wear: D = measured minus nominal diameter"),
     ("description", "Description"),
     ("diameter", "Diameter"),
     ("fixtures", "Fixtures"),
@@ -449,7 +455,10 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
                 esc(&step.name),
                 esc(&kind("op", &step.kind)),
                 match (&step.tool, &step.torch) {
-                    (Some(t), _) => format!("T{t}"),
+                    (Some(t), _) => match step.compensation.as_deref() {
+                        Some(mode) => format!("T{t} <span class=\"dim\">D{t}: {}</span>", esc(&l(&format!("comp_{mode}")))),
+                        None => format!("T{t}"),
+                    },
                     (None, Some(t)) => esc(&format!(
                         "{} {} · {} {} / {} · {} s · {} mm/min",
                         l("kerf"),

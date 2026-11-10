@@ -139,6 +139,18 @@ pub struct Post {
     pub tapping: Tapping,
     #[serde(default)]
     pub language: Language,
+    /// Cutter radius compensation on the control: the words written in front of a compensated
+    /// pass's entry move with the tool left (`G41 D{register}`) or right (`G42 D{register}`) of
+    /// the programmed path, and in front of its exit move (`G40`). `{register}` is the offset
+    /// register the control reads the radius from. Empty: the post writes no compensation, and a
+    /// step that asks for it is refused. Klartext posts write `RL`, `RR` and `R0` when these
+    /// are not empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comp_left: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comp_right: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comp_off: String,
     /// The kind of machine the post writes for: a post serves machines of its kind only.
     #[serde(default, skip_serializing_if = "MachineKind::is_mill")]
     pub machine: MachineKind,
@@ -185,6 +197,9 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::G33_1,
             language: Language::GCode,
+            comp_left: "G41 D{register}".into(),
+            comp_right: "G42 D{register}".into(),
+            comp_off: "G40".into(),
             machine: MachineKind::Mill,
         }
     }
@@ -202,6 +217,9 @@ impl Post {
         post.coolant_on = Vec::new();
         post.coolant_off = Vec::new();
         post.tapping = Tapping::None;
+        post.comp_left = String::new();
+        post.comp_right = String::new();
+        post.comp_off = String::new();
         post.machine = MachineKind::Plasma;
         post
     }
@@ -249,6 +267,10 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::None,
             language: Language::GCode,
+            // GRBL has no cutter compensation (it only accepts `G40`).
+            comp_left: String::new(),
+            comp_right: String::new(),
+            comp_off: String::new(),
             machine: MachineKind::Mill,
         }
     }
@@ -310,6 +332,9 @@ impl Post {
             canned_cycles: true,
             tapping: Tapping::G84Rigid,
             language: Language::GCode,
+            comp_left: "G41 D{register}".into(),
+            comp_right: "G42 D{register}".into(),
+            comp_off: "G40".into(),
             machine: MachineKind::Mill,
         }
     }
@@ -343,6 +368,10 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::G331,
             language: Language::GCode,
+            // The radius comes from the cutting edge `D1` the tool change selects.
+            comp_left: "G41".into(),
+            comp_right: "G42".into(),
+            comp_off: "G40".into(),
             machine: MachineKind::Mill,
         }
     }
@@ -377,6 +406,9 @@ impl Post {
             canned_cycles: false,
             tapping: Tapping::None,
             language: Language::Klartext,
+            comp_left: "RL".into(),
+            comp_right: "RR".into(),
+            comp_off: "R0".into(),
             machine: MachineKind::Mill,
         }
     }
@@ -406,6 +438,11 @@ impl Post {
         }
     }
 
+    /// Whether the post writes cutter compensation for the control (`G41`/`G42`/`G40`).
+    pub fn compensates(&self) -> bool {
+        !self.comp_left.trim().is_empty()
+    }
+
     /// Whether the post writes the work offset (a `{work_offset}` in its header or tool change).
     pub fn writes_work_offset(&self) -> bool {
         self.header.iter().chain(&self.tool_change).any(|l| l.contains("{work_offset}"))
@@ -428,6 +465,16 @@ impl Post {
             return invalid("the post's dwell template is too long or has control characters");
         }
         fill(&self.dwell, &Values::default())?;
+        let comp = [&self.comp_left, &self.comp_right, &self.comp_off];
+        for words in comp {
+            if words.len() > MAX_TEMPLATE_LEN || words.chars().any(char::is_control) {
+                return invalid("the post's cutter compensation words are too long or have control characters");
+            }
+            fill(words, &Values::default())?;
+        }
+        if comp.iter().any(|w| w.trim().is_empty()) && comp.iter().any(|w| !w.trim().is_empty()) {
+            return invalid("the post's cutter compensation needs all three: left, right and off, or none");
+        }
         for block in [&self.header, &self.tool_change, &self.spindle_on, &self.spindle_off, &self.coolant_on, &self.coolant_off, &self.footer] {
             if block.len() > MAX_TEMPLATE_LINES {
                 return Err(CamError::TooLarge(format!("a post template has more than {MAX_TEMPLATE_LINES} lines")));
@@ -455,6 +502,8 @@ pub(crate) struct Values {
     pub rpm: String,
     pub seconds: String,
     pub milliseconds: String,
+    /// The offset register of cutter compensation.
+    pub register: String,
 }
 
 /// `line` with its placeholders replaced.
@@ -475,6 +524,7 @@ pub(crate) fn fill(line: &str, v: &Values) -> Result<String> {
             "rpm" => &v.rpm,
             "seconds" => &v.seconds,
             "milliseconds" => &v.milliseconds,
+            "register" => &v.register,
             other => return invalid(format!("post template `{line}`: unknown placeholder `{{{other}}}`")),
         });
         rest = tail.strip_prefix('}').unwrap_or(tail);

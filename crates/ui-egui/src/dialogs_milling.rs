@@ -63,6 +63,8 @@ pub struct Milling {
     left_hand: bool,
     /// Use cutting data raises the feed until the thickest chip is fz again (small stepovers).
     pub(crate) thin_chips: bool,
+    /// A contour's cutter compensation, as [`COMPENSATIONS`] lists them.
+    pub(crate) compensation: usize,
 }
 
 /// The form's operations by their place in its list: contour 0, pocket 1, drill 2, face 3,
@@ -91,6 +93,9 @@ const OPEN_SIDES: [&str; 3] = ["left", "right", "on"];
 
 /// A contour's sides: where the part stays whole, outside or inside each picked contour, on it.
 const SIDES: [&str; 4] = ["auto", "outside", "inside", "on"];
+/// Who offsets a contour by the tool's radius: the CAM, the control (`G41`/`G42`), or the
+/// control for wear only.
+const COMPENSATIONS: [&str; 3] = ["cam", "control", "wear"];
 
 /// `base`, or `base 2`, `base 3`, … : the first name no step of `setup` has.
 fn free_name(app: &SolveApp, setup: &str, base: &str) -> String {
@@ -235,6 +240,7 @@ impl Milling {
             internal: true,
             left_hand: false,
             thin_chips: false,
+            compensation: 0,
         }
         .starting_at_stock(app)
     }
@@ -470,6 +476,12 @@ impl Milling {
                     CamOpenSide::On => 2,
                 };
                 form.reverse = params.reverse;
+                use solidcraft_engine::doc::cam::CamCompensation;
+                form.compensation = match params.compensation {
+                    CamCompensation::Cam => 0,
+                    CamCompensation::Control => 1,
+                    CamCompensation::Wear => 2,
+                };
                 if let Some(tabs) = &params.tabs {
                     form.tabs = true;
                     let count = tabs.count.to_string();
@@ -741,6 +753,9 @@ impl Milling {
                 if map.contains_key("edges") {
                     map.insert("open_side".into(), json!(OPEN_SIDES.get(self.open_side).copied().unwrap_or("left")));
                     map.insert("reverse".into(), json!(self.reverse));
+                }
+                if self.kind == 0 && self.compensation > 0 {
+                    map.insert("compensation".into(), json!(COMPENSATIONS.get(self.compensation).copied().unwrap_or("cam")));
                 }
             } else {
                 for key in ["overlap", "extend_start", "extend_end"] {
@@ -1139,9 +1154,21 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::choice_row(ui, tr("ui.cam.lead_in"), "cam-lead-in", &mut form.lead_in, &leads);
         ui_kit::choice_row(ui, tr("ui.cam.lead_out"), "cam-lead-out", &mut form.lead_out, &leads);
     }
-    // A plasma cut leaves no tabs: the part drops out of the sheet.
+    // Who offsets the contour by the tool radius. With the control doing it, the tool comes on
+    // and leaves on a straight line square to the contour, and nothing lifts it on the way.
     if form.kind == 0 {
+        let modes = [tr("ui.cam.comp_cam"), tr("ui.cam.comp_control"), tr("ui.cam.comp_wear")];
+        ui_kit::choice_row(ui, tr("ui.cam.compensation"), "cam-compensation", &mut form.compensation, &modes);
+        if form.compensation > 0 {
+            ui.add(egui::Label::new(egui::RichText::new(tr("ui.cam.comp_hint")).color(Tokens::get().text_dim)).wrap());
+        }
+    }
+    // A plasma cut leaves no tabs: the part drops out of the sheet. The control's compensation
+    // cannot lift over them either.
+    if form.kind == 0 && form.compensation == 0 {
         ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.tabs", &mut form.tabs));
+    } else if form.kind == 0 {
+        form.tabs = false;
     }
     // Picked edges can be the contour themselves instead of the faces they bound, and the chain
     // they start can be found and offered as picked. A chain that does not close is an open

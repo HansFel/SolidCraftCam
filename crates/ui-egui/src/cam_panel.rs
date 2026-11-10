@@ -633,6 +633,8 @@ struct PostEdit {
     machine: MachineKind,
     tool_change_first: bool,
     dwell: String,
+    /// Cutter compensation words: tool left, tool right, off.
+    comp: [String; 3],
     /// Program start, tool change, spindle on, spindle off, coolant on, coolant off, program end.
     blocks: [String; 7],
 }
@@ -677,6 +679,7 @@ impl PostEdit {
             language: p.language,
             tool_change_first: p.tool_change_first,
             dwell: p.dwell.clone(),
+            comp: [p.comp_left.clone(), p.comp_right.clone(), p.comp_off.clone()],
             blocks: [
                 block(&p.header),
                 block(&p.tool_change),
@@ -724,6 +727,9 @@ impl PostEdit {
             language: self.language,
             machine: self.machine,
             dwell: self.dwell.trim().to_string(),
+            comp_left: self.comp[0].trim().to_string(),
+            comp_right: self.comp[1].trim().to_string(),
+            comp_off: self.comp[2].trim().to_string(),
         };
         post.validate().map_err(|e| e.to_string())?;
         Ok(post)
@@ -1563,6 +1569,8 @@ fn jobs_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut V
 const SHEET_HEADINGS: &[(&str, &str)] = &[
     ("axes", "ui.cam.sheet.axes"),
     ("bodies", "ui.cam.sheet.bodies"),
+    ("comp_control", "ui.cam.sheet.comp_control"),
+    ("comp_wear", "ui.cam.sheet.comp_wear"),
     ("description", "ui.cam.sheet.description"),
     ("diameter", "ui.cam.sheet.diameter"),
     ("fixtures", "ui.cam.sheet.fixtures"),
@@ -1989,6 +1997,10 @@ fn posts_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
     ui_kit::choice_row(ui, tr("ui.cam.post_tapping"), "cam-post-tapping", &mut edit.tapping, &tapping);
     ui_kit::row(ui, "", |ui| ui_kit::checkbox(ui, tr("ui.cam.post_tool_change_first"), &mut edit.tool_change_first));
     ui_kit::text_row(ui, tr("ui.cam.post_dwell"), &mut edit.dwell, "G4 P{seconds}");
+    let [left, right, off] = &mut edit.comp;
+    ui_kit::text_row(ui, tr("ui.cam.post_comp_left"), left, "G41 D{register}");
+    ui_kit::text_row(ui, tr("ui.cam.post_comp_right"), right, "G42 D{register}");
+    ui_kit::text_row(ui, tr("ui.cam.post_comp_off"), off, "G40");
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.post_hint")).color(t.text_dim)).wrap());
     for (key, block) in POST_BLOCKS.iter().zip(edit.blocks.iter_mut()) {
         ui_kit::multiline_text_field(ui, tr(key), egui::Id::unique(("cam-post-block", *key)), block);

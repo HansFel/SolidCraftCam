@@ -60,6 +60,9 @@ struct Writer<'a> {
     after_rapid: bool,
     /// M functions waiting for the next positioning block.
     pending: Vec<&'static str>,
+    /// The radius compensation each `L` and `C` block says: `R0`, or `RL`/`RR` along a
+    /// compensated contour.
+    radius: String,
 }
 
 impl Writer<'_> {
@@ -130,7 +133,8 @@ impl Writer<'_> {
             }
         };
         let m = self.take_m();
-        self.block(&format!("L{words} R0{speed}{m}"));
+        let radius = self.radius.clone();
+        self.block(&format!("L{words} {radius}{speed}{m}"));
         Ok(())
     }
 
@@ -183,7 +187,8 @@ impl Writer<'_> {
         let word = if self.after_rapid || self.feed.as_ref() != Some(&value) { format!(" F{value}") } else { String::new() };
         (self.feed, self.after_rapid) = (Some(value), false);
         let m = self.take_m();
-        self.block(&format!("C X{nx} Y{ny} DR{} R0{word}{m}", if ccw { "+" } else { "-" }));
+        let radius = self.radius.clone();
+        self.block(&format!("C X{nx} Y{ny} DR{} {radius}{word}{m}", if ccw { "+" } else { "-" }));
         (self.x, self.y, self.pos) = (Some(nx), Some(ny), Some(to));
         Ok(())
     }
@@ -203,7 +208,7 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
         crate::post::Units::Inch => "INCH",
     };
     let name = program_name(&program.name);
-    let mut w = Writer { post, out: String::new(), line: 0, x: None, y: None, z: None, pos: None, feed: None, after_rapid: true, pending: Vec::new() };
+    let mut w = Writer { post, out: String::new(), line: 0, x: None, y: None, z: None, pos: None, feed: None, after_rapid: true, pending: Vec::new(), radius: "R0".into() };
     w.block(&format!("BEGIN PGM {name} {units}"));
     w.comment(&program.name);
     let mut tool: Option<u32> = None;
@@ -245,7 +250,41 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
             w.pending.push(if op.coolant { "M8" } else { "M9" });
             coolant = op.coolant;
         }
-        for m in &op.path.moves {
+        crate::gcode::check_comp(op, post)?;
+        let mut runs = op.path.comp.iter().peekable();
+        let mut skip_to = 0usize;
+        for (index, m) in op.path.moves.iter().enumerate() {
+            if index < skip_to {
+                continue;
+            }
+            // A compensated pass: `RL`/`RR` from the entry line on, `R0` on the exit line.
+            if let Some(run) = runs.next_if(|r| r.start == index) {
+                let on = match run.side {
+                    crate::CompSide::Left => post.comp_left.trim().to_string(),
+                    crate::CompSide::Right => post.comp_right.trim().to_string(),
+                };
+                let last = run.programmed.len().saturating_sub(1);
+                for (i, m) in run.programmed.iter().enumerate() {
+                    w.radius = if i == last { post.comp_off.trim().to_string() } else { on.clone() };
+                    let lines_before = w.line;
+                    match *m {
+                        Move::Feed { to, feed } => w.feed(to, feed)?,
+                        Move::Arc { to, center, ccw, feed } => w.arc(to, center, ccw, feed)?,
+                        Move::Rapid { .. } | Move::Dwell { .. } => {
+                            return Err(CamError::Unsafe(format!("operation `{}`: a compensated contour may only cut", plain(&op.name))));
+                        }
+                    }
+                    if (i == 0 || i == last) && w.line == lines_before {
+                        return Err(CamError::Unsafe(format!(
+                            "operation `{}`: the entry or exit line of a compensated contour is too short to write",
+                            plain(&op.name)
+                        )));
+                    }
+                }
+                w.radius = "R0".into();
+                skip_to = run.end;
+                continue;
+            }
             if m.target().is_some_and(|to| !to.is_finite()) {
                 return Err(CamError::Unsafe(format!("operation `{}` has a coordinate that is not a finite number", plain(&op.name))));
             }

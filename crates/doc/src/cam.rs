@@ -762,6 +762,30 @@ pub struct CamContourParams {
     /// Closed contours: holding tabs left on each loop so the part stays in the stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<Box<CamTabs>>,
+    /// Who offsets the contour by the tool's radius: the CAM, or the control (`G41`/`G42`).
+    #[serde(default, skip_serializing_if = "CamCompensation::is_cam")]
+    pub compensation: CamCompensation,
+}
+
+/// Who offsets a contour by the tool's radius.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CamCompensation {
+    /// The CAM: the program is the tool centre's path for the nominal diameter.
+    #[default]
+    Cam,
+    /// The control (`G41`/`G42`): the program is the contour, the control adds the measured
+    /// radius from its tool table.
+    Control,
+    /// The control, for wear only: the program is the nominal centre path, the control adds the
+    /// difference between the measured and the nominal radius.
+    Wear,
+}
+
+impl CamCompensation {
+    pub fn is_cam(&self) -> bool {
+        *self == CamCompensation::Cam
+    }
 }
 
 /// A plasma cut's torch data: the kerf the contour is offset by half of, the heights the arc is
@@ -1430,6 +1454,7 @@ pub fn default_contour_params() -> CamContourParams {
         extend_start: zero_mm(),
         extend_end: zero_mm(),
         tabs: None,
+        compensation: CamCompensation::Cam,
     }
 }
 

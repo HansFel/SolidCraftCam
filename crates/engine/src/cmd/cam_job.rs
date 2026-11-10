@@ -103,6 +103,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             ("extend_start", a.extend_start.map(|v| json!(v))),
             ("extend_end", a.extend_end.map(|v| json!(v))),
             ("tabs", a.tabs.clone()),
+            ("compensation", a.compensation.clone().map(|v| json!(v))),
         ];
         for (key, value) in extra {
             if let Some(value) = value {

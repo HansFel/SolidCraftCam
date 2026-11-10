@@ -41,5 +41,7 @@
 //! cut_height, pierce_delay}`), and a post writes for one kind of machine (`machine`). A plasma
 //! setup holds `plasma` operations: no tool, `params` as a contour's, `torch: {kerf, pierce_height,
 //! cut_height, pierce_delay, slow_holes?: {diameter, share}}`, `cut` with the sheet from `top` to
-//! `bottom`. Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
+//! `bottom`. A contour's `params` can say who offsets it by the tool's radius (`compensation`: `cam`, the default and
+//! left out, `control` or `wear`), and a post the words it writes for that (`comp_left`, `comp_right`, `comp_off`).
+//! Toolpaths are never saved. Older designs need no transformation: an absent `cam` field
 //! means no setups. The last release refuses a design saved with this (the newer format number).

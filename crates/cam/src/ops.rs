@@ -76,7 +76,7 @@ pub fn drill(points: &[Vec2], tool: &Tool, cut: &Cut, dwell: f64) -> Result<Tool
             tap: None,
         });
     }
-    let path = Toolpath { moves: b.moves, cycles };
+    let path = Toolpath { moves: b.moves, cycles, comp: Vec::new() };
     verify(&path, &cut.heights)?;
     Ok(path)
 }
@@ -125,7 +125,7 @@ pub fn tap(points: &[Vec2], tool: &Tool, cut: &Cut, spindle_rpm: f64) -> Result<
             tap: Some(pitch),
         });
     }
-    let path = Toolpath { moves: b.moves, cycles };
+    let path = Toolpath { moves: b.moves, cycles, comp: Vec::new() };
     verify(&path, &cut.heights)?;
     Ok(path)
 }
@@ -297,7 +297,7 @@ impl Builder {
         Ok(())
     }
 
-    fn cut_to(&mut self, p: Vec2, z: f64) -> Result<()> {
+    pub(crate) fn cut_to(&mut self, p: Vec2, z: f64) -> Result<()> {
         if self.at(p) && self.pos.is_some_and(|q| (q.z - z).abs() <= 1e-9) {
             return Ok(());
         }
@@ -379,6 +379,11 @@ impl Builder {
         Ok(())
     }
 
+    /// How many moves are collected.
+    pub(crate) fn len(&self) -> usize {
+        self.moves.len()
+    }
+
     /// Where the tool is (work coordinates).
     pub(crate) fn pos(&self) -> Option<Vec3> {
         self.pos
@@ -399,11 +404,11 @@ impl Builder {
     }
 }
 
-fn check_ramp(angle: f64) -> Result<()> {
+pub(crate) fn check_ramp(angle: f64) -> Result<()> {
     if (0.0..=1.5).contains(&angle) { Ok(()) } else { invalid("the ramp angle must be between 0 and 85 degrees") }
 }
 
-fn check_leave(leave: f64) -> Result<()> {
+pub(crate) fn check_leave(leave: f64) -> Result<()> {
     if leave.is_finite() && (0.0..=MAX_COORD).contains(&leave) { Ok(()) } else { invalid("the stock to leave must be 0 or more") }
 }
 
@@ -425,7 +430,7 @@ fn start_near(lp: &[Piece], p: Vec2) -> Vec<Piece> {
 }
 
 /// The loop turned to start at its point nearest to `p`, splitting the piece there.
-fn start_at(lp: &[Piece], p: Vec2) -> Vec<Piece> {
+pub(crate) fn start_at(lp: &[Piece], p: Vec2) -> Vec<Piece> {
     let nearest = lp.iter().enumerate().min_by(|a, b| a.1.dist(p).total_cmp(&b.1.dist(p)));
     let Some((index, piece)) = nearest else { return lp.to_vec() };
     let t = piece.param_near(p);
@@ -652,7 +657,7 @@ fn cut_run_with_tabs(b: &mut Builder, run: &[Piece], z: f64, tab_top: f64, windo
 /// The unit normal of the side the tool is on at `p`, where the contour runs along `t`:
 /// away from the region around a part and into an opening (both the side farther from the
 /// boundary), the left of the travel on it.
-fn free_normal(shape: &Shape, side: Side, p: Vec2, t: Vec2) -> Vec2 {
+pub(crate) fn free_normal(shape: &Shape, side: Side, p: Vec2, t: Vec2) -> Vec2 {
     let n = t.perp();
     if side == Side::On {
         return n;
@@ -662,7 +667,7 @@ fn free_normal(shape: &Shape, side: Side, p: Vec2, t: Vec2) -> Vec2 {
 }
 
 /// Whether a lead stays clear of the part. The tool may touch an open contour it rides on.
-fn lead_is_clear(shape: &Shape, side: Side, piece: &Piece, r: f64) -> bool {
+pub(crate) fn lead_is_clear(shape: &Shape, side: Side, piece: &Piece, r: f64) -> bool {
     let n = ((piece.length() / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 512.0) as usize;
     (0..=n).all(|i| {
         let p = piece.point_at(i as f64 / n as f64);
@@ -676,7 +681,7 @@ fn lead_is_clear(shape: &Shape, side: Side, piece: &Piece, r: f64) -> bool {
 }
 
 /// Appends the first `overlap` mm of `lp` to `run`, the loop running on past its start.
-fn run_overlap(run: &mut Vec<Piece>, lp: &[Piece], overlap: f64) -> Result<()> {
+pub(crate) fn run_overlap(run: &mut Vec<Piece>, lp: &[Piece], overlap: f64) -> Result<()> {
     let total: f64 = lp.iter().map(Piece::length).sum();
     if !(overlap < total) {
         return invalid("the overlap must be shorter than the contour");

@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod check;
+mod comp;
 mod cutting;
 mod gcode;
 mod helix;
@@ -35,6 +36,7 @@ mod time;
 mod tool;
 
 pub use check::verify;
+pub use comp::{CompParams, Compensation, ENTRY_DIAMETERS, contour_compensated};
 pub use cutting::{CuttingData, Load, MATERIALS, SPINDLE_EFFICIENCY, Speeds, chip_thinning, cutting_force, load, valid_material};
 pub use gcode::{Operation, Program, emit, parse, parse_lines, work_offset_code};
 pub use helix::{HelixParams, ThreadParams, helical_bore, thread_mill};
@@ -46,7 +48,7 @@ pub use ops::{
     ContourParams, Cut, FaceParams, Feeds, Heights, PocketParams, Side, contour, contour_from, contour_open, contour_with, contour_with_tabs, drill,
     face, pocket, tap,
 };
-pub use path::{DrillCycle, Move, PathStats, Toolpath, arc_sweep};
+pub use path::{CompRun, CompSide, DrillCycle, Move, PathStats, Toolpath, arc_sweep};
 pub use plasma::{PlasmaParams, plasma};
 pub use post::{CommentStyle, Language, LineNumbers, Post, Tapping, Units};
 pub use readback::{Readback, allowed_deviation, readback};
