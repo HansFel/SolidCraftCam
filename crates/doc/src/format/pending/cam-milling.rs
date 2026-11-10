@@ -26,11 +26,8 @@
 //! opening toward the closed walls, which keep their stock; the opening is cut flush and every
 //! pass feeds the same way. A pocket can use `adaptive` clearing with central helical entry,
 //! morphing loops and progressive corner peeling. A facing
-//! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) as a rectangle with a
-//! `stepover` and an `overrun` past the stock's edges; picked faces, sketch contours and explicit
-//! polylines are faced as their exact outlines, inner loops standing as islands the tool keeps out.
-//! A facing can name an `entry` point (model coordinates) in air beside the area: the tool goes
-//! down there and feeds into the cut horizontally. A slot operation (`slot`) runs the tool centre along each picked edge chain
+//! operation (`face`) faces the setup's stock (`geometry: {"type": "stock"}`) or a rectangle
+//! with a `stepover` and an `overrun` past the stock's edges. A slot operation (`slot`) runs the tool centre along each picked edge chain
 //! (open or closed) or contour, `width` wide (absent: the tool's diameter) with side passes `stepover`
 //! apart, `stock_to_leave` on both walls, `tolerance` and `ramp_angle` as for pockets, and optional
 //! `trochoidal` loop milling for low tool engagement. A tool's `kind` can also be

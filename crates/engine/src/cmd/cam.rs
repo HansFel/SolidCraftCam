@@ -8,7 +8,7 @@ use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
     CommentStyle, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move, OpenContourParams, OpenPath, OpenSide,
     Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_compensated, contour_open, contour_with_tabs,
-    drill, emit, estimate, face, face_regions, pocket, readback, slot,
+    drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamCompensation, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
@@ -125,10 +125,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.face", "Facing", crate::checked!("cam.op.face", face_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_face").params(
-        "setup; name; tool (number); faces?/edges?/sketch?: a picked face or profile, faced exactly to its outline, \
-         its holes left standing as islands the tool keeps out (the base faces the whole footprint); outer?: [[x,y],…] a rectangle in work XY \
-         (default: the setup's stock outline, both faced as their box); entry?: [x,y,z] a point in air beside the area, or entry_at?: {sketch, point}: \
-         where the tool goes down before feeding into the cut; \
+        "setup; name; tool (number); faces?/edges?: a picked face, whose outline's box is faced (the base faces the \
+         whole footprint); outer?: [[x,y],…] a rectangle in work XY (default: the setup's stock outline); \
          stepover? (default 70 % of the tool diameter); overrun?: how far the tool's edge runs past the stock (default 2 mm); \
          bottom? (the finished height; default part zero); allowance?: the material \
          above it, where facing starts (default: up from the stock's top, or top?); stepdown? (default the tool \
@@ -1423,15 +1421,6 @@ pub(super) fn face_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let mut params = default_face_params(stepover);
     if let Some(v) = expr(p, "overrun") {
         params.overrun = v;
-    }
-    // The entry: an `entry` model point, or `entry_at`: a sketch point {sketch, point}.
-    if let Some(v) = p.get("entry") {
-        let at = vec3(v).ok_or_else(|| bad(cmd, "`entry` must be [x, y, z]"))?;
-        params.entry = Some([at.x, at.y, at.z]);
-    }
-    if let Some(v) = p.get("entry_at") {
-        let at = sketch_point_at(s, cmd, v)?;
-        params.entry = Some([at.x, at.y, at.z]);
     }
     let op = CamOperation::Face {
         name: name.clone(),
@@ -3157,36 +3146,38 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
         return drill(&points, tool, &cut, *dwell).map_err(|e| e.to_string());
     }
     if let CamOperation::Face { geometry, params, .. } = op {
-        let entry = entry_xy(setup, params.entry)?;
         let params = FaceParams { stepover: eval_len(s, &params.stepover, "stepover")?, overrun: eval_len(s, &params.overrun, "overrun")? };
-        let path = match geometry {
+        let (lo, hi) = match geometry {
             CamGeometry::Stock => {
                 let (lo, hi) = stock_extent(s, setup, &work_frame(setup)?)?;
-                let (lo, hi) = (Vec2::new(lo.x, lo.y), Vec2::new(hi.x, hi.y));
-                match entry {
-                    None => face(lo, hi, tool, &params, &cut),
-                    // With an entry the stock box is a region like any other: the tool goes
-                    // down in air at the point and feeds into the cut horizontally.
-                    Some(at) => {
-                        let corners = [lo, Vec2::new(lo.x, hi.y), hi, Vec2::new(hi.x, lo.y)];
-                        let region = Region2 { outer: Loop2::polygon(&corners), holes: Vec::new() };
-                        face_regions(&[region], tool, &params, &cut, Some(at))
+                (Vec2::new(lo.x, lo.y), Vec2::new(hi.x, hi.y))
+            }
+            CamGeometry::Polygons { regions } => {
+                let points = regions.iter().flat_map(|r| r.outer.iter());
+                let fold = |f: fn(f64, f64) -> f64, start: f64, i: usize| points.clone().fold(start, |a, q| f(a, q[i]));
+                (
+                    Vec2::new(fold(f64::min, f64::INFINITY, 0), fold(f64::min, f64::INFINITY, 1)),
+                    Vec2::new(fold(f64::max, f64::NEG_INFINITY, 0), fold(f64::max, f64::NEG_INFINITY, 1)),
+                )
+            }
+            // A picked face (the top, or the base for the whole footprint) or sketch profile:
+            // the box round its outline.
+            CamGeometry::Faces { .. } | CamGeometry::Edges { .. } | CamGeometry::Sketch { .. } => {
+                let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+                let mut area = solidcraft_geom::Aabb2::EMPTY;
+                for seg in regions.iter().chain(&openings).flat_map(|r| r.outer.segs.iter()) {
+                    for i in 0..=16 {
+                        area.add(seg.point_at(f64::from(i) / 16.0));
                     }
                 }
-            }
-            // A picked face, edge chain, sketch profile or polygon: faced exactly to its
-            // outline, inner loops left standing as islands.
-            CamGeometry::Polygons { .. } | CamGeometry::Faces { .. } | CamGeometry::Edges { .. } | CamGeometry::Sketch { .. } => {
-                let (mut regions, openings) = resolve_geometry(s, setup, geometry, false)?;
-                regions.extend(openings);
-                if regions.is_empty() {
+                if area.is_empty() {
                     return Err("the picked face has no outline to face".into());
                 }
-                face_regions(&regions, tool, &params, &cut, entry)
+                (area.min, area.max)
             }
             CamGeometry::Points { .. } => return Err("facing takes the stock outline, a face or a rectangle".into()),
         };
-        return path.map_err(|e| e.to_string());
+        return face(lo, hi, tool, &params, &cut).map_err(|e| e.to_string());
     }
     if let CamOperation::Slot { geometry, params, .. } = op {
         let params = SlotParams {
@@ -4467,100 +4458,6 @@ mod tests {
         let err = s.execute("cam.op.face", &json!({"setup": "Top", "name": "Hoch", "tool": 1, "bottom": 3})).unwrap_err().to_string();
         assert!(err.contains("nothing to face"), "{err}");
         assert!(s.execute("cam.op.face", &json!({"setup": "Top", "name": "Null", "tool": 1, "bottom": 0, "allowance": 0})).is_err());
-    }
-
-    #[test]
-    fn facing_a_picked_face_follows_its_exact_outline_and_enters_at_a_chosen_point() {
-        // Cutting samples of one operation, in model coordinates: the preview gives the path's
-        // vertices, so every cut segment is walked at half a millimetre.
-        fn cuts(s: &Session, name: &str) -> Vec<Vec3> {
-            let paths = s.cam_toolpaths();
-            let path = paths.iter().find(|p| p.operation == name).expect("the facing's path");
-            let pts = path.points.as_ref().unwrap();
-            let mut out: Vec<Vec3> = Vec::new();
-            for ((a, ca), (b, cb)) in pts.iter().zip(pts.iter().skip(1)) {
-                if !(*ca && *cb) {
-                    continue;
-                }
-                let n = (a.dist(*b) / 0.5).ceil().max(1.0) as usize;
-                for i in 0..=n {
-                    let t = i as f64 / n as f64;
-                    out.push(Vec3::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t));
-                }
-            }
-            out
-        }
-        fn point_at(s: &Session, name: &str) -> Vec<(Vec3, bool)> {
-            let paths = s.cam_toolpaths();
-            let path = paths.iter().find(|p| p.operation == name).expect("the facing's path");
-            path.points.as_ref().unwrap().clone()
-        }
-        let mut s = Session::default();
-        run(&mut s, "sketch.create", json!({"plane": "XY"}));
-        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
-        run(&mut s, "sketch.finish", json!({}));
-        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
-        // Cut the far corner away: what is left is an L, material across the full width below
-        // y 12 and only to x 20 above it.
-        run(&mut s, "sketch.create", json!({"plane": "XY"}));
-        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20, 12], "p1": [50, 40]}));
-        run(&mut s, "sketch.finish", json!({}));
-        run(&mut s, "solid.extrude", json!({"distance": 10, "operation": "cut"}));
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 30}));
-        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
-        // A sketch point in the air beside the plate, for the entry pick.
-        run(&mut s, "sketch.create", json!({"plane": "XY"}));
-        run(&mut s, "sketch.point", json!({"point": [50, 6], "id": "enter"}));
-        let marks = s.active_sketch.expect("sketch");
-        run(&mut s, "sketch.finish", json!({}));
-        // Work XY is the model's; heights are 8 mm under the model. The top face is picked,
-        // 1 mm is to face, one pass.
-        let face = |name: &str, extra: Value| {
-            let mut p = json!({"setup": "Top", "name": name, "tool": 1, "faces": [{"body": "Plate", "at": [5, 5, 8]}],
-                "top": 1, "bottom": 0, "stepdown": 1, "stepover": 3, "overrun": 1});
-            for (k, v) in extra.as_object().unwrap() {
-                p[k] = v.clone();
-            }
-            p
-        };
-        run(&mut s, "cam.op.face", face("L", json!({})));
-        let outline = cuts(&s, "L");
-        // The tool's centre never sits further from the L than its radius plus the overrun:
-        // the bay of the removed corner is air, and of it the old outline's box made material.
-        let d_material = |p: Vec3| -> f64 {
-            let (x, y) = (p.x, p.y);
-            if (0.0..=40.0).contains(&x) && (0.0..=30.0).contains(&y) && !(x > 20.0 && y > 12.0) {
-                0.0
-            } else if x > 20.0 && y > 12.0 {
-                (x - 20.0).min(y - 12.0)
-            } else {
-                (x - 40.0).max(-x).max(0.0).hypot((y - 30.0).max(-y).max(0.0))
-            }
-        };
-        assert!(outline.iter().all(|p| d_material(*p) <= 4.05), "the tool chased the old bounding box");
-        // Every millimetre grid point of the L lies within the radius of a cut.
-        let grid: Vec<(f64, f64)> =
-            (1..=39).flat_map(|x| (1..=29).map(move |y| (x as f64, y as f64))).filter(|(x, y)| !(*x > 20.0 && *y > 12.0)).collect();
-        let missed: Vec<_> = grid.iter().filter(|(x, y)| !outline.iter().any(|p| (p.x - x).hypot(p.y - y) <= 3.1)).copied().collect();
-        assert!(missed.is_empty(), "points left standing: {missed:?}");
-        // An entry in the air left of the plate: rapid there, down in the air, and the first
-        // cut is the horizontal feed onto the near end of the lowest lane.
-        run(&mut s, "cam.op.face", face("In", json!({"entry": [-10.0, 6.0, 0.0]})));
-        let pts = point_at(&s, "In");
-        let start = pts[0].0;
-        assert!((start.x + 10.0).abs() < 1e-6 && (start.y - 6.0).abs() < 1e-6 && start.z > 8.5, "down at the entry: {start:?}");
-        let first = *pts.iter().find(|(_, c)| *c).unwrap();
-        assert!((first.0.x + 10.0).abs() < 1e-3 && (first.0.y - 6.0).abs() < 1e-3 && (first.0.z - 8.0).abs() < 1e-3, "{first:?}");
-        assert!(cuts(&s, "In").iter().any(|p| (p.x + 4.0).abs() < 0.05 && (p.y - 2.0).abs() < 1e-3));
-        // A sketch point right of the plate starts the sweep at the far end of that lane.
-        run(&mut s, "cam.op.face", face("At", json!({"entry_at": {"sketch": marks, "point": "enter"}})));
-        let pts = point_at(&s, "At");
-        let start = pts[0].0;
-        assert!((start.x - 50.0).abs() < 1e-6 && (start.y - 6.0).abs() < 1e-6, "{start:?}");
-        assert!(cuts(&s, "At").iter().any(|p| (p.x - 44.0).abs() < 0.05 && (p.y - 2.0).abs() < 1e-3));
-        // An entry on the material is refused, and so is one in no sketch.
-        assert!(s.execute("cam.op.face", &face("Bad", json!({"entry": [20.0, 6.0, 0.0]}))).is_err());
-        assert!(s.execute("cam.op.face", &face("Bad", json!({"entry_at": {"sketch": marks, "point": "nope"}}))).is_err());
     }
 
     #[test]

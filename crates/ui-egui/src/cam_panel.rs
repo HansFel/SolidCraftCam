@@ -1242,12 +1242,18 @@ fn step_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSet
                     d.renaming = None;
                 }
             } else {
-                let label = ui.add(egui::Label::new(RichText::new(&name).color(if on { t.text } else { t.text_dim })).sense(egui::Sense::click()));
-                if label.on_hover_text(tr("ui.cam.rename_hint")).double_clicked() {
+                let label = ui.add(egui::Label::new(RichText::new(&name).color(if on { t.text } else { t.text_dim })).sense(egui::Sense::click()))
+                    .on_hover_text(tr("ui.cam.rename_hint"));
+                if label.double_clicked() {
                     d.renaming = Some((setup.name.clone(), name.clone(), name.clone()));
+                } else if label.clicked() {
+                    actions.push(Action::EditStep(setup.name.clone(), name.clone()));
                 }
             }
-            ui.label(RichText::new(tr(op_kind(op))).color(t.text_dim));
+            let kind_label = ui.add(egui::Label::new(RichText::new(tr(op_kind(op))).color(t.text_dim)).sense(egui::Sense::click()));
+            if kind_label.clicked() {
+                actions.push(Action::EditStep(setup.name.clone(), name.clone()));
+            }
             let tool = app.session.doc.cam.tool(op.tool());
             let rpm = op.spindle_rpm().or(tool.and_then(|t| t.spindle_rpm));
             let mut info = match op {

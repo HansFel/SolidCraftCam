@@ -2606,7 +2606,7 @@ fn publish_check(ui: &egui::Ui, response: &egui::Response, selected: bool) {
 
 fn title(k: &Kind) -> &'static str {
     match k {
-        Kind::Milling(_) => "cmd.cam.job.create",
+        Kind::Milling(form) => crate::dialogs_milling::kind_title(form.kind),
         Kind::CamSetup(_) => "cmd.cam.setup",
         Kind::Sketch => "CREATE SKETCH",
         Kind::SketchIntersect { .. } => "INTERSECT",
@@ -3062,7 +3062,7 @@ pub(crate) fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, n
     let shell_count = d.shell_faces(s).map(|faces| faces.len());
     for (i, inp) in d.inputs.iter().enumerate().skip(range.start).take(range.end.saturating_sub(range.start)) {
         let input_enabled = match (&d.kind, i) {
-            (Kind::Milling(form), 4) => form.kind == crate::dialogs_milling::ADAPTIVE || form.kind == 3,
+            (Kind::Milling(form), 4) => form.kind == crate::dialogs_milling::ADAPTIVE,
             _ => true,
         };
         let stored_reference = stored_input_reference_key(d, i).and_then(|key| d.extra.get(key)).filter(|_| inp.items.is_empty());
@@ -3214,7 +3214,7 @@ pub(crate) fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, n
         d.awaiting_pick = true;
         d.pick_refused = None;
     }
-    if let Kind::Milling(form) = &d.kind && form.kind != crate::dialogs_milling::ADAPTIVE && form.kind != 3 && d.active == 4 {
+    if let Kind::Milling(form) = &d.kind && form.kind != crate::dialogs_milling::ADAPTIVE && d.active == 4 {
         d.active = 0;
     }
     d.sync_thread(s);
@@ -3883,7 +3883,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let wide = matches!(&d.kind, Kind::Motion(k) if k.wide());
 
     let raw_title = title(&d.kind);
-    let heading = if d.editing.is_some() { crate::i18n::format("dialog.edit_title", &[("title", tr(raw_title))]) } else { tr(raw_title).to_string() };
+    let is_editing = d.editing.is_some() || matches!(&d.kind, Kind::Milling(f) if f.is_editing());
+    let heading = if is_editing {
+        let t = tr(raw_title).to_uppercase();
+        crate::i18n::format("dialog.edit_title", &[("title", &t)])
+    } else {
+        tr(raw_title).to_string()
+    };
     let frame = crate::ui_kit::Panel::feature_frame(ctx, app.ui.layout, side);
     // OK is offered once the inputs make a feature.
     let has_ok = !matches!(d.kind, Kind::Sketch | Kind::Measure { .. });

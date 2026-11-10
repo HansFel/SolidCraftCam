@@ -1926,17 +1926,11 @@ mod tests {
     }
 
     #[test]
-    fn cam_facing_form_enters_at_a_picked_sketch_point_outside_the_stock() {
+    fn cam_facing_form_has_no_entry_point_input() {
         let mut h = Harness::new();
         h.app.home.open = false;
         h.call("ui.resize", json!({"width":1400,"height":1100}));
-        sample(&mut h); // a 10 × 10 × 5 plate at the model's corner
-        // A sketch point in the air beside the plate, for the entry pick.
-        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
-        h.app.run("sketch.point", json!({"point": [20, 2], "id": "enter"})).unwrap();
-        let sketch = h.app.session.active_sketch.unwrap();
-        h.app.run("sketch.finish", json!({})).unwrap();
-        // Part zero on the plate's top, the stock 3 mm over the sides and 2 mm above.
+        sample(&mut h);
         let stock =
             json!({"kind": "relative_box", "mode": "sides_and_top_bottom", "side_offset": 3, "top_offset": 2, "bottom_offset": 0, "round_up": 0});
         h.app
@@ -1950,32 +1944,51 @@ mod tests {
         h.frames(2);
         let mut d = h.app.dialog.take().unwrap();
         d.active = 4;
+        h.app.dialog = Some(d);
+        h.frames(2);
+        let d = h.app.dialog.as_ref().unwrap();
+        assert_ne!(d.active, 4, "facing must not allow activating entry point input");
+        let Kind::Milling(form) = &d.kind else { panic!("the facing form") };
+        assert_eq!(form.entry, None);
+        assert!(form.params().unwrap().get("entry").is_none());
+    }
+
+    #[test]
+    fn cam_adaptive_form_edit_preserves_adaptive_kind_and_entry() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        sample(&mut h); // a 10 × 10 × 5 plate at the model's corner
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.point", json!({"point": [16, 5], "id": "enter"})).unwrap();
+        let sketch = h.app.session.active_sketch.unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.step(&json!({"start":"cam.op.adaptive"})).unwrap();
+        h.frames(2);
+        let mut d = h.app.dialog.take().unwrap();
+        d.active = 4;
         d.pick(&h.app.session, Sel::ExternalSketchPoint { sketch, id: "enter".into() });
         assert_eq!(d.inputs[4].items.len(), 1);
         h.app.dialog = Some(d);
         h.frames(2);
-        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the facing form") };
-        // The entry travels as the picked sketch point's model position.
-        let p = form.params().unwrap();
-        assert_eq!(p["entry"].as_array().map(|v| (v[0].as_f64(), v[1].as_f64())), Some((Some(20.0), Some(2.0))), "{p}");
-        assert!(h.widget("Entry point").is_some());
         h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
-        h.frames(3);
-        let setup = h.app.session.doc.cam.setup("Top").cloned().unwrap();
-        let op = setup.operations.first().cloned().unwrap();
-        let solidcraft_engine::doc::cam::CamOperation::Face { params, .. } = &op else { panic!("a facing") };
-        assert_eq!(params.entry, Some([20.0, 2.0, 0.0]));
-        // The path goes down at the entry: work XY is the model's and its heights sit 5 mm
-        // under the model, so the first cut is the horizontal feed onto a lane at the entry.
-        let paths = h.app.session.cam_toolpaths();
-        let points = paths.first().expect("the facing's path").points.as_ref().unwrap().clone();
-        let first = points.first().expect("a path");
-        assert!((first.0.x - 20.0).abs() < 1e-6 && (first.0.y - 2.0).abs() < 1e-6 && first.0.z > 5.0, "{first:?}");
-        let cut = points.iter().find(|(_, c)| *c).expect("a cut");
-        assert!((cut.0.x - 20.0).abs() < 1e-3 && (cut.0.y - 2.0).abs() < 1e-3 && (cut.0.z - 5.0).abs() < 1e-3, "{cut:?}");
-        // Editing brings the entry back.
-        let again = crate::dialogs_milling::Milling::edit(&h.app, &setup, &op).params().unwrap();
-        assert_eq!(again["entry"].as_array().map(|v| v[0].as_f64()), Some(Some(20.0)), "{again}");
+        h.frames(2);
+        assert!(h.app.dialog.is_none());
+        assert_eq!(h.app.session.doc.cam.setups[0].operations.len(), 1);
+        let setup = &h.app.session.doc.cam.setups[0];
+        let op = &setup.operations[0];
+        // Now edit this step
+        let form = crate::dialogs_milling::Milling::edit(&h.app, setup, op);
+        assert_eq!(form.kind, crate::dialogs_milling::ADAPTIVE, "must be ADAPTIVE kind (12), not Trochoidal Slot (11)");
+        assert!(form.adaptive, "adaptive flag must be true");
+        assert_eq!(form.entry, Some([16.0, 5.0, 0.0]), "entry point must be retained");
+        assert!(form.is_editing(), "form must report editing");
+
+        // Verify title when editing
+        let edit_dialog = crate::dialogs::Dialog::new(crate::dialogs::Kind::Milling(Box::new(form)), crate::dialogs_milling::inputs());
+        h.app.dialog = Some(edit_dialog);
+        h.frames(2);
+        assert!(h.widget("EDIT ADAPTIVE CLEARING").is_some(), "dialog title must be EDIT ADAPTIVE CLEARING");
     }
 
     #[test]

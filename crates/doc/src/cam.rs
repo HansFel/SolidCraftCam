@@ -942,11 +942,6 @@ pub struct CamFaceParams {
     /// How far the tool's edge runs past the stock's edge, so no rim is left.
     #[serde(default = "overrun_mm")]
     pub overrun: Expr,
-    /// Where the tool goes down before the cut: a model point in air beside the area to face,
-    /// so it plunges outside the material and feeds in horizontally. Absent: as before, the
-    /// tool goes down at the near end of the first lane.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry: Option<[f64; 3]>,
 }
 
 /// Slot settings held as expressions.
@@ -1490,7 +1485,7 @@ pub fn default_pocket_params(stepover: Expr) -> CamPocketParams {
 
 /// Default facing params; `stepover` must still be set by the caller.
 pub fn default_face_params(stepover: Expr) -> CamFaceParams {
-    CamFaceParams { stepover, overrun: overrun_mm(), entry: None }
+    CamFaceParams { stepover, overrun: overrun_mm() }
 }
 
 /// Default slot params; `stepover` must still be set by the caller.

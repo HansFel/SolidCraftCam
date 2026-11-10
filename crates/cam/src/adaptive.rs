@@ -492,6 +492,28 @@ pub(crate) fn extract_open_arc_intervals(shape: &Shape, walls: &[Piece], entry: 
     pieces
 }
 
+/// Whether the tool of radius `r` can feed straight from `a` to `b` in an open pocket at depth `z`:
+/// keeps `wall` distance from closed walls, and every sample along the link is either in air
+/// outside the pocket (`!shape.inside`) or within the already cleared radial wavefront radius.
+fn is_open_link_clear(
+    shape: &Shape,
+    walls: &[Piece],
+    a: Vec2,
+    b: Vec2,
+    wall: f64,
+    r: f64,
+    entry: Vec2,
+    cleared_radius: f64,
+) -> bool {
+    let target_r = cleared_radius.max(b.dist(entry));
+    let n = ((a.dist(b) / (r * 0.25).max(1e-3)).ceil()).clamp(1.0, 2000.0) as usize;
+    (0..=n).all(|i| {
+        let p = a.lerp(b, i as f64 / n as f64);
+        walls.iter().all(|w| w.dist(p) >= wall - 1e-6)
+            && (!shape.inside(p, 1e-6) || p.dist(entry) <= target_r + 1e-4)
+    })
+}
+
 /// Executes full 2D adaptive clearing on an open pocket entered through `entry` in the air outside.
 pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, tool: &Tool, r: f64, wall: f64) -> Result<Toolpath> {
     if shape.inside(entry, r.max(1e-6)) || shape.dist(entry) < r - 1e-7 {
@@ -591,11 +613,11 @@ pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &C
     }
 
     let mut radius = (d_min - lead).max(0.01);
-    let mut arc_passes: Vec<Vec<Piece>> = Vec::new();
+    let mut arc_passes: Vec<(f64, Vec<Piece>)> = Vec::new();
     while radius <= d_max + stepover {
         let arcs = extract_open_arc_intervals(shape, &walls, entry, radius, wall, lead, params.climb);
         if !arcs.is_empty() {
-            arc_passes.push(arcs);
+            arc_passes.push((radius, arcs));
         }
         radius += stepover;
     }
@@ -606,12 +628,14 @@ pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &C
         b.plunge_to(z)?;
 
         let mut cur_pos = entry;
-        let mut remaining: Vec<Vec<Piece>> = arc_passes.clone();
+        let mut cleared_radius = arc_passes.first().map(|(r, _)| *r).unwrap_or(0.0);
+        let mut remaining: Vec<(f64, Vec<Piece>)> = arc_passes.clone();
 
-        while let Some(p_idx) = remaining.iter().position(|pass| !pass.is_empty()) {
+        while let Some(p_idx) = remaining.iter().position(|(_, pass)| !pass.is_empty()) {
+            let pass_radius = remaining[p_idx].0;
             let mut best_arc_idx = 0;
             let mut best_dist = f64::INFINITY;
-            for (a_idx, arc) in remaining[p_idx].iter().enumerate() {
+            for (a_idx, arc) in remaining[p_idx].1.iter().enumerate() {
                 let d = cur_pos.dist(arc.start());
                 if d < best_dist {
                     best_dist = d;
@@ -619,32 +643,42 @@ pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &C
                 }
             }
 
-            let arc = remaining[p_idx].remove(best_arc_idx);
+            let arc = remaining[p_idx].1.remove(best_arc_idx);
             let start = arc.start();
 
             if cur_pos.dist(start) > 1e-4 {
-                let direct_clear = crate::ops::link_is_clear(shape, cur_pos, start, wall, r);
+                let direct_clear = is_open_link_clear(shape, &walls, cur_pos, start, wall, r, entry, cleared_radius);
                 if direct_clear {
                     b.cut_to(start, z)?;
                 } else {
                     let mid = (cur_pos + start) * 0.5;
                     let dir_to_entry = (entry - mid).normalized().unwrap_or(Vec2::ZERO);
                     let inward_pt = mid + dir_to_entry * (stepover * 0.75);
-                    if walls.iter().all(|w| w.dist(inward_pt) >= wall)
-                        && crate::ops::link_is_clear(shape, cur_pos, inward_pt, wall, r)
-                        && crate::ops::link_is_clear(shape, inward_pt, start, wall, r)
+                    if walls.iter().all(|w| w.dist(inward_pt) >= wall - 1e-6)
+                        && is_open_link_clear(shape, &walls, cur_pos, inward_pt, wall, r, entry, cleared_radius)
+                        && is_open_link_clear(shape, &walls, inward_pt, start, wall, r, entry, cleared_radius)
                     {
                         b.cut_to(inward_pt, z)?;
                         b.cut_to(start, z)?;
                     } else {
-                        b.return_to(start)?;
-                        b.plunge_to(z)?;
+                        let inward_pt2 = mid + dir_to_entry * (stepover * 1.5);
+                        if walls.iter().all(|w| w.dist(inward_pt2) >= wall - 1e-6)
+                            && is_open_link_clear(shape, &walls, cur_pos, inward_pt2, wall, r, entry, cleared_radius)
+                            && is_open_link_clear(shape, &walls, inward_pt2, start, wall, r, entry, cleared_radius)
+                        {
+                            b.cut_to(inward_pt2, z)?;
+                            b.cut_to(start, z)?;
+                        } else {
+                            b.return_to(start)?;
+                            b.plunge_to(z)?;
+                        }
                     }
                 }
             }
 
             b.cut_piece(&arc, z, z)?;
             cur_pos = arc.end();
+            cleared_radius = cleared_radius.max(pass_radius);
         }
 
         // Perimeter finish pass along closed walls
@@ -654,7 +688,7 @@ pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &C
                 continue;
             }
             let start = off[0].start();
-            if crate::ops::link_is_clear(shape, cur_pos, start, wall, r) {
+            if is_open_link_clear(shape, &walls, cur_pos, start, wall, r, entry, cleared_radius) {
                 b.cut_to(start, z)?;
             } else {
                 b.return_to(start)?;

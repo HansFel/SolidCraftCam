@@ -30,7 +30,7 @@ pub struct Milling {
     start: Option<[f64; 3]>,
     /// Facing: where the tool goes down before the cut (model coordinates): a picked sketch
     /// point in the air beside the area, so it plunges outside the material and feeds in flat.
-    entry: Option<[f64; 3]>,
+    pub(crate) entry: Option<[f64; 3]>,
     /// The library tool chosen: copied into the design (with its cutting data) when the job runs.
     library_tool: Option<Tool>,
     /// The setup's material group; None keeps the setup's own.
@@ -38,8 +38,8 @@ pub struct Milling {
     /// An edited step's stored geometry (`{"geometry": …}`) and start point, used while nothing
     /// new is picked.
     kept: Value,
-    kept_start: Option<[f64; 3]>,
-    kept_entry: Option<[f64; 3]>,
+    pub(crate) kept_start: Option<[f64; 3]>,
+    pub(crate) kept_entry: Option<[f64; 3]>,
     /// The last final-depth pick taken into the field; a new pick sets the field once.
     bottom_pick: Option<[f64; 3]>,
     /// The same for the start depth.
@@ -96,6 +96,10 @@ const KIND_NAMES: &[(&str, &str)] = &[
 pub(crate) const PLASMA: usize = 10;
 pub(crate) const TROCHOID_SLOT: usize = 11;
 pub(crate) const ADAPTIVE: usize = 12;
+
+pub(crate) fn kind_title(kind: usize) -> &'static str {
+    KIND_NAMES.get(kind).map_or("cmd.cam.job.create", |(_, name)| *name)
+}
 
 /// Lead strategies: the kinds `cam.op.contour` takes.
 const LEADS: [&str; 4] = ["direct", "arc", "tangent", "perpendicular"];
@@ -363,11 +367,11 @@ impl Milling {
         let mut form = Self::new(app);
         let (kind, cut, rpm) = match op {
             CamOperation::Contour { cut, spindle_rpm, .. } => (0, cut, spindle_rpm),
-            CamOperation::Pocket { params, cut, spindle_rpm, .. } if params.adaptive => (11, cut, spindle_rpm),
+            CamOperation::Pocket { params, cut, spindle_rpm, .. } if params.adaptive => (ADAPTIVE, cut, spindle_rpm),
             CamOperation::Pocket { cut, spindle_rpm, .. } => (1, cut, spindle_rpm),
             CamOperation::Drill { cut, spindle_rpm, .. } => (2, cut, spindle_rpm),
             CamOperation::Face { cut, spindle_rpm, .. } => (3, cut, spindle_rpm),
-            CamOperation::Slot { params, cut, spindle_rpm, .. } if params.trochoidal => (10, cut, spindle_rpm),
+            CamOperation::Slot { params, cut, spindle_rpm, .. } if params.trochoidal => (TROCHOID_SLOT, cut, spindle_rpm),
             CamOperation::Slot { cut, spindle_rpm, .. } => (4, cut, spindle_rpm),
             CamOperation::Chamfer { cut, spindle_rpm, .. } => (5, cut, spindle_rpm),
             CamOperation::Engrave { cut, spindle_rpm, .. } => (6, cut, spindle_rpm),
@@ -561,9 +565,6 @@ impl Milling {
         if let CamOperation::Contour { params, .. } | CamOperation::Plasma { params, .. } = op {
             form.kept_start = params.start;
         }
-        if let CamOperation::Face { params, .. } = op {
-            form.kept_entry = params.entry;
-        }
         if let CamOperation::Pocket { params, .. } = op {
             form.kept_entry = params.entry;
         }
@@ -649,6 +650,10 @@ impl Milling {
                 *field = value.to_string();
             }
         }
+    }
+
+    pub(crate) fn is_editing(&self) -> bool {
+        self.editing
     }
 
     pub fn params(&self) -> Result<Value, String> {
@@ -738,8 +743,8 @@ impl Milling {
         if let (true, Some(start)) = (self.outlined(), self.start) {
             p["start"] = json!(start);
         }
-        // Facing enters at picked point; adaptive clearing enters sideways through opening.
-        if let (3 | ADAPTIVE, Some(entry)) = (self.kind, self.entry) {
+        // Adaptive clearing enters sideways through opening.
+        if let (ADAPTIVE, Some(entry)) = (self.kind, self.entry) {
             p["entry"] = json!(entry);
         }
         if self.outlined() {
@@ -1210,12 +1215,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
-    if form.kind == ADAPTIVE || form.kind == 3 {
-        let (hint, set) = if form.kind == ADAPTIVE {
-            ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set")
-        } else {
-            ("ui.cam.entry_hint", "ui.cam.entry_set")
-        };
+    if form.kind == ADAPTIVE {
+        let (hint, set) = ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set");
         let entry_label = if form.entry.is_some() { tr(set) } else { tr(hint) };
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(entry_label).wrap());
@@ -1301,7 +1302,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     let picked = geometry(app, inputs, form.at_holes());
     form.geometry = if picked.is_null() { form.kept.clone() } else { picked };
     form.start = start(inputs).or(form.kept_start);
-    form.entry = if form.kind == ADAPTIVE || form.kind == 3 { entry_point(app, inputs).or(form.kept_entry) } else { None };
+    form.entry = if form.kind == ADAPTIVE { entry_point(app, inputs).or(form.kept_entry) } else { None };
     // A picked face, edge or corner gives the final depth; the field stays free to change.
     let depth = match crate::selection::items(inputs, 2).first() {
         Some(Sel::Vertex { point, .. } | Sel::Edge { point, .. } | Sel::Face { point, .. }) => Some(*point),

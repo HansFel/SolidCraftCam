@@ -258,7 +258,7 @@ pub fn trochoid_channel(paths: &[OpenPath], tool: &Tool, params: &TrochoidParams
         }
     }
 
-    let path = Toolpath { moves: b.into_moves(), cycles: Vec::new() };
+    let path = Toolpath { moves: b.into_moves(), cycles: Vec::new(), comp: Vec::new() };
     verify(&path, &cut.heights)?;
     Ok(path)
 }
