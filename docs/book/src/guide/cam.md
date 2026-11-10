@@ -113,6 +113,11 @@ another setup that takes it, skipped or removed.
 Wall and floor stock leave material for a finishing step: rough with stock left, then finish
 with a second step at 0.
 
+**Text on the model** (embossed or engraved letters) is many faces. Pick one letter's top (or,
+for engraved text, one letter's floor) and press **All faces in this plane**: every flat face of
+the body in that plane, facing the same way, is picked with it, and a click takes one out again.
+Text still in a sketch is picked whole by clicking one letter.
+
 **Radius compensation** decides who moves the tool off a contour by its radius. **In the CAM**
 (the default) the program is the tool centre's path. **On the control (G41/G42)** the program
 is the contour itself and the control adds the radius from its tool table, so a reground cutter
@@ -121,7 +126,9 @@ wear only** writes the centre path and the tool table holds just the difference 
 and nominal diameter. With the control compensating, each depth pass is entered and left on a
 straight line square to the contour, with no ramp and no tabs, and a corner or arc tighter than
 the tool, or contours closer together than it, are refused before anything is written. GRBL
-has no compensation. The setup sheet says what goes into the tool table.
+has no compensation. The setup sheet says what goes into the tool table. The programs were run
+through LinuxCNC 2.9's interpreter with tool tables above, at and below the nominal diameter and
+taken without an error; still try the first ones in the control's test run.
 
 ## Holes
 

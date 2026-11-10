@@ -668,8 +668,9 @@ impl CamGeometry {
                     return Err(DocError::Invalid(format!("an operation needs 1 to {MAX_REGIONS} faces")));
                 }
                 for f in faces {
-                    if f.body.is_empty() || f.body.len() > 128 || f.name.len() > 128 {
-                        return Err(DocError::Invalid("each face needs a body, and a name of at most 128 characters".into()));
+                    // A face's persistent name lists its neighbours: a letter's face passes 128.
+                    if f.body.is_empty() || f.body.len() > 128 || f.name.len() > crate::persistent_name::MAX_NAME_LEN {
+                        return Err(DocError::Invalid("each face needs a body of at most 128 characters, and a name of at most 1 MiB".into()));
                     }
                     if f.at.iter().chain(f.contour_at.iter().flatten()).any(|x| !x.is_finite() || x.abs() > 1.0e6) {
                         return Err(DocError::Invalid("face point must be finite and within 1e6 mm".into()));

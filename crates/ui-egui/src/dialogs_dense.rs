@@ -1422,6 +1422,54 @@ mod tests {
     }
 
     #[test]
+    fn cam_form_takes_every_letter_of_a_text_on_the_model_from_one() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        let mut text_sketch = 0;
+        for (id, p) in [
+            ("sketch.create", json!({"plane": "XY"})),
+            ("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [60, 30]})),
+            ("sketch.finish", json!({})),
+            ("solid.extrude", json!({"distance": 5, "operation": "new", "body_name": "Plate"})),
+            ("sketch.create", json!({"plane": "XY"})),
+            ("sketch.text", json!({"text": "HI", "at": [10, 8], "height": 12})),
+            ("sketch.finish", json!({})),
+            ("solid.extrude", json!({"distance": 8, "operation": "join", "body": "Plate"})),
+            ("cam.tool.define", json!({"number": 1, "diameter": 1, "flute_length": 10})),
+            ("cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]})),
+        ] {
+            let out = h.app.run(id, p).unwrap();
+            text_sketch = out["sketch"].as_u64().unwrap_or(text_sketch);
+        }
+        // A point on one letter's top: just inside its outline, found from its profile.
+        let at = {
+            let st = h.app.session.model.state();
+            let ss = st.sketch(text_sketch).unwrap();
+            let region = &ss.profiles.first().unwrap().region;
+            let mid = region.outer.segs.first().unwrap().mid();
+            (0..16)
+                .map(|k| f64::from(k) * std::f64::consts::PI / 8.0)
+                .map(|a| mid + solidcore_record::Vec2::new(a.cos(), a.sin()) * 0.01)
+                .find(|q| region.outer.contains(*q) && !region.holes.iter().any(|hl| hl.contains(*q)))
+                .unwrap()
+        };
+        h.step(&json!({"start":"cam.op.contour"})).unwrap();
+        h.frames(2);
+        assert!(h.widget("All faces in this plane").is_none(), "offered once a face is picked");
+        let mut d = h.app.dialog.take().unwrap();
+        d.inputs[0].items.push(Sel::Face { body: "Plate".into(), index: 0, point: Vec3::new(at.x, at.y, 8.0) });
+        h.app.dialog = Some(d);
+        h.frames(2);
+        assert!(h.widget("All faces in this plane").is_some());
+        let mut d = h.app.dialog.take().unwrap();
+        crate::dialogs_milling::find_level(&mut h.app, "Top", &mut d.inputs).unwrap();
+        // H and I: both tops, nothing of the plate.
+        assert_eq!(d.inputs[0].items.len(), 2, "{:?}", d.inputs[0].items);
+        assert!(d.inputs[0].items.iter().all(|i| matches!(i, Sel::Face { point, .. } if (point.z - 8.0).abs() < 1e-9)));
+    }
+
+    #[test]
     fn cam_slot_form_takes_a_width_and_mills_around_the_rectangle() {
         let mut h = Harness::new();
         h.app.home.open = false;

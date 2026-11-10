@@ -1003,6 +1003,36 @@ fn find_chain(app: &mut SolveApp, setup: &str, inputs: &mut [SelInput]) -> Resul
     Ok(())
 }
 
+/// Adds every flat face `cam.faces.level` finds in the plane of the picked faces: all letters of
+/// an embossed or engraved text from one of them.
+pub(crate) fn find_level(app: &mut SolveApp, setup: &str, inputs: &mut [SelInput]) -> Result<(), String> {
+    let faces: Vec<Value> = crate::selection::items(inputs, 0)
+        .iter()
+        .filter_map(|pick| match pick {
+            Sel::Face { body, point, .. } => Some(json!({"body": body, "at": [point.x, point.y, point.z]})),
+            _ => None,
+        })
+        .collect();
+    let found = app.session.execute("cam.faces.level", &json!({"setup": setup, "faces": faces})).map_err(|e| e.to_string())?;
+    let level: Vec<Sel> = found["faces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let body = f["body"].as_str()?.to_string();
+            let index = usize::try_from(f["index"].as_u64()?).ok()?;
+            let at = f["at"].as_array()?;
+            let point = Vec3::new(at.first()?.as_f64()?, at.get(1)?.as_f64()?, at.get(2)?.as_f64()?);
+            Some(Sel::Face { body, index, point })
+        })
+        .collect();
+    // The found faces include the picked ones, at a point the engine read on each.
+    let input = inputs.get_mut(0).ok_or("no contour input")?;
+    input.items.retain(|pick| !matches!(pick, Sel::Face { .. }));
+    input.items.extend(level);
+    Ok(())
+}
+
 /// The picked start point: a corner, or the middle of an edge.
 fn start(inputs: &[SelInput]) -> Option<[f64; 3]> {
     match crate::selection::items(inputs, 1).first()? {
@@ -1190,6 +1220,15 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
                 Err(e) => form.error = Some(e),
             }
         }
+    }
+    // A text on the model is many faces: one click on a letter, then this takes them all.
+    let faces_picked = crate::selection::items(inputs, 0).iter().any(|pick| matches!(pick, Sel::Face { .. }));
+    if faces_picked
+        && !form.at_holes()
+        && ui_kit::row(ui, "", |ui| crate::cam_manual::button(ui, "ui.cam.find_level")).clicked()
+        && let Err(e) = find_level(app, &form.setup, inputs)
+    {
+        form.error = Some(e);
     }
     if form.kind < 2 || form.kind == 7 {
         let directions = [tr("ui.cam.climb"), tr("ui.cam.conventional")];

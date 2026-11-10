@@ -168,6 +168,16 @@ compensated step is refused with its post. Your own posts set the words (`comp_l
 `comp_right`, `comp_off`, `{register}` for the register; all empty: none). The setup sheet says
 for each compensated step what goes into the tool table.
 
+Checked against LinuxCNC 2.9.10's interpreter (`rs274`, run as a program only): rectangles, an
+L shape, a circle and a plate with a bore, outside and inside, climb and conventional, with the
+tool table at the nominal diameter, 0.4 mm over and 0.4 mm under (wear: 0, +0.4 and -0.4). Every
+program was taken without an error, and at the nominal diameter the moves it makes lie on the
+path the CAM shows to within 0.005 mm. One difference: on the entry line LinuxCNC heads straight
+for the corner of the offset entry line and the first offset contour piece, so the tool reaches
+the contour's offset a little before the square entry point the preview shows; that corner is
+on the waste side, a radius off the contour. Note for your own tests: `rs274` without an INI
+file reads the tool table in inches.
+
 ## Start and final depth from the model
 
 **Start depth Z** is where cutting starts. It begins at the top of the setup's stock; when an
@@ -544,6 +554,11 @@ a name another setup has is refused). `cam.setup` also takes picks on the model:
 `{"kind": "box", "width", "depth", "height"}` or `{"kind": "cylinder", "diameter", "height"}`).
 `cam.edges.chain` (`setup`, `edges: [{body, at}]`) suggests the chain through picked edges:
 `edges: [{body, at, index}]` in order and `closed`; it changes nothing.
+`cam.faces.level` (`setup`, `faces: [{body, at}]`) finds every flat face of the picked faces'
+bodies in the same plane and facing the same way, such as all letters of embossed or engraved
+text from one of them: `faces: [{body, name, at, index}]`, the picked ones first, each with a
+point inside it, ready to pass as `faces` to a step; it changes nothing. In the milling form it
+is **All faces in this plane**.
 `cam.op.face` faces a picked face's outline (`faces` or `edges`), an `outer` rectangle or the
 stock with `stepover` (default 70 % of the diameter), `overrun` (default 2 mm), `bottom` (the
 finished height, default part zero) and `allowance` (the material above it; without it, `top`

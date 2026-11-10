@@ -412,6 +412,20 @@ pub struct ChainResult {
     pub closed: bool,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct LevelParams {
+    pub setup: String,
+    /// Picked flat faces, `{body, at}`.
+    pub faces: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LevelResult {
+    /// The faces in the picked faces' planes, `{body, name, at, index}`, picked ones first.
+    pub faces: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ToolResult {
     pub tool: serde_json::Value,

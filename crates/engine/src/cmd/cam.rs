@@ -190,6 +190,16 @@ pub static COMMANDS: &[CommandSpec] = &[
             "setup; edges: [{body, at}] (picked edges of one body) → edges: [{body, at, index}], the edges joined to them end to end \
              in their plane (square to the tool axis for one straight edge square to it), in order; closed: whether the chain comes round",
         ),
+    CommandSpec::new("cam.faces.level", "Find Faces in Plane", crate::checked!("cam.faces.level", level_cmd))
+        .contract(&crate::schema::TypedContract::<crate::schema::cam::LevelParams>::new())
+        .output(crate::schema::output_schema_for::<crate::schema::cam::LevelResult>)
+        .icon("cut")
+        .noundo()
+        .params(
+            "setup; faces: [{body, at}] (picked flat faces) → faces: [{body, name, at, index}], every flat face of the picked faces' \
+             bodies in the same plane and facing the same way (the letters of embossed or engraved text, the floors of pockets cut \
+             to one depth), at a point inside each",
+        ),
     CommandSpec::new("cam.list", "List CAM", crate::checked!("cam.list", list_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::ListParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::ListResult>).icon("list").noundo().params("→ tools, machines, setups (with operations) and saved posts"),
 ];
 
@@ -2338,6 +2348,77 @@ fn chain_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"edges": edges, "closed": closed}))
 }
 
+/// `cam.faces.level`: every flat face in the plane of the picked ones, for the form to show as
+/// picked (the letters of a text are one click, not one each).
+fn level_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "cam.faces.level";
+    if str_(p, "setup").and_then(|n| s.doc.cam.setup(n.trim())).is_none() {
+        return Err(bad(cmd, "`setup` must name a setup (cam.setup first)"));
+    }
+    let picks = p
+        .get("faces")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty() && a.len() <= MAX_REGIONS_PICKED)
+        .ok_or_else(|| bad(cmd, "`faces` needs 1 to 256 picked faces"))?;
+    let mut found: Vec<(String, usize, Vec3)> = Vec::new();
+    for v in picks {
+        let (body, at) = pick_param(cmd, v, "faces")?;
+        for (index, inside) in level_faces(s, &body, at).map_err(|e| bad(cmd, e))? {
+            if !found.iter().any(|(b, i, _)| *b == body && *i == index) {
+                found.push((body.clone(), index, inside));
+            }
+        }
+    }
+    let state = s.model.state();
+    let faces: Vec<Value> = found
+        .iter()
+        .map(|(body, index, at)| {
+            let name = state.body(body).and_then(|b| solidcraft_doc::naming::face_names(b).get(*index).cloned()).unwrap_or_default();
+            json!({"body": body, "name": name, "at": [at.x, at.y, at.z], "index": index})
+        })
+        .collect();
+    Ok(json!({"faces": faces}))
+}
+
+/// The flat faces of `body_name` in the plane of the one `at` is on and facing its way, each
+/// with a point inside it (off its holes), the picked face first.
+fn level_faces(s: &Session, body_name: &str, at: Vec3) -> std::result::Result<Vec<(usize, Vec3)>, String> {
+    let picked = face_index_at(s, body_name, at).map_err(|_| "the picked point is on no flat face".to_string())?;
+    let state = s.model.state();
+    let body = state.body(body_name).ok_or_else(|| format!("there is no body `{body_name}`"))?;
+    let tol = (body.body.size() * 1e-5).max(1e-5);
+    let plane = body.body.planar_face(picked).ok_or("the picked face is not flat")?;
+    let normal = plane.normal().normalized().ok_or("the picked face has no normal")?;
+    let origin = plane.to_world(Vec2::new(0.0, 0.0));
+    let mut out = vec![(picked, at)];
+    for index in 0..body.body.face_count().min(20_000) {
+        if index == picked {
+            continue;
+        }
+        let Some(other) = body.body.planar_face(index) else { continue };
+        let same_way = other.normal().normalized().is_some_and(|n| n.dot(normal) > 1.0 - 1e-9);
+        if !same_way || (other.to_world(Vec2::new(0.0, 0.0)) - origin).dot(normal).abs() > tol {
+            continue;
+        }
+        let Ok(resolved) = resolve_face_indices(&state, &other, LinkKind::Project, body_name, &[index]) else { continue };
+        let Ok(region) = outline(&resolved.geom) else { continue };
+        if let Some(inside) = point_inside(&region, (body.body.size() * 1e-4).clamp(1e-4, 0.01)) {
+            out.push((index, other.to_world(inside)));
+        }
+    }
+    Ok(out)
+}
+
+/// A point of `region` a little way in from the middle of one of its outer loop's pieces, off
+/// its holes; None for a region too thin to hold one.
+fn point_inside(region: &Region2, step: f64) -> Option<Vec2> {
+    let inside = |q: Vec2| region.outer.contains(q) && !region.holes.iter().any(|h| h.contains(q));
+    region.outer.segs.iter().take(1_000).find_map(|seg| {
+        let mid = seg.mid();
+        (0..16).map(|k| f64::from(k) * std::f64::consts::PI / 8.0).map(|a| mid + Vec2::new(a.cos(), a.sin()) * step).find(|q| inside(*q))
+    })
+}
+
 /// Most edges a chain suggestion starts from.
 const MAX_REGIONS_PICKED: usize = 256;
 
@@ -3947,6 +4028,47 @@ mod tests {
         run(&mut s, "cam.setup", json!({"name": "Top"}));
         let bad = json!({"setup": "Top", "name": "C", "tool": 1, "bottom": -3, "edges": [{"body": "None", "at": [0, 0, 0]}]});
         assert!(s.execute("cam.op.contour", &bad).is_err());
+    }
+
+    /// Text standing on a plate is many faces: one letter's top finds the other letters' tops,
+    /// not the plate's top (another plane) or the bottom (facing the other way), and they cut.
+    #[test]
+    fn one_letter_of_a_text_finds_the_faces_of_all_its_letters() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [60, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 5, "operation": "new", "body_name": "Plate"}));
+        let sk = run(&mut s, "sketch.create", json!({"plane": "XY"}))["sketch"].as_u64().unwrap();
+        run(&mut s, "sketch.text", json!({"text": "OB", "at": [10, 8], "height": 12}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "join", "body": "Plate"}));
+        // A point on the O's stroke, from its profile.
+        let on_o = {
+            let st = s.model.state();
+            let ss = st.sketch(sk).unwrap();
+            let letters = solidcraft_sketch::without_text_counters(&ss.sketch, ss.profiles.clone());
+            let left = |p: &&solidcraft_sketch::Profile| p.region.outer.segs.iter().map(|g| g.mid().x).fold(f64::INFINITY, f64::min);
+            let o = letters.iter().min_by(|a, b| left(a).total_cmp(&left(b))).unwrap();
+            point_inside(&o.region, 0.01).unwrap()
+        };
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 1, "flute_length": 10, "feed": 300, "plunge_feed": 100, "stepdown": 0.5}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        let found = run(&mut s, "cam.faces.level", json!({"setup": "Top", "faces": [{"body": "Plate", "at": [on_o.x, on_o.y, 8.0]}]}));
+        let faces = found["faces"].as_array().unwrap();
+        // O and B: two letter tops, each a point on its own top at Z 8.
+        assert_eq!(faces.len(), 2, "{found}");
+        assert!(faces.iter().all(|f| (f["at"][2].as_f64().unwrap() - 8.0).abs() < 1e-9), "{found}");
+        // Taken as the contour's faces, both letters are cut round.
+        let picked: Vec<Value> = faces.iter().map(|f| json!({"body": f["body"], "name": f["name"], "at": f["at"]})).collect();
+        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Letters", "tool": 1, "bottom": -3, "faces": picked}));
+        let posted = run(&mut s, "cam.post", json!({"setup": "Top"}));
+        assert!(posted["readback"]["within"].as_bool().unwrap(), "{posted}");
+        let xs = gcode_x_words(posted["gcode"].as_str().unwrap());
+        assert!(xs.iter().any(|x| *x > 1900), "the B is cut too: {xs:?}");
+        // A point on no flat face is refused.
+        let off = s.execute("cam.faces.level", &json!({"setup": "Top", "faces": [{"body": "Plate", "at": [30.0, 15.0, 2.5]}]}));
+        assert!(off.unwrap_err().to_string().contains("no flat face"));
     }
 
     #[test]

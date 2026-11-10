@@ -39,6 +39,7 @@ pub(crate) const TIPS: &[(&str, &str)] = &[
     ("ui.cam.extend_end", "ui.cam.tip.extend"),
     ("ui.cam.extend_start", "ui.cam.tip.extend"),
     ("ui.cam.feed", "ui.cam.tip.feed"),
+    ("ui.cam.find_level", "ui.cam.tip.find_level"),
     ("ui.cam.finish_z", "ui.cam.tip.finish_z"),
     ("ui.cam.flip_x", "ui.cam.tip.flip"),
     ("ui.cam.flip_z", "ui.cam.tip.flip"),
@@ -129,6 +130,15 @@ pub(crate) fn with_tips<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) ->
 /// A checkbox (which has no row label) with its explanation on hover.
 pub(crate) fn checkbox(ui: &mut egui::Ui, label: &str, value: &mut bool) -> egui::Response {
     let response = ui_kit::checkbox(ui, tr(label), value);
+    match TIPS.iter().find(|(l, _)| *l == label) {
+        Some((_, tip)) => response.backing_on_hover_text(tr(tip)),
+        None => response,
+    }
+}
+
+/// A small button (which has no row label) with its explanation on hover.
+pub(crate) fn button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let response = ui_kit::button(ui, tr(label), ui_kit::Button::Small);
     match TIPS.iter().find(|(l, _)| *l == label) {
         Some((_, tip)) => response.backing_on_hover_text(tr(tip)),
         None => response,
