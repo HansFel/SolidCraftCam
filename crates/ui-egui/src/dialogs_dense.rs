@@ -1979,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn cam_pocket_form_enters_at_a_picked_point_and_gives_up_the_direction() {
+    fn cam_adaptive_form_enters_at_a_picked_point_and_gives_up_the_direction() {
         let mut h = Harness::new();
         h.app.home.open = false;
         h.call("ui.resize", json!({"width":1400,"height":1100}));
@@ -1989,7 +1989,7 @@ mod tests {
         h.app.run("sketch.point", json!({"point": [16, 5], "id": "enter"})).unwrap();
         let sketch = h.app.session.active_sketch.unwrap();
         h.app.run("sketch.finish", json!({})).unwrap();
-        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.step(&json!({"start":"cam.op.adaptive"})).unwrap();
         h.frames(2);
         let mut d = h.app.dialog.take().unwrap();
         d.active = 4;
@@ -1997,14 +1997,26 @@ mod tests {
         assert_eq!(d.inputs[4].items.len(), 1);
         h.app.dialog = Some(d);
         h.frames(2);
-        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the pocket form") };
+        let Some(Kind::Milling(form)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("the adaptive form") };
         // The entry travels with the parameters, and the way each pass feeds follows from
         // it: every pass climbs, so the form stops asking for a direction.
         let p = form.params().unwrap();
         assert_eq!(p["entry"].as_array().map(|v| (v[0].as_f64(), v[1].as_f64())), Some((Some(16.0), Some(5.0))), "{p}");
         assert_eq!(p["climb"].as_bool(), Some(true), "{p}");
+        assert_eq!(p["adaptive"].as_bool(), Some(true), "{p}");
         assert!(h.widget("Entry point").is_some());
         assert!(h.widget("Direction").is_none(), "the open side fixes the direction");
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.dialog.is_none());
+        assert_eq!(h.app.session.doc.cam.setups[0].operations.len(), 1);
+        let op = &h.app.session.doc.cam.setups[0].operations[0];
+        if let solidcraft_engine::doc::cam::CamOperation::Pocket { params, .. } = op {
+            assert!(params.adaptive, "must be adaptive");
+            assert_eq!(params.entry, Some([16.0, 5.0, 0.0]), "entry point must be saved with operation");
+        } else {
+            panic!("expected pocket operation");
+        }
     }
 
     /// The Entry point pick reaches the form only if the viewport offers it a hit: a sketch

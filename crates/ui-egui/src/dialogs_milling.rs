@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 #[derive(Clone, Debug)]
 pub struct Milling {
-    kind: usize,
+    pub(crate) kind: usize,
     setup: String,
     name: String,
     values: Vec<String>,
@@ -93,9 +93,9 @@ const KIND_NAMES: &[(&str, &str)] = &[
 ];
 
 /// The plasma cut's place in [`KIND_NAMES`].
-const PLASMA: usize = 10;
-const TROCHOID_SLOT: usize = 11;
-const ADAPTIVE: usize = 12;
+pub(crate) const PLASMA: usize = 10;
+pub(crate) const TROCHOID_SLOT: usize = 11;
+pub(crate) const ADAPTIVE: usize = 12;
 
 /// Lead strategies: the kinds `cam.op.contour` takes.
 const LEADS: [&str; 4] = ["direct", "arc", "tangent", "perpendicular"];
@@ -604,10 +604,10 @@ impl Milling {
             "cam.op.plasma" => (PLASMA, "ui.cam.plasma"),
             _ => (1, "ui.cam.pocket"),
         };
-        let mut form = Self { kind, ..Self::new(app) };
+        let form = Self::new(app);
+        let mut form = Self { kind, name: free_name(app, &form.setup, app.tr(name)), adaptive: kind == ADAPTIVE, ..form };
         // A plasma cut goes into a plasma setup, the rest into a milling setup.
         form.fitting_setup(app);
-        form.name = free_name(app, &form.setup, app.tr(name));
         if form.plasma() {
             form.take_torch(app);
             form.material = None;
@@ -738,9 +738,8 @@ impl Milling {
         if let (true, Some(start)) = (self.outlined(), self.start) {
             p["start"] = json!(start);
         }
-        // Facing enters at the picked point: down in the air, then into the cut horizontally;
-        // a pocket picks an opening in its wall and is entered through it, pass by pass.
-        if let (3 | 1 | 11, Some(entry)) = (self.kind, self.entry) {
+        // Facing enters at picked point; adaptive clearing enters sideways through opening.
+        if let (3 | ADAPTIVE, Some(entry)) = (self.kind, self.entry) {
             p["entry"] = json!(entry);
         }
         if self.outlined() {
@@ -825,8 +824,8 @@ impl Milling {
                 p["slot_width"] = json!(diameter * 1.5);
             }
         }
-        if matches!(self.kind, 1 | ADAPTIVE) {
-            p["adaptive"] = json!(self.kind == ADAPTIVE || self.adaptive);
+        if self.kind == ADAPTIVE {
+            p["adaptive"] = json!(true);
         }
         if self.kind < 2 || self.kind == ADAPTIVE {
             p["climb"] = json!(self.climb);
@@ -1158,10 +1157,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         }
     }
     if form.kind == 1 {
-        let strategies = [tr("ui.cam.strategy_concentric"), tr("ui.cam.strategy_adaptive")];
-        let mut strategy = usize::from(form.adaptive);
-        ui_kit::choice_row(ui, tr("ui.cam.strategy"), "cam-strategy", &mut strategy, &strategies);
-        form.adaptive = strategy == 1;
+        form.adaptive = false;
+    } else if form.kind == ADAPTIVE {
+        form.adaptive = true;
     }
     if form.kind == 3 && was != 3 {
         // Switched to facing: down to part zero, taking off what the stock has above it.
@@ -1212,10 +1210,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         });
     }
-    if matches!(form.kind, 1 | 3 | ADAPTIVE) {
-        // Where the facing goes down: at the near end of a lane until a point is picked. A
-        // pocket stays closed until a point beside an opening makes it an open one.
-        let (hint, set) = if matches!(form.kind, 1 | ADAPTIVE) {
+    if form.kind == ADAPTIVE || form.kind == 3 {
+        let (hint, set) = if form.kind == ADAPTIVE {
             ("ui.cam.pocket_entry_hint", "ui.cam.pocket_entry_set")
         } else {
             ("ui.cam.entry_hint", "ui.cam.entry_set")
@@ -1230,6 +1226,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
                 }
             }
         });
+    } else if let Some(input) = inputs.get_mut(4) {
+        input.items.clear();
     }
     // Where the tool rides and which way it turns, right with the contours they apply to.
     if form.outlined() {
@@ -1290,7 +1288,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
         }
     }
-    if matches!(form.kind, 1 | ADAPTIVE) && form.entry.is_some() {
+    if form.kind == ADAPTIVE && form.entry.is_some() {
         // An open pocket runs every pass along the opening, so all passes feed the
         // same way and there is no direction left to choose.
         form.climb = true;
@@ -1303,7 +1301,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     let picked = geometry(app, inputs, form.at_holes());
     form.geometry = if picked.is_null() { form.kept.clone() } else { picked };
     form.start = start(inputs).or(form.kept_start);
-    form.entry = entry_point(app, inputs).or(form.kept_entry);
+    form.entry = if form.kind == ADAPTIVE || form.kind == 3 { entry_point(app, inputs).or(form.kept_entry) } else { None };
     // A picked face, edge or corner gives the final depth; the field stays free to change.
     let depth = match crate::selection::items(inputs, 2).first() {
         Some(Sel::Vertex { point, .. } | Sel::Edge { point, .. } | Sel::Face { point, .. }) => Some(*point),

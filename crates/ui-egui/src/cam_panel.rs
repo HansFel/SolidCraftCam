@@ -1117,9 +1117,11 @@ pub(crate) fn export(app: &mut SolveApp, setup: &str) -> Result<(), String> {
 fn op_kind(op: &CamOperation) -> &'static str {
     match op {
         CamOperation::Contour { .. } => "cmd.cam.op.contour",
+        CamOperation::Pocket { params, .. } if params.adaptive => "cmd.cam.op.adaptive",
         CamOperation::Pocket { .. } => "cmd.cam.op.pocket",
         CamOperation::Drill { .. } => "cmd.cam.op.drill",
         CamOperation::Face { .. } => "cmd.cam.op.face",
+        CamOperation::Slot { params, .. } if params.trochoidal => "cmd.cam.op.trochoid_slot",
         CamOperation::Slot { .. } => "cmd.cam.op.slot",
         CamOperation::Chamfer { .. } => "cmd.cam.op.chamfer",
         CamOperation::Engrave { .. } => "cmd.cam.op.engrave",

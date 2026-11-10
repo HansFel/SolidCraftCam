@@ -113,6 +113,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.adaptive", "Adaptive Clearing", crate::checked!("cam.op.adaptive", adaptive_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_pocket").params(
         "setup; name; tool (number); sketch?: id or name, with profiles?; faces?; edges?; or outer/regions; holes?; \
          stepover? (radial engagement, default half the tool diameter); climb?; stock_to_leave? (walls); floor_stock? (floor); tolerance?; ramp_angle?: deg; \
+         entry?: [x,y,z] a point in air beside an opening in the wall, or entry_at?: {sketch, point}; \
          clearance?; retract?; top?; bottom; stepdown?; feed?; plunge_feed?; spindle_rpm?; coolant?",
     ),
     CommandSpec::new("cam.op.slot", "Slot", crate::checked!("cam.op.slot", slot_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_slot").params(
@@ -3574,7 +3575,7 @@ mod tests {
 
     #[test]
     fn guided_linuxcnc_jobs_preview_save_roundtrip_and_undo() {
-        for kind in ["contour", "pocket", "drill"] {
+        for kind in ["contour", "pocket", "drill", "adaptive"] {
             let mut s = Session { param_check: crate::schema::ParamCheck::Strict, ..Default::default() };
             let before = serde_json::to_value(&s.doc).unwrap();
             let preview = run(&mut s, "cam.job.preview", guided(kind));
@@ -3592,6 +3593,28 @@ mod tests {
             assert!(s.doc.cam.is_empty());
             run(&mut s, "edit.redo", json!({}));
             assert_eq!(s.doc.cam.setups.len(), 1);
+        }
+    }
+
+    #[test]
+    fn guided_adaptive_clearing_with_entry_point_forwards_entry_and_saves() {
+        let mut s = Session { param_check: crate::schema::ParamCheck::Strict, ..Default::default() };
+        let mut job = guided("adaptive");
+        job["x"] = json!(0);
+        job["y"] = json!(0);
+        job["width"] = json!(20);
+        job["height"] = json!(10);
+        job["entry"] = json!([-12.0, -2.0, 0.0]);
+        let preview = run(&mut s, "cam.job.preview", job.clone());
+        assert!(preview["points"].as_array().unwrap().len() > 2);
+        let _saved = run(&mut s, "cam.job.create", job);
+        assert_eq!(s.doc.cam.setups.len(), 1);
+        let op = &s.doc.cam.setups[0].operations[0];
+        if let solidcraft_doc::cam::CamOperation::Pocket { params, .. } = op {
+            assert!(params.adaptive, "operation must be adaptive");
+            assert_eq!(params.entry, Some([-12.0, -2.0, 0.0]), "entry point must be preserved");
+        } else {
+            panic!("expected pocket operation");
         }
     }
 

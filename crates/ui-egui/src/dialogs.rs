@@ -3061,94 +3061,100 @@ pub(crate) fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, n
     let mut hovered: Option<(usize, Sel)> = None;
     let shell_count = d.shell_faces(s).map(|faces| faces.len());
     for (i, inp) in d.inputs.iter().enumerate().skip(range.start).take(range.end.saturating_sub(range.start)) {
+        let input_enabled = match (&d.kind, i) {
+            (Kind::Milling(form), 4) => form.kind == crate::dialogs_milling::ADAPTIVE || form.kind == 3,
+            _ => true,
+        };
         let stored_reference = stored_input_reference_key(d, i).and_then(|key| d.extra.get(key)).filter(|_| inp.items.is_empty());
-        form_row(ui, inp.label, |ui| {
-            ui.horizontal(|ui| {
-                let active = i == d.active && !text_focus;
-                // A chip: "↖ Select" (outlined) while empty, "N selected" (filled) once picked.
-                let custom_axis = i == 1 && inp.items.is_empty() && stored_revolve_axis(&d.kind).is_some();
-                let filled = !inp.items.is_empty() || custom_axis || stored_reference.is_some();
-                let text = if filled {
-                    RichText::new(if stored_reference.is_some() && matches!(d.kind, Kind::Section { .. }) {
-                        crate::i18n::tr("ui.viewport_status_section_plane").into()
-                    } else if custom_axis || stored_reference.is_some() {
-                        crate::i18n::tr("dialog.custom_axis").into()
-                    } else if !inp.multi {
-                        inp.items.first().map(|item| selection_label(s, names, d, inp, item)).unwrap_or_default()
+        ui.add_enabled_ui(input_enabled, |ui| {
+            form_row(ui, inp.label, |ui| {
+                ui.horizontal(|ui| {
+                    let active = i == d.active && !text_focus;
+                    // A chip: "↖ Select" (outlined) while empty, "N selected" (filled) once picked.
+                    let custom_axis = i == 1 && inp.items.is_empty() && stored_revolve_axis(&d.kind).is_some();
+                    let filled = !inp.items.is_empty() || custom_axis || stored_reference.is_some();
+                    let text = if filled {
+                        RichText::new(if stored_reference.is_some() && matches!(d.kind, Kind::Section { .. }) {
+                            crate::i18n::tr("ui.viewport_status_section_plane").into()
+                        } else if custom_axis || stored_reference.is_some() {
+                            crate::i18n::tr("dialog.custom_axis").into()
+                        } else if !inp.multi {
+                            inp.items.first().map(|item| selection_label(s, names, d, inp, item)).unwrap_or_default()
+                        } else {
+                            let count = match &d.kind {
+                                // The milling form counts contours, not the halves of a round rim.
+                                Kind::Milling(_) => crate::dialogs_milling::pick_count(s, &inp.items),
+                                _ if i == 0 => shell_count.unwrap_or(inp.items.len()),
+                                _ => inp.items.len(),
+                            };
+                            crate::i18n::format("dialog.selected_count", &[("count", &count.to_string())])
+                        })
+                        .color(t.on_accent)
                     } else {
-                        let count = match &d.kind {
-                            // The milling form counts contours, not the halves of a round rim.
-                            Kind::Milling(_) => crate::dialogs_milling::pick_count(s, &inp.items),
-                            _ if i == 0 => shell_count.unwrap_or(inp.items.len()),
-                            _ => inp.items.len(),
-                        };
-                        crate::i18n::format("dialog.selected_count", &[("count", &count.to_string())])
-                    })
-                    .color(t.on_accent)
-                } else {
-                    RichText::new(crate::i18n::tr("dialog.select")).color(t.text)
-                };
-                let selected_text = text.text().strip_prefix("↖ ").unwrap_or_else(|| text.text());
-                let prompt = if !filled && inp.label == "Edges" { tr("Select edges") } else { selected_text };
-                let chip = crate::ui_kit::selection_field(ui, prompt, crate::ui_kit::Selection { active, filled });
-                if matches!(d.kind, Kind::Shell { .. }) && i == 0 {
-                    chip.widget_info(|| {
-                        let mut info = egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tr(inp.label));
-                        info.current_text_value = Some(prompt.to_string());
-                        info
-                    });
-                }
-                let chip_rect = chip.rect;
-                let tooltip = if let Some(reference) = stored_reference {
-                    reference.to_string()
-                } else if custom_axis {
-                    if let Some(axis) = stored_revolve_axis(&d.kind) {
-                        match axis.get("at") {
-                            // A kept edge or face of the model (one no longer found).
-                            Some(at) => format!("Custom axis\nThe edge or face at {at}\nClick to select a replacement axis"),
-                            None => format!(
-                                "Custom axis\nOrigin: {}\nDirection: {}\nClick to select a replacement axis",
-                                axis.get("origin").map(ToString::to_string).unwrap_or_default(),
-                                axis.get("dir").map(ToString::to_string).unwrap_or_default()
-                            ),
-                        }
-                    } else {
-                        hint(inp).to_string()
+                        RichText::new(crate::i18n::tr("dialog.select")).color(t.text)
+                    };
+                    let selected_text = text.text().strip_prefix("↖ ").unwrap_or_else(|| text.text());
+                    let prompt = if !filled && inp.label == "Edges" { tr("Select edges") } else { selected_text };
+                    let chip = crate::ui_kit::selection_field(ui, prompt, crate::ui_kit::Selection { active, filled });
+                    if matches!(d.kind, Kind::Shell { .. }) && i == 0 {
+                        chip.widget_info(|| {
+                            let mut info = egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tr(inp.label));
+                            info.current_text_value = Some(prompt.to_string());
+                            info
+                        });
                     }
-                } else if let Some(id) = inp.tip {
-                    crate::i18n::tr(id).to_string()
-                } else {
-                    format!("{} (click to pick into this input)", hint(inp))
-                };
-                if chip.backing_on_hover_text(tooltip).clicked() {
-                    activate = Some(i);
-                    surrender_keyboard_focus(ui);
-                }
-                if !inp.items.is_empty() || stored_reference.is_some() {
-                    let rect = egui::Rect::from_center_size(
-                        egui::pos2(chip_rect.right() - t.space_24 / 2.0, chip_rect.center().y),
-                        vec2(t.space_24, t.space_24),
-                    );
-                    let button = crate::ui_kit::icon_button_at(ui, rect, "close", "Clear the selection");
-                    crate::scenario::publish_handle(&format!("dialog:clear:{}", inp.label), button.rect.center());
-                    if button.clicked() {
-                        clear = Some(i);
+                    let chip_rect = chip.rect;
+                    let tooltip = if let Some(reference) = stored_reference {
+                        reference.to_string()
+                    } else if custom_axis {
+                        if let Some(axis) = stored_revolve_axis(&d.kind) {
+                            match axis.get("at") {
+                                // A kept edge or face of the model (one no longer found).
+                                Some(at) => format!("Custom axis\nThe edge or face at {at}\nClick to select a replacement axis"),
+                                None => format!(
+                                    "Custom axis\nOrigin: {}\nDirection: {}\nClick to select a replacement axis",
+                                    axis.get("origin").map(ToString::to_string).unwrap_or_default(),
+                                    axis.get("dir").map(ToString::to_string).unwrap_or_default()
+                                ),
+                            }
+                        } else {
+                            hint(inp).to_string()
+                        }
+                    } else if let Some(id) = inp.tip {
+                        crate::i18n::tr(id).to_string()
+                    } else {
+                        format!("{} (click to pick into this input)", hint(inp))
+                    };
+                    if chip.backing_on_hover_text(tooltip).clicked() {
+                        activate = Some(i);
                         surrender_keyboard_focus(ui);
                     }
-                    // Several picks: an arrow beside the clear button lists them, each with its
-                    // own remove button (#3683). Drawn straight into the row, which is this field's
-                    // own: a scope around it would take room and widen the dialog.
-                    if inp.multi {
-                        let open = d.listed == Some(i);
-                        let at = rect.translate(vec2(-t.space_24, 0.0));
-                        let label = crate::i18n::tr_label(if open { "Hide the picked items" } else { "Show the picked items" });
-                        let arrow = crate::ui_kit::disclosure_button_at(ui, at, open, label);
-                        crate::scenario::publish_handle(&format!("dialog:list_toggle:{}", inp.label), arrow.rect.center());
-                        if arrow.clicked() {
-                            toggle_list = Some(i);
+                    if !inp.items.is_empty() || stored_reference.is_some() {
+                        let rect = egui::Rect::from_center_size(
+                            egui::pos2(chip_rect.right() - t.space_24 / 2.0, chip_rect.center().y),
+                            vec2(t.space_24, t.space_24),
+                        );
+                        let button = crate::ui_kit::icon_button_at(ui, rect, "close", "Clear the selection");
+                        crate::scenario::publish_handle(&format!("dialog:clear:{}", inp.label), button.rect.center());
+                        if button.clicked() {
+                            clear = Some(i);
+                            surrender_keyboard_focus(ui);
+                        }
+                        // Several picks: an arrow beside the clear button lists them, each with its
+                        // own remove button (#3683). Drawn straight into the row, which is this field's
+                        // own: a scope around it would take room and widen the dialog.
+                        if inp.multi {
+                            let open = d.listed == Some(i);
+                            let at = rect.translate(vec2(-t.space_24, 0.0));
+                            let label = crate::i18n::tr_label(if open { "Hide the picked items" } else { "Show the picked items" });
+                            let arrow = crate::ui_kit::disclosure_button_at(ui, at, open, label);
+                            crate::scenario::publish_handle(&format!("dialog:list_toggle:{}", inp.label), arrow.rect.center());
+                            if arrow.clicked() {
+                                toggle_list = Some(i);
+                            }
                         }
                     }
-                }
+                });
             });
         });
         if inp.multi && d.listed == Some(i) && !inp.items.is_empty() {
@@ -3207,6 +3213,9 @@ pub(crate) fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, n
         d.active = i;
         d.awaiting_pick = true;
         d.pick_refused = None;
+    }
+    if let Kind::Milling(form) = &d.kind && form.kind != crate::dialogs_milling::ADAPTIVE && form.kind != 3 && d.active == 4 {
+        d.active = 0;
     }
     d.sync_thread(s);
 }

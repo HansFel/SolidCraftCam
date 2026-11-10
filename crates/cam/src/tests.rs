@@ -1105,7 +1105,8 @@ fn open_pocket_roughs_in_nested_offsets_and_turns_at_the_mouth() {
     }];
     let shape = Shape::from_regions(&regions, 0.01).unwrap();
     let entry = v(-20.0, 0.0);
-    let params = PocketParams { stepover: 1.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry) };
+    let params =
+        PocketParams { stepover: 1.5, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: false };
     let c = cut(0.0, -2.0, 1.0);
     let r = 0.76;
     let path = pocket(&regions, &tool(2.0 * r), &params, &c).unwrap();
@@ -3344,5 +3345,59 @@ fn adaptive_pocket_defaults_to_helical_entry_and_spiral_with_zero_ramp_angle() {
     assert!(
         helical_arcs > 0,
         "adaptive clearing must spiral down via helical entry even with ramp_angle 0, found {helical_arcs} helical descent arcs"
+    );
+}
+
+#[test]
+fn open_pocket_adaptive_clearing_enters_in_air_and_expands_wavefront() {
+    // A 20 × 10 pocket open on its left side (mouth at x = 0), entered from x = -5 in air.
+    let regions = [rect(0.0, 0.0, 20.0, 10.0)];
+    let entry = v(-5.0, 5.0);
+    let params =
+        PocketParams { stepover: 1.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: true };
+    let c = cut(0.0, -3.0, 3.0);
+    let t = tool(2.0);
+    let path = pocket(&regions, &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    // Verify no gouging into closed walls: x=20, y=0, y=10
+    let walls = [
+        Piece::Line { a: v(20.0, 0.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 10.0), b: v(20.0, 10.0) },
+        Piece::Line { a: v(0.0, 0.0), b: v(20.0, 0.0) },
+    ];
+    let pts = cutting_points(&path, 0.0);
+    assert!(!pts.is_empty());
+    for p in &pts {
+        for w in &walls {
+            assert!(w.dist(v(p.x, p.y)) >= 1.0 - 1e-4, "the disc touches a closed wall at ({}, {})", p.x, p.y);
+        }
+    }
+
+    // Verify arc moves exist (radial wavefront arcs)
+    let arc_count = path.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count();
+    assert!(arc_count >= 5, "open pocket adaptive clearing must produce expanding radial arcs, found {arc_count}");
+
+    // The plunge must be in the air at entry, no helical ramp down into material
+    let helical_arcs = path.moves.iter().filter(|m| if let Move::Arc { to, .. } = m { to.z > -3.0 + 1e-4 } else { false }).count();
+    assert_eq!(helical_arcs, 0, "open pocket entry in air must plunge directly without helical descent in stock");
+}
+
+#[test]
+fn closed_pocket_adaptive_clearing_with_entry_spirals_down_inside() {
+    // A closed 40 × 40 pocket with an entry point inside it: spirals down inside the pocket
+    let regions = [rect(0.0, 0.0, 40.0, 40.0)];
+    let t = tool(6.0);
+    let c = cut(0.0, -3.0, 3.0);
+    let entry = v(20.0, 20.0); // Inside the closed pocket
+    let params =
+        PocketParams { stepover: 2.0, climb: true, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0, entry: Some(entry), adaptive: true };
+    let path = pocket(&regions, &t, &params, &c).unwrap();
+    verify(&path, &c.heights).unwrap();
+
+    let helical_arcs = path.moves.iter().filter(|m| if let Move::Arc { to, .. } = m { to.z > -3.0 + 1e-4 } else { false }).count();
+    assert!(
+        helical_arcs > 0,
+        "closed pocket adaptive clearing must spiral down via helical entry when entry is inside, found {helical_arcs} helical descent arcs"
     );
 }

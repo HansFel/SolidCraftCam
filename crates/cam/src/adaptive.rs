@@ -12,11 +12,12 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 use solidcore_record::Vec2;
 use solidcraft_geom::prelude::*;
 
-use crate::Result;
 use crate::offset::Shape;
-use crate::ops::{Builder, PocketParams};
+use crate::ops::{Builder, Cut, PocketParams};
+use crate::path::Toolpath;
 use crate::piece::Piece;
 use crate::tool::Tool;
+use crate::{CamError, Result, invalid};
 
 /// Finds the pocket's central entry point (approximation of the Chebyshev center).
 pub(crate) fn find_chebyshev_center(shape: &Shape, rings: &[Vec<Vec<Piece>>], wall: f64) -> Vec2 {
@@ -231,7 +232,7 @@ pub(crate) fn adaptive_pocket_level(
     wall: f64,
     r: f64,
 ) -> Result<()> {
-    let center = find_chebyshev_center(shape, rings, wall);
+    let center = if let Some(entry) = params.entry.filter(|p| shape.clear(*p, wall)) { entry } else { find_chebyshev_center(shape, rings, wall) };
     let clearance_at_center = (shape.dist(center) - wall).max(0.05);
     let r_helix = (r * 0.45).min(params.stepover * 0.5).min(clearance_at_center * 0.8).clamp(0.05, 50.0);
     let start_helix = center + Vec2::new(r_helix, 0.0);
@@ -381,4 +382,357 @@ pub(crate) fn adaptive_pocket_level(
     }
 
     Ok(())
+}
+
+/// Discretizes circle `K(center, radius)` for an open pocket and extracts arc segments that remain inside `shape` or mouth air, keeping `wall` distance from closed walls.
+pub(crate) fn extract_open_arc_intervals(shape: &Shape, walls: &[Piece], entry: Vec2, radius: f64, wall: f64, lead: f64, climb: bool) -> Vec<Piece> {
+    if radius <= 1e-4 {
+        return Vec::new();
+    }
+
+    let circ = TAU * radius;
+    let n = ((circ / 0.5).ceil()).clamp(120.0, 1440.0) as usize;
+    let d_theta = TAU / n as f64;
+
+    let safety_margin = (radius * (1.0 - (d_theta * 0.5).cos()) + 0.01).max(0.01);
+    let wall_req = wall + safety_margin;
+
+    let mut is_valid = vec![false; n];
+    let mut bites = vec![false; n];
+    let mut any_valid = false;
+
+    for i in 0..n {
+        let theta = i as f64 * d_theta;
+        let pt = entry + Vec2::new(theta.cos(), theta.sin()) * radius;
+        let fits_walls = walls.iter().all(|w| w.dist(pt) >= wall_req);
+        let in_reach = shape.inside(pt, 1e-6) || shape.dist(pt) <= lead;
+        let v = fits_walls && in_reach;
+        is_valid[i] = v;
+        if v {
+            any_valid = true;
+            bites[i] = shape.inside(pt, 1e-6) || shape.dist(pt) <= wall;
+        }
+    }
+
+    if !any_valid {
+        return Vec::new();
+    }
+
+    let mut intervals: Vec<(usize, usize)> = Vec::new();
+    let mut in_interval = false;
+    let mut start_idx = 0;
+
+    for i in 0..n {
+        if is_valid[i] && !in_interval {
+            in_interval = true;
+            start_idx = i;
+        } else if !is_valid[i] && in_interval {
+            in_interval = false;
+            if i > 0 && i - 1 >= start_idx {
+                intervals.push((start_idx, i - 1));
+            }
+        }
+    }
+    if in_interval && n - 1 >= start_idx {
+        intervals.push((start_idx, n - 1));
+    }
+
+    if intervals.len() > 1 && intervals.first().is_some_and(|(s, _)| *s == 0) && intervals.last().is_some_and(|(_, e)| *e == n - 1) {
+        if let Some(last) = intervals.pop() {
+            if let Some(first) = intervals.first_mut() {
+                first.0 = last.0;
+            }
+        }
+    }
+
+    let mut pieces = Vec::new();
+    for (s_idx, e_idx) in intervals {
+        let mut bites_metal = false;
+        if e_idx >= s_idx {
+            for idx in s_idx..=e_idx {
+                if bites[idx] {
+                    bites_metal = true;
+                    break;
+                }
+            }
+        } else {
+            for idx in s_idx..n {
+                if bites[idx] {
+                    bites_metal = true;
+                    break;
+                }
+            }
+            if !bites_metal {
+                for idx in 0..=e_idx {
+                    if bites[idx] {
+                        bites_metal = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !bites_metal {
+            continue;
+        }
+
+        let span_steps = if e_idx >= s_idx { e_idx - s_idx } else { (n - s_idx) + e_idx };
+        let span_angle = span_steps as f64 * d_theta;
+        if span_angle * radius < 0.1 {
+            continue;
+        }
+
+        let theta_start = s_idx as f64 * d_theta;
+        let theta_end = theta_start + span_angle;
+
+        let (a0, sweep) = if climb { (theta_start, span_angle) } else { (theta_end, -span_angle) };
+
+        pieces.push(Piece::Arc { c: entry, r: radius, a0, sweep });
+    }
+
+    pieces
+}
+
+/// Executes full 2D adaptive clearing on an open pocket entered through `entry` in the air outside.
+pub(crate) fn adaptive_pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, tool: &Tool, r: f64, wall: f64) -> Result<Toolpath> {
+    if shape.inside(entry, r.max(1e-6)) || shape.dist(entry) < r - 1e-7 {
+        return invalid("the entry point must be in air outside the pocket, clear of at least the tool radius");
+    }
+
+    let (mut cx, mut cy) = (0.0, 0.0);
+    let mut outer_pts = 0usize;
+    for lp in shape.loops().iter().filter(|lp| !lp.is_empty()) {
+        if lp.iter().map(Piece::area_term).sum::<f64>() > 0.0 {
+            for piece in lp {
+                let p = piece.point_at(0.5);
+                cx += p.x;
+                cy += p.y;
+                outer_pts += 1;
+            }
+        }
+    }
+    if outer_pts == 0 {
+        return invalid("the pocket is too small for the tool");
+    }
+    let d = ((Vec2::new(cx / outer_pts as f64, cy / outer_pts as f64) - entry).normalized())
+        .ok_or_else(|| CamError::Invalid("the entry point sits at the pocket's centre: pick one clear outside".into()))?;
+
+    let mut walls: Vec<Piece> = Vec::new();
+    let mut opens = 0usize;
+    struct WallChain {
+        ch: Vec<Piece>,
+        closed: bool,
+    }
+    let mut wall_chains: Vec<WallChain> = Vec::new();
+
+    for lp in shape.loops() {
+        let outer = lp.iter().map(Piece::area_term).sum::<f64>() > 0.0;
+        let facing: Vec<bool> = lp
+            .iter()
+            .map(|piece| {
+                let t = piece.tangent_at(0.5);
+                outer && Vec2::new(t.y, -t.x).dot(d) < -(crate::ops::OPENING_FACE - 1e-9)
+            })
+            .collect();
+        let n = lp.len();
+        if n == 0 {
+            continue;
+        }
+        opens += facing.iter().filter(|f| **f).count();
+        for (piece, f) in lp.iter().zip(&facing) {
+            if !f {
+                walls.push(*piece);
+            }
+        }
+        if !outer {
+            wall_chains.push(WallChain { ch: lp.clone(), closed: true });
+            continue;
+        }
+        if facing.iter().all(|f| *f) {
+            wall_chains.push(WallChain { ch: lp.clone(), closed: false });
+            continue;
+        }
+        if facing.iter().all(|f| !*f) {
+            wall_chains.push(WallChain { ch: lp.clone(), closed: true });
+            continue;
+        }
+        for i in 0..n {
+            if facing[i] || !facing[(i + n - 1) % n] {
+                continue;
+            }
+            let mut ch = Vec::new();
+            for k in 0..n {
+                if facing[(i + k) % n] {
+                    break;
+                }
+                ch.push(lp[(i + k) % n]);
+            }
+            wall_chains.push(WallChain { ch, closed: false });
+        }
+    }
+
+    if opens == 0 {
+        return invalid("the entry point does not face an opening: no pass can enter the pocket through the air");
+    }
+
+    let stepover = params.stepover.clamp(1e-3, tool.diameter);
+    let lead = 0.5 * r + 0.25;
+
+    let mut d_min = f64::INFINITY;
+    let mut d_max = 0.0f64;
+    for lp in shape.loops() {
+        for piece in lp {
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let p = piece.point_at(t);
+                let dist = p.dist(entry);
+                d_min = d_min.min(dist);
+                d_max = d_max.max(dist);
+            }
+        }
+    }
+
+    let mut radius = (d_min - lead).max(0.01);
+    let mut arc_passes: Vec<Vec<Piece>> = Vec::new();
+    while radius <= d_max + stepover {
+        let arcs = extract_open_arc_intervals(shape, &walls, entry, radius, wall, lead, params.climb);
+        if !arcs.is_empty() {
+            arc_passes.push(arcs);
+        }
+        radius += stepover;
+    }
+
+    let mut b = Builder::new(cut);
+    for z in cut.levels()? {
+        b.travel_to(entry)?;
+        b.plunge_to(z)?;
+
+        let mut cur_pos = entry;
+        let mut remaining: Vec<Vec<Piece>> = arc_passes.clone();
+
+        while let Some(p_idx) = remaining.iter().position(|pass| !pass.is_empty()) {
+            let mut best_arc_idx = 0;
+            let mut best_dist = f64::INFINITY;
+            for (a_idx, arc) in remaining[p_idx].iter().enumerate() {
+                let d = cur_pos.dist(arc.start());
+                if d < best_dist {
+                    best_dist = d;
+                    best_arc_idx = a_idx;
+                }
+            }
+
+            let arc = remaining[p_idx].remove(best_arc_idx);
+            let start = arc.start();
+
+            if cur_pos.dist(start) > 1e-4 {
+                let direct_clear = crate::ops::link_is_clear(shape, cur_pos, start, wall, r);
+                if direct_clear {
+                    b.cut_to(start, z)?;
+                } else {
+                    let mid = (cur_pos + start) * 0.5;
+                    let dir_to_entry = (entry - mid).normalized().unwrap_or(Vec2::ZERO);
+                    let inward_pt = mid + dir_to_entry * (stepover * 0.75);
+                    if walls.iter().all(|w| w.dist(inward_pt) >= wall)
+                        && crate::ops::link_is_clear(shape, cur_pos, inward_pt, wall, r)
+                        && crate::ops::link_is_clear(shape, inward_pt, start, wall, r)
+                    {
+                        b.cut_to(inward_pt, z)?;
+                        b.cut_to(start, z)?;
+                    } else {
+                        b.return_to(start)?;
+                        b.plunge_to(z)?;
+                    }
+                }
+            }
+
+            b.cut_piece(&arc, z, z)?;
+            cur_pos = arc.end();
+        }
+
+        // Perimeter finish pass along closed walls
+        for wc in &wall_chains {
+            let off = crate::ops::chain_offset(&wc.ch, wall, wc.closed)?;
+            if off.is_empty() {
+                continue;
+            }
+            let start = off[0].start();
+            if crate::ops::link_is_clear(shape, cur_pos, start, wall, r) {
+                b.cut_to(start, z)?;
+            } else {
+                b.return_to(start)?;
+                b.plunge_to(z)?;
+            }
+            if wc.closed {
+                b.cut_loop(&off, z)?;
+                cur_pos = start;
+            } else {
+                for piece in &off {
+                    b.cut_piece(piece, z, z)?;
+                }
+                cur_pos = off.last().unwrap().end();
+            }
+        }
+
+        b.retract()?;
+    }
+
+    Ok(Toolpath::new(b.into_moves()))
+}
+
+/// Top-level 2D adaptive clearing pocket operation.
+///
+/// If an entry point is provided in air and the pocket has an opening allowing sideways entry,
+/// executes sideways-entry adaptive clearing with continuous radial wavefront expansion.
+/// Otherwise (e.g. closed pocket contour or no opening), executes closed-pocket adaptive clearing
+/// by spiralling down inside the closed pocket with central helical ramp entry.
+pub(crate) fn adaptive_pocket(
+    shape: &Shape,
+    params: &PocketParams,
+    cut: &Cut,
+    tool: &Tool,
+    r: f64,
+    wall: f64,
+) -> Result<Toolpath> {
+    if let Some(entry) = params.entry {
+        if !shape.inside(entry, r.max(1e-6)) && shape.dist(entry) >= r - 1e-7 {
+            if let Ok(path) = adaptive_pocket_open(shape, params, cut, entry, tool, r, wall) {
+                return Ok(path);
+            }
+        }
+    }
+    adaptive_pocket_closed(shape, params, cut, tool, r, wall)
+}
+
+/// Executes closed-pocket adaptive clearing: spirals down inside the pocket with helical entry,
+/// expands via central Archimedean spiral and radial channel wavefronts, and finishes walls.
+pub(crate) fn adaptive_pocket_closed(
+    shape: &Shape,
+    params: &PocketParams,
+    cut: &Cut,
+    tool: &Tool,
+    r: f64,
+    wall: f64,
+) -> Result<Toolpath> {
+    let mut rings: Vec<Vec<Vec<Piece>>> = Vec::new();
+    loop {
+        let ring = shape.offset(wall + params.stepover * rings.len() as f64)?;
+        if ring.is_empty() {
+            break;
+        }
+        rings.push(ring);
+        if rings.len() > crate::ops::MAX_RINGS {
+            return Err(CamError::TooLarge(format!("the pocket needs more than {} passes; use a larger stepover", crate::ops::MAX_RINGS)));
+        }
+    }
+    if rings.is_empty() {
+        return invalid("the tool does not fit the pocket");
+    }
+
+    let mut b = Builder::new(cut);
+    let mut cleared = cut.heights.top;
+    for z in cut.levels()? {
+        adaptive_pocket_level(&mut b, shape, &rings, tool, params, z, cleared, wall, r)?;
+        cleared = z;
+        b.retract()?;
+    }
+
+    Ok(Toolpath::new(b.into_moves()))
 }

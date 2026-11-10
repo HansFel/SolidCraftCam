@@ -20,7 +20,7 @@ use crate::{CamError, Result, invalid};
 /// Most depth passes of one operation.
 const MAX_LEVELS: usize = 10_000;
 /// Most offset rings of one pocket.
-const MAX_RINGS: usize = 2_000;
+pub(crate) const MAX_RINGS: usize = 2_000;
 /// Most times a ramp goes round its loop; a loop too short for that is plunged into instead.
 const MAX_RAMP_LAPS: f64 = 2000.0;
 /// Largest coordinate or height (mm).
@@ -774,6 +774,9 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
     }
     let shape = Shape::from_regions(regions, params.tolerance)?;
     let wall = r + params.stock_to_leave;
+    if params.adaptive {
+        return crate::adaptive::adaptive_pocket(&shape, params, cut, tool, r, wall);
+    }
     if let Some(at) = params.entry {
         if !params.climb {
             return invalid("an open pocket feeds every pass parallel to its open side: the passes cannot run the other way, so it is always climb");
@@ -822,12 +825,9 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
     // The depth already cut wherever this pass's rings run.
     let mut cleared = cut.heights.top;
     for z in cut.levels()? {
-        if params.adaptive {
-            crate::adaptive::adaptive_pocket_level(&mut b, &shape, &rings, tool, params, z, cleared, wall, r)?;
-        } else {
-            // Whether the tool is down in this level's cut.
-            let mut down: Option<Vec2> = None;
-            for lp in rings.iter().rev().flatten() {
+        // Whether the tool is down in this level's cut.
+        let mut down: Option<Vec2> = None;
+        for lp in rings.iter().rev().flatten() {
                 // Offset loops keep the pocket on their left, so the wall is on the right: climb.
                 let lp = if params.climb { lp.clone() } else { reversed(lp) };
                 let lp = start_near(&lp, down.unwrap_or_default());
@@ -855,7 +855,6 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
                 b.cut_to(start, z)?;
                 down = Some(start);
             }
-        }
         cleared = z;
         b.retract()?;
     }
@@ -950,7 +949,7 @@ fn split_runs(pts: &[Vec2], good: &dyn Fn(Vec2) -> bool) -> Vec<Vec<Vec2>> {
 
 /// How squarely a boundary piece has to face the entry to belong to the open side a pass
 /// enters through: its outward normal must oppose the entry direction by more than 45°.
-const OPENING_FACE: f64 = std::f64::consts::FRAC_1_SQRT_2;
+pub(crate) const OPENING_FACE: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
 /// The open pocket: `entry` is a point in the air outside the pocket, on its open side.
 /// The passes are one nested family of offsets from the closed wall, a stepover apart and
@@ -1210,7 +1209,7 @@ fn pocket_open(shape: &Shape, params: &PocketParams, cut: &Cut, entry: Vec2, r: 
 /// cut back where neighbouring offset pieces cross: what comes closer to the chain than
 /// `d` folds into the offset and goes. A closed chain joins its own ends, and the pieces
 /// come back in chain order but unclosed; an open one simply ends where it ends.
-fn chain_offset(ch: &[Piece], d: f64, closed: bool) -> Result<Vec<Piece>> {
+pub(crate) fn chain_offset(ch: &[Piece], d: f64, closed: bool) -> Result<Vec<Piece>> {
     let ad = d.abs();
     if !(ad > 1e-9) {
         return Ok(ch.to_vec());
