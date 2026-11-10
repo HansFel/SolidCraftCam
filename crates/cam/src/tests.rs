@@ -1121,6 +1121,67 @@ fn cutting_data_give_spindle_speed_and_feeds_per_material() {
 }
 
 #[test]
+fn the_load_of_a_cut_gives_chip_power_and_torque_and_thin_chips_raise_the_feed() {
+    // From half the diameter on the chip is fz; below it thinner, by 1 / (2 √(r (1 − r))).
+    close(chip_thinning(3.0, 6.0), 1.0, 1e-12);
+    close(chip_thinning(6.0, 6.0), 1.0, 1e-12);
+    close(chip_thinning(0.6, 6.0), 1.0 / 0.6, 1e-9);
+    assert_eq!(chip_thinning(1e-9, 6.0), cutting::MAX_CHIP_THINNING);
+    for bad in [(0.0, 6.0), (-1.0, 6.0), (f64::NAN, 6.0), (1.0, 0.0)] {
+        assert_eq!(chip_thinning(bad.0, bad.1), 1.0);
+    }
+    // A 6 mm three-flute end mill in aluminium: 10000 rev/min, fz 0.03 mm, 6 mm deep, 3 mm wide.
+    let mut mill = tool(6.0);
+    mill.flutes = 3;
+    let l = load(&mill, "aluminium", 10_000.0, 900.0, 6.0, 3.0).unwrap();
+    close(l.removal, 16.2, 1e-9);
+    close(l.chip, 0.03, 1e-12);
+    assert_eq!(l.thinned_feed, 900.0);
+    // kc from the mean chip fz · 2 / π after Kienzle, P = Q · kc / 60e6 / η.
+    let kc = 700.0 * (0.03 * 2.0 / PI).powf(-0.25);
+    close(l.power, 16_200.0 * kc / 60.0e6 / SPINDLE_EFFICIENCY, 1e-9);
+    assert!(l.power > 0.5 && l.power < 0.8, "{l:?}");
+    close(l.torque, l.power * 1000.0 * 60.0 / (2.0 * PI * 10_000.0), 1e-9);
+    // Twice as deep, twice the power; steel takes more than aluminium.
+    close(load(&mill, "aluminium", 10_000.0, 900.0, 12.0, 3.0).unwrap().power, 2.0 * l.power, 1e-9);
+    assert!(load(&mill, "steel", 10_000.0, 900.0, 6.0, 3.0).unwrap().power > 2.0 * l.power);
+    // A light stepover thins the chip: the feed may rise until it is fz again.
+    let light = load(&mill, "aluminium", 10_000.0, 900.0, 6.0, 0.6).unwrap();
+    close(light.chip, 0.03 * 0.6, 1e-9);
+    assert_eq!(light.thinned_feed, 1500.0);
+    assert!(light.power < l.power);
+    // A drill cuts its whole diameter; a tap, unknown materials and hostile values give nothing.
+    let drill_tool = Tool::new(2, ToolKind::Drill, 10.0, 50.0);
+    let d = load(&drill_tool, "steel", 800.0, 120.0, 0.0, 0.0).unwrap();
+    close(d.removal, PI * 25.0 * 120.0 / 1000.0, 1e-9);
+    assert!(d.power > 0.0 && d.torque > 0.0);
+    let tap = Tool { pitch: Some(1.5), ..Tool::new(3, ToolKind::Tap, 10.0, 20.0) };
+    assert_eq!(load(&tap, "steel", 300.0, 450.0, 1.0, 1.0), None);
+    assert_eq!(load(&mill, "unobtainium", 10_000.0, 900.0, 6.0, 3.0), None);
+    for (rpm, feed, ap, ae) in [(0.0, 900.0, 6.0, 3.0), (f64::NAN, 900.0, 6.0, 3.0), (1e4, f64::INFINITY, 6.0, 3.0), (1e4, 900.0, 0.0, 3.0), (1e4, 900.0, 6.0, -1.0)] {
+        assert_eq!(load(&mill, "aluminium", rpm, feed, ap, ae), None);
+    }
+    // A machine names what its spindle has: more is flagged, so are speeds beyond it.
+    let mut m = Machine::new("Fräse");
+    assert!(m.overload(10_000.0, 900.0, Some(&l)).is_empty());
+    m.spindle_power = Some(0.5);
+    m.validate().unwrap();
+    assert_eq!(m.overload(10_000.0, 900.0, Some(&l)), vec![Overload::Power { needed: l.power, have: 0.5 }]);
+    assert!(m.overload(10_000.0, 900.0, Some(&light)).is_empty());
+    assert_eq!(
+        m.overload(30_000.0, 6000.0, None),
+        vec![Overload::SpindleFast { wanted: 30_000.0, max: 24_000.0 }, Overload::Feed { wanted: 6000.0, max: 5000.0 }]
+    );
+    assert_eq!(m.overload(500.0, 100.0, None), vec![Overload::SpindleSlow { wanted: 500.0, min: 1000.0 }]);
+    let json = serde_json::to_value(&m).unwrap();
+    assert_eq!(json["spindle_power"], serde_json::json!(0.5));
+    assert!(serde_json::to_value(Machine::new("a")).unwrap().get("spindle_power").is_none());
+    for bad in [0.0, -1.0, f64::NAN, 2000.0] {
+        assert!(Machine { spindle_power: Some(bad), ..Machine::new("a") }.validate().is_err());
+    }
+}
+
+#[test]
 fn tool_kinds_keep_their_sizes_and_refuse_sizes_they_do_not_have() {
     // Every kind reads back by its key, and a file keeps the sizes it was given.
     for kind in ToolKind::ALL {

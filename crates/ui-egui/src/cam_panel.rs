@@ -538,6 +538,8 @@ struct MachineEdit {
     a: [String; 2],
     spindle: [String; 2],
     max_feed: String,
+    /// The spindle motor's rated power (kW); empty: unknown.
+    power: String,
     /// The post its programs are written with; none: the default.
     post: Option<String>,
     /// Where its programs are written on this computer; empty: asked on each export.
@@ -561,6 +563,7 @@ impl MachineEdit {
             a,
             spindle: [number(m.spindle_min), number(m.spindle_max)],
             max_feed: number(m.max_feed),
+            power: m.spindle_power.map(number).unwrap_or_default(),
             post: m.post.clone(),
             folder: String::new(),
         }
@@ -595,6 +598,7 @@ impl MachineEdit {
             spindle_min,
             spindle_max,
             max_feed: parse(&self.max_feed)?,
+            spindle_power: if plasma || self.power.trim().is_empty() { None } else { Some(parse(&self.power)?) },
             post: self.post.clone(),
         };
         machine.validate().map_err(|e| e.to_string())?;
@@ -1869,6 +1873,7 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
         let [slow, fast] = &mut edit.spindle;
         ui_kit::text_row(ui, tr("ui.cam.spindle_min"), slow, "");
         ui_kit::text_row(ui, tr("ui.cam.spindle_max"), fast, "");
+        ui_kit::text_row(ui, tr("ui.cam.spindle_power"), &mut edit.power, tr("ui.cam.spindle_power_hint"));
     }
     ui_kit::text_row(ui, tr("ui.cam.max_feed"), &mut edit.max_feed, "");
     // The default, the posts for this kind of machine, and the machine's own if it names another.

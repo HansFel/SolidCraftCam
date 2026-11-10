@@ -228,9 +228,9 @@ Before each export:
 |---|---|
 | Spindle speed n = vc · 1000 / (π · D), held to the setup's highest and the machine's range | Done |
 | Feed vf = n · z · fz, plunge feed, stepdown ap · D, stepover ae · D | Done |
-| Chip thinning for small stepover | Planned |
-| Spindle power Pc = ap · ae · vf · kc / (60 · 10⁶ · η), with kc per material group | Planned |
-| Warnings when power or speed exceed the machine | Planned |
+| Chip thinning for small stepover | Done: the thickest chip shown in the milling form, **Make up for thin chips** raises the feed until it is fz again (at most five times, never above the machine) |
+| Spindle power Pc = ap · ae · vf · kc / (60 · 10⁶ · η), with kc per material group | Done: kc after Kienzle (kc1.1, mc per group) from the mean chip, η 0.8, removal rate and torque; the milling form's **Load** line and `cam.tool.speeds` (`load`) |
+| Warnings when power or speed exceed the machine | Done: the machine's `spindle_power` (kW); the form warns in orange and `cam.tool.speeds` returns `overload` (spindle too fast or slow, feed, power) |
 
 ## Phase 3: feature recognition
 

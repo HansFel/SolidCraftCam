@@ -1352,6 +1352,44 @@ mod tests {
     }
 
     #[test]
+    fn cam_form_shows_the_cut_load_and_warns_what_the_machine_cannot_give() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        let mill = json!({"name": "Mini", "x": [0, 300], "y": [0, 200], "z": [-100, 0],
+            "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000, "spindle_power": 0.05});
+        h.app.run("cam.setup", json!({"name": "Top", "material": "aluminium", "machine": mill})).unwrap();
+        // 10000 rev/min, two flutes at 0.05 mm: 1000 mm/min, 6 mm deep, 0.6 mm sideways.
+        h.app.preferences.cam_tools = serde_json::from_value(json!([{"number": 3, "kind": "flat_endmill", "diameter": 6, "flute_length": 20,
+            "cutting": {"aluminium": {"vc": 188.4955592153876, "fz": 0.05, "ap": 1.0, "ae": 0.1}}}]))
+        .unwrap();
+        h.step(&json!({"start":"cam.op.pocket"})).unwrap();
+        h.frames(2);
+        let tool = h.app.preferences.cam_tools.find(3).cloned();
+        let mut d = h.app.dialog.take().unwrap();
+        let Kind::Milling(form) = &mut d.kind else { panic!("the pocket form") };
+        form.choose_tool(tool);
+        form.take_cutting(&h.app).unwrap();
+        assert_eq!(form.params().unwrap()["feed"].as_f64(), Some(1000.0));
+        // The thin chip is a fifth thinner than fz, and the cut needs more than the spindle has.
+        let (load, ap, ae, over) = form.load(&h.app).unwrap();
+        assert!((load.chip - 0.03).abs() < 1e-9 && (ap, ae) == (6.0, 0.6), "{load:?}");
+        assert_eq!(load.thinned_feed, 1667.0);
+        assert!(matches!(over.as_slice(), [solidcraft_engine::cam::Overload::Power { have, .. }] if *have == 0.05), "{over:?}");
+        // Ticked, the feed rises until the chip is fz again.
+        form.thin_chips = true;
+        form.take_cutting(&h.app).unwrap();
+        assert_eq!(form.params().unwrap()["feed"].as_f64(), Some(1667.0));
+        h.app.dialog = Some(d);
+        h.frames(2);
+        for label in ["Load", "Make up for thin chips"] {
+            assert!(h.widget(label).is_some(), "{label} is shown");
+        }
+        // The machine form keeps the spindle power.
+        assert_eq!(h.app.session.doc.cam.machine("Mini").and_then(|m| m.spindle_power), Some(0.05));
+    }
+
+    #[test]
     fn cam_slot_form_takes_a_width_and_mills_around_the_rectangle() {
         let mut h = Harness::new();
         h.app.home.open = false;

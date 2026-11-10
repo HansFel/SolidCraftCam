@@ -76,6 +76,8 @@ pub struct MachineParams {
     pub spindle_max: f64,
     /// Fastest feed (mm/min).
     pub max_feed: f64,
+    /// Rated power of the spindle motor (kW); cuts that need more are warned about.
+    pub spindle_power: Option<f64>,
     /// The post its programs are written with: a built-in post or one saved on the design.
     pub post: Option<String>,
 }
@@ -578,6 +580,13 @@ pub struct SpeedsResult {
     pub plunge_feed: f64,
     pub stepdown: f64,
     pub stepover: f64,
+    /// What the cut asks of the spindle at these speeds, the full stepdown and stepover:
+    /// `{chip (mm, the thickest), thinned_feed (mm/min that cuts chips fz thick again),
+    /// removal (cm³/min), power (kW), torque (N·m)}`; null for a tap or a material of its own.
+    pub load: serde_json::Value,
+    /// What the setup's machine cannot give: `{kind: spindle_fast|spindle_slow, wanted, max|min}`,
+    /// `{kind: feed, wanted, max}`, `{kind: power, needed, have}`. Empty without a machine.
+    pub overload: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]

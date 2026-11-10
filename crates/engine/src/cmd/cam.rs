@@ -42,7 +42,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("cam_machine")
         .params(
             "name; x, y, z: [lowest, highest] travel (mm, X− X+ …); a?: {kind: limited, min, max} (degrees) | {kind: endless}; \
-             spindle_min, spindle_max (rev/min); max_feed (mm/min); post?: the post its programs are written with              (built-in or saved on the design). Adds or replaces the design's machine of that name.",
+             spindle_min, spindle_max (rev/min); max_feed (mm/min); spindle_power?: kW (cuts that need more are warned about); post?: the post its programs are written with              (built-in or saved on the design). Adds or replaces the design's machine of that name.",
         ),
     CommandSpec::new("cam.machine.remove", "Remove Machine", crate::checked!("cam.machine.remove", machine_remove))
         .contract(&crate::schema::TypedContract::<crate::schema::cam::MachineRemoveParams>::new())
@@ -584,14 +584,16 @@ fn speeds_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         .or_else(|| setup.and_then(|x| x.material.clone()))
         .ok_or_else(|| bad(cmd, "`material` is required unless the setup names one"))?;
     let data = tool.cutting_for(&material).ok_or_else(|| bad(cmd, format!("tool {number} has no cutting data for `{material}`")))?;
-    let mut speeds = data.speeds(tool, setup.and_then(|x| x.max_rpm)).map_err(|e| bad(cmd, e.to_string()))?;
-    if let Some(machine) = setup.and_then(|x| s.doc.cam.setup_machine(x)) {
-        speeds = machine.hold(speeds);
-    }
+    let wanted = data.speeds(tool, setup.and_then(|x| x.max_rpm)).map_err(|e| bad(cmd, e.to_string()))?;
+    let machine = setup.and_then(|x| s.doc.cam.setup_machine(x));
+    let speeds = machine.map_or(wanted, |m| m.hold(wanted));
+    // What the cut asks of the spindle at the speeds it runs, and what the machine cannot give.
+    let load = solidcraft_cam::load(tool, &material, speeds.spindle_rpm, speeds.feed, speeds.stepdown, speeds.stepover);
+    let overload = machine.map(|m| m.overload(wanted.spindle_rpm, wanted.feed, load.as_ref())).unwrap_or_default();
     Ok(json!({
         "tool": number, "material": material, "cutting": data, "own": tool.cutting.contains_key(&material),
         "spindle_rpm": speeds.spindle_rpm, "feed": speeds.feed, "plunge_feed": speeds.plunge_feed,
-        "stepdown": speeds.stepdown, "stepover": speeds.stepover,
+        "stepdown": speeds.stepdown, "stepover": speeds.stepover, "load": load, "overload": overload,
     }))
 }
 
@@ -4340,6 +4342,20 @@ mod tests {
         // Cutting data are held to the machine: 10000 rev/min becomes 8000, the feed follows.
         let speeds = run(&mut s, "cam.tool.speeds", json!({"tool": 1, "setup": "Top"}));
         assert_eq!((speeds["spindle_rpm"].as_f64(), speeds["feed"].as_f64()), (Some(8000.0), Some(800.0)));
+        // The calculator says what the cut asks of the spindle and what the machine lacks.
+        assert_eq!(speeds["overload"], json!([{"kind": "spindle_fast", "wanted": 10000.0, "max": 8000.0}]));
+        let power = speeds["load"]["power"].as_f64().unwrap();
+        assert!(power > 0.0 && speeds["load"]["removal"].as_f64().is_some_and(|q| q > 0.0), "{speeds}");
+        let mut weak = mill.clone();
+        weak["spindle_power"] = json!(power / 2.0);
+        run(&mut s, "cam.machine.define", weak);
+        let speeds = run(&mut s, "cam.tool.speeds", json!({"tool": 1, "setup": "Top"}));
+        assert_eq!(speeds["overload"][1]["kind"], "power", "{speeds}");
+        assert_eq!(s.doc.cam.machine("Fräse").unwrap().spindle_power, Some(power / 2.0));
+        let mut broken = mill.clone();
+        broken["spindle_power"] = json!(0);
+        assert!(s.execute("cam.machine.define", &broken).is_err());
+        run(&mut s, "cam.machine.define", mill.clone());
         // A program within the machine posts; a faster spindle, a faster feed or a wider reach does not.
         let op = |name: &str, x1: f64, rpm: f64, feed: f64| {
             json!({"setup": "Top", "name": name, "tool": 1, "outer": [[0, 0], [x1, 0], [x1, 30], [0, 30]],

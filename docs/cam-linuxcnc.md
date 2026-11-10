@@ -365,12 +365,22 @@ In the guided form, **Tool from library** and **Material** choose the tool and t
 material group, and **Use cutting data** fills spindle speed, feeds, stepdown and
 stepover. Running the job copies the library tool into the design.
 
+The **Load** line under the fields works out what the step as typed asks of the spindle:
+the thickest chip (fz thinned by a stepover below half the diameter), the removal rate
+Q = ap · ae · vf, the power Pc = Q · kc / (60 · 10⁶ · η) with kc = kc1.1 · hm^−mc after
+Kienzle from the mean chip hm (rounded kc1.1 and mc per material group, η = 0.8) and the
+torque. A slot and a helix take the whole diameter as ae, a drill its whole cross-section.
+In orange it says what the setup's machine cannot give: a spindle speed outside its range,
+a feed above its fastest, more power than its **Spindle power (kW)** (empty: not checked).
+**Make up for thin chips** makes **Use cutting data** raise the feed until the thickest
+chip is fz again (at most five times, never above the machine's fastest feed).
+
 The machine list is kept in the preferences, like the tool library, so a machine is made
 once and every design can use it; a name already on the list is refused for a new machine.
 A machine has a name,
 the travel of each axis as its lowest and highest position (X−, X+, Y−, Y+, Z−, Z+), an
 optional A axis (limited to A− … A+ degrees, or endless), the slowest and fastest spindle
-speed, the fastest feed (mm/min) and its **Post-processor**: the controller its programs
+speed, the fastest feed (mm/min), the spindle power (kW, optional) and its **Post-processor**: the controller its programs
 are written for. **Default (LinuxCNC)** keeps today's output; every built-in post is listed,
 then your own posts (below). With a machine on the setup:
 
@@ -552,7 +562,9 @@ a step a new name, also in the skipped list. `cam.op.chamfer`, `cam.op.engrave`,
 `text` to write a hand-edited program as it is (`checked: false` in its answer).
 `cam.tool.speeds` (`{"tool": 1, "material": "aluminium"}`, or `setup` for that setup's
 material and highest spindle speed) returns the spindle speed, feeds, stepdown and
-stepover the cutting data give, without changing the design.
+stepover the cutting data give, without changing the design, with the cut's `load`
+(`chip`, `thinned_feed`, `removal`, `power`, `torque`) and what the setup's machine cannot
+give (`overload`: `spindle_fast`, `spindle_slow`, `feed`, `power`).
 
 The local integration builds on the SolidCraft CAM core and document command work
 from [#5751](https://github.com/tangency-labs/solidcraft/pull/5751) and

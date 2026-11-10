@@ -35,11 +35,11 @@ mod time;
 mod tool;
 
 pub use check::verify;
-pub use cutting::{CuttingData, MATERIALS, Speeds, valid_material};
+pub use cutting::{CuttingData, Load, MATERIALS, SPINDLE_EFFICIENCY, Speeds, chip_thinning, cutting_force, load, valid_material};
 pub use gcode::{Operation, Program, emit, parse, parse_lines, work_offset_code};
 pub use helix::{HelixParams, ThreadParams, helical_bore, thread_mill};
 pub use lead::{Lead, Leads};
-pub use machine::{MAX_MACHINE_NAME, Machine, MachineKind, RotaryAxis, Torch, reach};
+pub use machine::{MAX_MACHINE_NAME, Machine, MachineKind, Overload, RotaryAxis, Torch, reach};
 pub use offset::offset_regions;
 pub use open::{OpenContourParams, OpenPath, OpenSide};
 pub use ops::{

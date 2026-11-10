@@ -61,6 +61,8 @@ pub struct Milling {
     /// Thread milling: in a hole (else on a stud), and a left-hand thread.
     internal: bool,
     left_hand: bool,
+    /// Use cutting data raises the feed until the thickest chip is fz again (small stepovers).
+    pub(crate) thin_chips: bool,
 }
 
 /// The form's operations by their place in its list: contour 0, pocket 1, drill 2, face 3,
@@ -232,6 +234,7 @@ impl Milling {
             tabs: false,
             internal: true,
             left_hand: false,
+            thin_chips: false,
         }
         .starting_at_stock(app)
     }
@@ -822,6 +825,37 @@ impl Milling {
         self.choose_tool(tool);
     }
 
+    /// How wide the tool cuts sideways (mm): the whole diameter in a slot or a helix, the
+    /// stepover otherwise. None when the stepover is not a number.
+    fn engagement(&self, diameter: f64) -> Option<f64> {
+        if matches!(self.kind, 4 | 7 | 8) {
+            return Some(diameter);
+        }
+        self.field_value("stepover").and_then(|v| millimetres(&v, diameter))
+    }
+
+    fn field_value(&self, key: &str) -> Option<String> {
+        FIELDS.iter().position(|(k, _, _)| *k == key).and_then(|i| self.values.get(i)).cloned()
+    }
+
+    /// What the step as typed asks of the spindle, and what the setup's machine cannot give.
+    /// None for a plasma cut, a tap, no material or fields that are not numbers.
+    pub(crate) fn load(&self, app: &SolveApp) -> Option<(solidcraft_engine::cam::Load, f64, f64, Vec<solidcraft_engine::cam::Overload>)> {
+        if self.plasma() || self.kind == 9 {
+            return None;
+        }
+        let material = self.material.as_deref()?;
+        let tool = self.tool().ok()?;
+        let number = |key: &str| self.field_value(key).and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok());
+        let (rpm, feed) = (number("spindle_rpm")?, number("feed")?);
+        let ap = self.field_value("stepdown").and_then(|v| millimetres(&v, tool.diameter))?;
+        let ae = self.engagement(tool.diameter)?;
+        let load = solidcraft_engine::cam::load(&tool, material, rpm, feed, ap, ae)?;
+        let machine = app.session.doc.cam.setup(&self.setup).and_then(|x| app.session.doc.cam.setup_machine(x));
+        let over = machine.map(|m| m.overload(rpm, feed, Some(&load))).unwrap_or_default();
+        Some((load, ap, ae, over))
+    }
+
     /// Fills spindle speed, feeds, stepdown and stepover from the tool's cutting data for the material.
     pub(crate) fn take_cutting(&mut self, app: &SolveApp) -> Result<(), String> {
         let tr = crate::i18n::tr;
@@ -833,6 +867,15 @@ impl Milling {
         // Held to the setup's machine: its spindle range and fastest feed.
         if let Some(machine) = app.session.doc.cam.setup(&self.setup).and_then(|x| app.session.doc.cam.setup_machine(x)) {
             s = machine.hold(s);
+        }
+        // A light stepover cuts thinner chips than fz: the feed may rise until they are fz again.
+        if self.thin_chips && !tool.kind.cuts_down() {
+            let ae = self.engagement(tool.diameter).unwrap_or(s.stepover);
+            let thinned = (s.feed * solidcraft_engine::cam::chip_thinning(ae, tool.diameter)).round();
+            s.feed = match app.session.doc.cam.setup(&self.setup).and_then(|x| app.session.doc.cam.setup_machine(x)) {
+                Some(machine) => thinned.min(machine.max_feed),
+                None => thinned,
+            };
         }
         for (key, value) in
             [("spindle_rpm", s.spindle_rpm), ("feed", s.feed), ("plunge_feed", s.plunge_feed), ("stepdown", s.stepdown), ("stepover", s.stepover)]
@@ -1280,6 +1323,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         }
         ui_kit::text_row(ui, tr(label), value, "");
     }
+    load_rows(app, ui, form);
     if form.at_holes() && !picked {
         ui.add(egui::Label::new(tr("ui.cam.holes_hint")).wrap());
         ui_kit::text_area(ui, tr("ui.cam.holes_hint"), egui::Id::unique("cam-holes"), &mut form.holes, 3, 100_000);
@@ -1482,8 +1526,54 @@ fn tool_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
     if chosen != current {
         form.material = chosen.checked_sub(1).and_then(|i| MATERIALS.get(i)).map(|m| (*m).to_string());
     }
+    if !matches!(form.kind, 2 | 9) {
+        // Full width: the label is longer than the control column.
+        crate::cam_manual::checkbox(ui, "ui.cam.thin_chips", &mut form.thin_chips);
+    }
     if ui_kit::button(ui, tr("ui.cam.use_cutting"), ui_kit::Button::Normal).clicked() {
         form.error = form.take_cutting(app).err();
+    }
+}
+
+/// The cut's load as typed: chip, removal, power and torque, and in the warning colour what the
+/// setup's machine cannot give.
+fn load_rows(app: &SolveApp, ui: &mut egui::Ui, form: &Milling) {
+    let tr = crate::i18n::tr;
+    let Some((load, ap, ae, over)) = form.load(app) else { return };
+    let t = Tokens::get();
+    let n = |v: f64, digits: usize| format!("{v:.digits$}");
+    let line = crate::i18n::format(
+        "ui.cam.load_line",
+        &[
+            ("chip", &n(load.chip, 3)),
+            ("removal", &n(load.removal, 1)),
+            ("power", &n(load.power, 2)),
+            ("torque", &n(load.torque, 2)),
+            ("ap", &plain_number(ap)),
+            ("ae", &plain_number(ae)),
+        ],
+    );
+    ui_kit::row(ui, tr("ui.cam.load"), |ui| ui.add(egui::Label::new(egui::RichText::new(line).color(t.text_dim)).wrap()));
+    if load.thinned_feed > form.field_value("feed").and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok()).unwrap_or(f64::MAX) {
+        let hint = crate::i18n::format("ui.cam.load_thin", &[("feed", &plain_number(load.thinned_feed))]);
+        ui.add(egui::Label::new(egui::RichText::new(hint).color(t.text_dim)).wrap());
+    }
+    for o in over {
+        let text = match o {
+            solidcraft_engine::cam::Overload::SpindleFast { wanted, max } => {
+                crate::i18n::format("ui.cam.over_spindle_fast", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
+            }
+            solidcraft_engine::cam::Overload::SpindleSlow { wanted, min } => {
+                crate::i18n::format("ui.cam.over_spindle_slow", &[("wanted", &plain_number(wanted)), ("min", &plain_number(min))])
+            }
+            solidcraft_engine::cam::Overload::Feed { wanted, max } => {
+                crate::i18n::format("ui.cam.over_feed", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
+            }
+            solidcraft_engine::cam::Overload::Power { needed, have } => {
+                crate::i18n::format("ui.cam.over_power", &[("needed", &n(needed, 2)), ("have", &plain_number(have))])
+            }
+        };
+        ui.add(egui::Label::new(egui::RichText::new(text).color(t.warning)).wrap());
     }
 }
 

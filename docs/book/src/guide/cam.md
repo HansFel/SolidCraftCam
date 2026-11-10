@@ -75,6 +75,14 @@ centre drill, reamer, chamfer cutter, engraving cutter, T-slot cutter, thread mi
 diameter, a flute length, flutes, an optional holder (for the collision check) and cutting data
 per material (vc, fz, ap, ae), from which feed and spindle speed are worked out.
 
+The milling form also works out what a step asks of the spindle (**Load**): the thickest
+chip, the material removed per minute, the power and the torque. Lines in orange say what
+the setup's machine cannot give: a spindle speed outside its range, a feed above its
+fastest, or more power than its **Spindle power (kW)**. A stepover below half the diameter
+cuts chips thinner than fz; with **Make up for thin chips** ticked, **Use cutting data**
+raises the feed until they are fz thick again. The power uses rounded values per material
+group (Kienzle): a guide, not the tool maker's data.
+
 A plasma table needs no tool: its torch data belong to the machine and to each cut.
 
 ## Making a step

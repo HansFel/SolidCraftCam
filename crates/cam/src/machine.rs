@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cutting::Speeds;
+use crate::cutting::{Load, Speeds};
 use crate::path::Toolpath;
 use crate::{Result, invalid};
 
@@ -106,6 +106,9 @@ pub struct Machine {
     pub spindle_max: f64,
     /// Fastest feed the axes move at (mm/min).
     pub max_feed: f64,
+    /// Rated power of the spindle motor (kW); none: unknown, cuts are not checked against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spindle_power: Option<f64>,
     /// The post its programs are written with: a built-in post or one saved on the design. None:
     /// whatever the caller writes by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +116,20 @@ pub struct Machine {
     /// A plasma table's cutting data, suggested to new plasma cuts. Plasma tables only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torch: Option<Torch>,
+}
+
+/// Something a cut asks of a machine that it does not give.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Overload {
+    /// Faster than the spindle turns (rev/min); the machine runs its fastest, the feeds slower.
+    SpindleFast { wanted: f64, max: f64 },
+    /// Slower than the spindle turns (rev/min).
+    SpindleSlow { wanted: f64, min: f64 },
+    /// Faster than the axes move (mm/min).
+    Feed { wanted: f64, max: f64 },
+    /// More power than the spindle has (kW): less depth, stepover or feed.
+    Power { needed: f64, have: f64 },
 }
 
 /// A rotary axis: turning between two angles (degrees), or round without end.
@@ -136,6 +153,7 @@ impl Machine {
             spindle_min: 1000.0,
             spindle_max: 24000.0,
             max_feed: 5000.0,
+            spindle_power: None,
             post: None,
             torch: None,
         }
@@ -179,6 +197,11 @@ impl Machine {
         if !(self.max_feed > 0.0) || self.max_feed > MAX_TRAVEL {
             return invalid("the fastest feed must be above 0 and at most 1000000 mm/min");
         }
+        if let Some(power) = self.spindle_power
+            && !(power > 0.0 && power <= 1000.0)
+        {
+            return invalid("the spindle power must be above 0 and at most 1000 kW");
+        }
         if let Some(post) = &self.post
             && (post.trim().is_empty() || post.len() > MAX_MACHINE_NAME || post.trim() != post || post.chars().any(char::is_control))
         {
@@ -199,6 +222,27 @@ impl Machine {
         let ratio = if speeds.spindle_rpm > 0.0 { rpm / speeds.spindle_rpm } else { 1.0 };
         let feed = |f: f64| (f * ratio).round().clamp(1.0, self.max_feed.max(1.0));
         Speeds { spindle_rpm: rpm.round(), feed: feed(speeds.feed), plunge_feed: feed(speeds.plunge_feed), ..speeds }
+    }
+
+    /// What a cut at `spindle_rpm` and `feed` asks of the machine beyond what it gives: the spindle
+    /// outside its range, the feed above the fastest, more power than the spindle has. Empty
+    /// when the machine manages it (or `load` is unknown and the rest fits).
+    pub fn overload(&self, spindle_rpm: f64, feed: f64, load: Option<&Load>) -> Vec<Overload> {
+        let mut out = Vec::new();
+        if spindle_rpm > self.spindle_max {
+            out.push(Overload::SpindleFast { wanted: spindle_rpm, max: self.spindle_max });
+        } else if spindle_rpm < self.spindle_min {
+            out.push(Overload::SpindleSlow { wanted: spindle_rpm, min: self.spindle_min });
+        }
+        if feed > self.max_feed {
+            out.push(Overload::Feed { wanted: feed, max: self.max_feed });
+        }
+        if let (Some(have), Some(load)) = (self.spindle_power, load)
+            && load.power > have
+        {
+            out.push(Overload::Power { needed: load.power, have });
+        }
+        out
     }
 
     /// Whether an operation's spindle speed and feeds are within the machine's.

@@ -16,7 +16,7 @@
 //! expressions evaluated when posting. A tool can hold cutting data by material group
 //! (`cutting`); a setup can name its material, the machine's highest spindle speed (`max_rpm`),
 //! its machine (`machine`, one of the design's `machines`: travel per axis, optional A axis,
-//! spindle speed range, fastest feed and an optional `post`, the post-processor its programs are
+//! spindle speed range, fastest feed, an optional `spindle_power` (kW) cuts are checked against and an optional `post`, the post-processor its programs are
 //! written with) and the operations left out when posting (`skipped`);
 //! the operations' order is the machining order. A contour's `side` is `auto` (around an outline,
 //! inside a hole picked as its own contour), `outside`, `inside` or `on`; contours and pockets

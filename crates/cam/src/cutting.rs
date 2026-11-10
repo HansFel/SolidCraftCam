@@ -2,6 +2,9 @@
 //! and the depth and width of cut, and the spindle speed and feeds they give for that tool.
 //!
 //! n = vc · 1000 / (π · D) rev/min; vf = n · z · fz mm/min (a drill: n · fz, fz per revolution).
+//! What a cut asks of the spindle ([`load`]): the removal rate Q = ap · ae · vf, the power
+//! Pc = Q · kc / (60 · 10⁶ · η) kW with kc after Kienzle from the mean chip, and the thinner
+//! chip a stepover below half the diameter cuts.
 
 use std::f64::consts::PI;
 
@@ -121,6 +124,93 @@ impl CuttingData {
         }
         Ok(speeds)
     }
+}
+
+/// Share of the cutting power that reaches the spindle's nose: the rest is lost in the motor
+/// and the drive. The spindle power the machine names is divided by it.
+pub const SPINDLE_EFFICIENCY: f64 = 0.8;
+/// The most a feed is raised for thin chips: a stepover far below 1 % of the diameter would
+/// otherwise ask for a feed no machine runs.
+pub const MAX_CHIP_THINNING: f64 = 5.0;
+
+/// Specific cutting force of a material group after Kienzle, kc = kc1.1 · h^−mc (N/mm², the
+/// chip thickness h in mm): `(kc1.1, mc)`, rounded textbook values for a typical alloy of the
+/// group. `None` for a material outside [`MATERIALS`].
+pub fn cutting_force(material: &str) -> Option<(f64, f64)> {
+    Some(match material {
+        "aluminium" => (700.0, 0.25),
+        "steel" => (1700.0, 0.25),
+        "stainless" => (2300.0, 0.21),
+        "brass" => (780.0, 0.18),
+        "plastic" => (400.0, 0.30),
+        "wood" => (80.0, 0.30),
+        _ => return None,
+    })
+}
+
+/// How much thinner than the feed per tooth the thickest chip is when a milling tool takes
+/// `ae` of its `diameter` sideways: 1 from half the diameter on, more below. A feed raised by
+/// this factor cuts chips as thick as the cutting data's fz again.
+pub fn chip_thinning(ae: f64, diameter: f64) -> f64 {
+    if !(ae > 0.0 && diameter > 0.0 && ae.is_finite() && diameter.is_finite()) {
+        return 1.0;
+    }
+    let share = (ae / diameter).min(0.5);
+    // The sine of the angle the edge is engaged over: the thickest chip is fz times it.
+    let sine = 2.0 * (share * (1.0 - share)).sqrt();
+    if sine > 0.0 { (1.0 / sine).min(MAX_CHIP_THINNING) } else { MAX_CHIP_THINNING }
+}
+
+/// What a cut asks of the spindle.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Load {
+    /// Thickest chip (mm): fz thinned by a small stepover; for a drill, the chip of one edge.
+    pub chip: f64,
+    /// Feed that would cut the thickest chip at the feed per tooth again (mm/min); the feed
+    /// itself from half the diameter on and for drills.
+    pub thinned_feed: f64,
+    /// Material removed (cm³/min).
+    pub removal: f64,
+    /// Power the spindle motor gives the cut (kW), [`SPINDLE_EFFICIENCY`] included.
+    pub power: f64,
+    /// Torque at the spindle (N·m).
+    pub torque: f64,
+}
+
+/// What a tool cutting `material` at `rpm` and `feed` (mm/min), `ap` deep and `ae` wide (mm),
+/// asks of the spindle. A drill (centre drill, reamer) cuts its whole diameter and ignores `ap`
+/// and `ae`. `None` for a tap, a material without a [`cutting_force`] or values out of range.
+pub fn load(tool: &Tool, material: &str, rpm: f64, feed: f64, ap: f64, ae: f64) -> Option<Load> {
+    let (kc11, mc) = cutting_force(material)?;
+    let d = tool.diameter;
+    let finite = [rpm, feed, ap, ae, d].iter().all(|v| v.is_finite());
+    if !finite || !(rpm >= 1.0 && feed > 0.0 && d > 0.0) || tool.kind == ToolKind::Tap {
+        return None;
+    }
+    // Chips below a micrometre are rubbed off, not cut: Kienzle's law stops there.
+    let kc = |h: f64| kc11 * h.max(0.001).powf(-mc);
+    let (chip, thinned_feed, removal, kc) = if tool.kind.cuts_down() {
+        // Two edges, each a chip half the feed per turn thick, at the point's 59° to the axis.
+        let per_turn = feed / rpm;
+        let chip = per_turn / 2.0 * 59f64.to_radians().sin();
+        (chip, feed, PI * d * d / 4.0 * feed, kc(chip))
+    } else {
+        if !(ap > 0.0 && ae > 0.0) {
+            return None;
+        }
+        let ae = ae.min(d);
+        let fz = feed / (rpm * f64::from(tool.flutes.max(1)));
+        // The edge is engaged over φ, cos φ = 1 − 2 ae / D; the chip is fz · sin θ along it.
+        let phi = (1.0 - 2.0 * ae / d).clamp(-1.0, 1.0).acos();
+        let thinning = chip_thinning(ae, d);
+        let mean = fz * (1.0 - phi.cos()) / phi;
+        (fz / thinning, feed * thinning, ap * ae * feed, kc(mean))
+    };
+    // removal in mm³/min; P = Q · kc / 60 (W from N·mm/min), then kW and the drive's loss.
+    let power = removal * kc / 60.0e6 / SPINDLE_EFFICIENCY;
+    let torque = power * 1000.0 * 60.0 / (2.0 * PI * rpm);
+    let out = Load { chip, thinned_feed: thinned_feed.round().max(1.0), removal: removal / 1000.0, power, torque };
+    [out.chip, out.thinned_feed, out.removal, out.power, out.torque].iter().all(|v| v.is_finite() && *v < 1.0e9).then_some(out)
 }
 
 impl Tool {
