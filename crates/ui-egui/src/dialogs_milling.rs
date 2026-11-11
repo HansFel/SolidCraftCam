@@ -2,13 +2,14 @@
 //! as scripts; the preview worker never changes the open document.
 use crate::selection::{EDGES, EXTERNAL_POINTS, PLANAR_FACES, PROFILES, SelInput, SelectionExt as _, VERTICES};
 use crate::viewport::Proj;
-use crate::{SolveApp, theme::Tokens, ui_kit};
+use crate::{SolveApp, ui_kit};
 use egui::{Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
 use solidcore_record::Vec3;
 use solidcraft_engine::Sel;
 use solidcraft_engine::cam::{MATERIALS, Tool, ToolKind};
 use solidcraft_engine::geom::prelude::*;
+use solidcraft_theme::Tokens;
 use std::sync::{Arc, Mutex, mpsc};
 
 #[derive(Clone, Debug)]
@@ -614,7 +615,7 @@ impl Milling {
 
     pub fn params(&self) -> Result<Value, String> {
         if self.taken {
-            return Err(crate::i18n::tr("ui.cam.name_taken").into());
+            return Err(solidcraft_ui_text::tr("ui.cam.name_taken").into());
         }
         let mut p = json!({"setup": self.setup, "name": self.name,
             "kind": KIND_NAMES.get(self.kind).map_or("pocket", |(k, _)| *k)});
@@ -641,13 +642,13 @@ impl Milling {
             // Stepdown and stepover can be a share of the tool diameter.
             let number =
                 if matches!(*key, "stepdown" | "stepover") { millimetres(value, diameter) } else { value.trim().replace(',', ".").parse().ok() };
-            let number: f64 = number.ok_or_else(|| crate::i18n::tr("ui.cam.invalid_number").to_string())?;
+            let number: f64 = number.ok_or_else(|| solidcraft_ui_text::tr("ui.cam.invalid_number").to_string())?;
             if !number.is_finite() {
-                return Err(crate::i18n::tr("ui.cam.invalid_number").into());
+                return Err(solidcraft_ui_text::tr("ui.cam.invalid_number").into());
             }
             p[*key] = if *key == "tool" || *key == "work_offset" {
                 if number < 1.0 || number.fract() != 0.0 || number > 9999.0 {
-                    return Err(crate::i18n::tr("ui.cam.invalid_number").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.invalid_number").into());
                 }
                 json!(number as u32)
             } else {
@@ -659,7 +660,7 @@ impl Milling {
         if self.plasma()
             && let Some(text) = field("slow_hole_diameter").filter(|t| !t.is_empty())
         {
-            let bad = || crate::i18n::tr("ui.cam.invalid_number").to_string();
+            let bad = || solidcraft_ui_text::tr("ui.cam.invalid_number").to_string();
             let diameter: f64 = text.parse().map_err(|_| bad())?;
             let share: f64 = field("slow_hole_share").unwrap_or_default().trim_end_matches('%').trim().parse().map_err(|_| bad())?;
             if !(diameter > 0.0 && diameter.is_finite()) || !(share > 0.0 && share <= 100.0) {
@@ -674,12 +675,12 @@ impl Milling {
                     .iter()
                     .map(|v| v.parse::<f64>())
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| crate::i18n::tr("ui.cam.holes_hint").to_string())?;
+                    .map_err(|_| solidcraft_ui_text::tr("ui.cam.holes_hint").to_string())?;
                 let [x, y] = values.as_slice() else {
-                    return Err(crate::i18n::tr("ui.cam.holes_hint").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.holes_hint").into());
                 };
                 if !x.is_finite() || !y.is_finite() {
-                    return Err(crate::i18n::tr("ui.cam.invalid_number").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.invalid_number").into());
                 }
                 points.push([*x, *y]);
             }
@@ -714,7 +715,7 @@ impl Milling {
             let allowance = map.remove("allowance").and_then(|v| v.as_f64()).unwrap_or(0.0);
             if self.kind == 3 {
                 if allowance <= 0.0 {
-                    return Err(crate::i18n::tr("ui.cam.allowance_needed").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.allowance_needed").into());
                 }
                 let bottom = map.get("bottom").and_then(Value::as_f64).unwrap_or(0.0);
                 let top = ((bottom + allowance) * 1000.0).round() / 1000.0;
@@ -731,7 +732,7 @@ impl Milling {
             let (count, width, height) = (size(map, "tab_count"), size(map, "tab_width"), size(map, "tab_height"));
             if self.kind == 0 && self.tabs {
                 if !((1.0..=1000.0).contains(&count) && count.fract() == 0.0 && width > 0.0 && height > 0.0) {
-                    return Err(crate::i18n::tr("ui.cam.tabs_needed").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.tabs_needed").into());
                 }
                 map.insert("tabs".into(), json!({"count": count as u32, "width": width, "height": height}));
             }
@@ -739,7 +740,7 @@ impl Milling {
                 for (key, kind, size) in [("lead_in", self.lead_in, lead_in), ("lead_out", self.lead_out, lead_out)] {
                     let lead = match LEADS.get(kind).copied().unwrap_or("direct") {
                         "direct" => json!({"kind": "direct"}),
-                        _ if !(size > 0.0) => return Err(crate::i18n::tr("ui.cam.lead_size_needed").into()),
+                        _ if !(size > 0.0) => return Err(solidcraft_ui_text::tr("ui.cam.lead_size_needed").into()),
                         "arc" => json!({"kind": "arc", "radius": size}),
                         other => json!({"kind": other, "length": size}),
                     };
@@ -747,7 +748,7 @@ impl Milling {
                 }
                 for key in ["overlap", "extend_start", "extend_end"] {
                     if map.get(key).and_then(Value::as_f64).is_some_and(|v| v < 0.0) {
-                        return Err(crate::i18n::tr("ui.cam.stock_negative").into());
+                        return Err(solidcraft_ui_text::tr("ui.cam.stock_negative").into());
                     }
                 }
                 if map.contains_key("edges") {
@@ -764,7 +765,7 @@ impl Milling {
             }
         }
         if self.kind == 4 && p["stock_to_leave"].as_f64().is_some_and(|v| v < 0.0) {
-            return Err(crate::i18n::tr("ui.cam.stock_negative").into());
+            return Err(solidcraft_ui_text::tr("ui.cam.stock_negative").into());
         }
         if self.plasma() && self.chain && p.get("edges").is_some() {
             p["chain"] = json!(true);
@@ -776,7 +777,7 @@ impl Milling {
             }
             for key in ["stock_to_leave", "floor_stock"] {
                 if p[key].as_f64().is_some_and(|v| v < 0.0) {
-                    return Err(crate::i18n::tr("ui.cam.stock_negative").into());
+                    return Err(solidcraft_ui_text::tr("ui.cam.stock_negative").into());
                 }
             }
         }
@@ -789,7 +790,7 @@ impl Milling {
     /// The tool the form describes: the library's when one is chosen, else one from the fields.
     fn tool(&self) -> Result<Tool, String> {
         let value = |i: usize| {
-            self.values.get(i).and_then(|v| v.trim().parse::<f64>().ok()).ok_or_else(|| crate::i18n::tr("ui.cam.invalid_number").to_string())
+            self.values.get(i).and_then(|v| v.trim().parse::<f64>().ok()).ok_or_else(|| solidcraft_ui_text::tr("ui.cam.invalid_number").to_string())
         };
         let kind = if matches!(self.kind, 2 | 9) { ToolKind::Drill } else { ToolKind::FlatEndmill };
         let mut tool = self.library_tool.clone().unwrap_or_else(|| Tool::new(1, kind, 1.0, 1.0));
@@ -873,7 +874,7 @@ impl Milling {
 
     /// Fills spindle speed, feeds, stepdown and stepover from the tool's cutting data for the material.
     pub(crate) fn take_cutting(&mut self, app: &SolveApp) -> Result<(), String> {
-        let tr = crate::i18n::tr;
+        let tr = solidcraft_ui_text::tr;
         let material = self.material.clone().ok_or_else(|| tr("ui.cam.pick_material").to_string())?;
         let tool = self.tool()?;
         let data = tool.cutting_for(&material).ok_or_else(|| tr("ui.cam.no_cutting").to_string())?;
@@ -1059,7 +1060,7 @@ pub(crate) fn pick_count(session: &solidcraft_engine::Session, items: &[Sel]) ->
 /// One line per picked contour, each with a button that takes it out again. The pieces of one
 /// pick (both halves of a round rim) share a line and go together.
 fn contour_list(ui: &mut egui::Ui, session: &solidcraft_engine::Session, inputs: &mut [SelInput], drill: bool) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let Some(input) = inputs.first_mut() else { return };
     if input.items.is_empty() {
         ui.add(egui::Label::new(tr(if drill { "ui.cam.pick_bores_hint" } else { "ui.cam.pick_hint" })).wrap());
@@ -1102,7 +1103,7 @@ fn contour_list(ui: &mut egui::Ui, session: &solidcraft_engine::Session, inputs:
 }
 
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &mut [SelInput]) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let kinds: Vec<&str> = KIND_NAMES.iter().map(|(_, label)| tr(label)).collect();
     let was = form.kind;
     ui_kit::choice_row(ui, tr("ui.cam.operation"), "cam-kind", &mut form.kind, &kinds);
@@ -1301,7 +1302,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
             }
             continue;
         }
-        if torch && matches!(*key, "tool" | "diameter" | "flute_length" | "stepdown" | "stepover" | "floor_stock" | "stock_to_leave" | "spindle_rpm" | "dwell") {
+        if torch
+            && matches!(
+                *key,
+                "tool" | "diameter" | "flute_length" | "stepdown" | "stepover" | "floor_stock" | "stock_to_leave" | "spindle_rpm" | "dwell"
+            )
+        {
             continue;
         }
         if (picked || form.kind == 3) && matches!(*key, "x" | "y" | "width" | "height") {
@@ -1529,7 +1535,7 @@ fn paint(ui: &mut egui::Ui, value: &Value) {
 /// The setup the step goes into: one of the design's, or a new one named here. Choosing a setup
 /// takes its work offset and material.
 fn setup_row(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let cam = &app.session.doc.cam;
     // Plasma cuts are offered plasma setups only, milling steps milling setups only.
     let setups: Vec<&solidcraft_engine::doc::cam::CamSetup> = cam.setups.iter().filter(|s| form.fits(s)).collect();
@@ -1567,7 +1573,7 @@ fn setup_row(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
 
 /// The library tool to copy, the material and the button that takes their cutting data.
 fn tool_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let library = &app.preferences.cam_tools.0;
     if !library.is_empty() {
         let labels: Vec<String> =
@@ -1604,11 +1610,11 @@ fn tool_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
 /// The cut's load as typed: chip, removal, power and torque, and in the warning colour what the
 /// setup's machine cannot give.
 fn load_rows(app: &SolveApp, ui: &mut egui::Ui, form: &Milling) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let Some((load, ap, ae, over)) = form.load(app) else { return };
     let t = Tokens::get();
     let n = |v: f64, digits: usize| format!("{v:.digits$}");
-    let line = crate::i18n::format(
+    let line = solidcraft_ui_text::format(
         "ui.cam.load_line",
         &[
             ("chip", &n(load.chip, 3)),
@@ -1621,22 +1627,22 @@ fn load_rows(app: &SolveApp, ui: &mut egui::Ui, form: &Milling) {
     );
     ui_kit::row(ui, tr("ui.cam.load"), |ui| ui.add(egui::Label::new(egui::RichText::new(line).color(t.text_dim)).wrap()));
     if load.thinned_feed > form.field_value("feed").and_then(|v| v.trim().replace(',', ".").parse::<f64>().ok()).unwrap_or(f64::MAX) {
-        let hint = crate::i18n::format("ui.cam.load_thin", &[("feed", &plain_number(load.thinned_feed))]);
+        let hint = solidcraft_ui_text::format("ui.cam.load_thin", &[("feed", &plain_number(load.thinned_feed))]);
         ui.add(egui::Label::new(egui::RichText::new(hint).color(t.text_dim)).wrap());
     }
     for o in over {
         let text = match o {
             solidcraft_engine::cam::Overload::SpindleFast { wanted, max } => {
-                crate::i18n::format("ui.cam.over_spindle_fast", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
+                solidcraft_ui_text::format("ui.cam.over_spindle_fast", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
             }
             solidcraft_engine::cam::Overload::SpindleSlow { wanted, min } => {
-                crate::i18n::format("ui.cam.over_spindle_slow", &[("wanted", &plain_number(wanted)), ("min", &plain_number(min))])
+                solidcraft_ui_text::format("ui.cam.over_spindle_slow", &[("wanted", &plain_number(wanted)), ("min", &plain_number(min))])
             }
             solidcraft_engine::cam::Overload::Feed { wanted, max } => {
-                crate::i18n::format("ui.cam.over_feed", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
+                solidcraft_ui_text::format("ui.cam.over_feed", &[("wanted", &plain_number(wanted)), ("max", &plain_number(max))])
             }
             solidcraft_engine::cam::Overload::Power { needed, have } => {
-                crate::i18n::format("ui.cam.over_power", &[("needed", &n(needed, 2)), ("have", &plain_number(have))])
+                solidcraft_ui_text::format("ui.cam.over_power", &[("needed", &n(needed, 2)), ("have", &plain_number(have))])
             }
         };
         ui.add(egui::Label::new(egui::RichText::new(text).color(t.warning)).wrap());

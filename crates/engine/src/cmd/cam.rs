@@ -6,14 +6,15 @@
 use serde_json::{Value, json};
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
-    CommentStyle, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move, OpenContourParams, OpenPath, OpenSide,
-    Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind, Units, contour_compensated, contour_open, contour_with_tabs,
-    drill, emit, estimate, face, pocket, readback, slot,
+    CommentStyle, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move,
+    OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind,
+    Units, contour_compensated, contour_open, contour_with_tabs, drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
-    BoxAxisRef, CamCompensation, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams, CamSettings,
-    CamSetup, CamSide, CamSlowHoles, CamStock, CamTabs, CamTorch, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion, StockBox, StockOffsetMode, WcsOriginMode,
-    SetupOperationType, WorkCoordinateSystem, default_contour_params, default_cut, default_face_params, default_pocket_params, default_slot_params,
+    BoxAxisRef, CamCompensation, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams,
+    CamSettings, CamSetup, CamSide, CamSlowHoles, CamStock, CamTabs, CamTorch, MAX_MACHINES, MAX_OPS, MAX_SETUPS, MAX_TOOLS, PolygonRegion,
+    SetupOperationType, StockBox, StockOffsetMode, WcsOriginMode, WorkCoordinateSystem, default_contour_params, default_cut, default_face_params,
+    default_pocket_params, default_slot_params,
 };
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::project::resolve_face_indices;
@@ -356,8 +357,11 @@ fn hole_points(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Ve
 /// [`hole_points`] with the radius of each picked circle where the pick is one (a round edge,
 /// a round hole of a face, a sketch circle); typed centres and sketch points have none.
 fn hole_circles(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<(Vec2, Option<f64>)>> {
-    let mut points: Vec<(Vec2, Option<f64>)> =
-        if p.get("points").is_some() { vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)?.into_iter().map(|c| (c, None)).collect() } else { Vec::new() };
+    let mut points: Vec<(Vec2, Option<f64>)> = if p.get("points").is_some() {
+        vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)?.into_iter().map(|c| (c, None)).collect()
+    } else {
+        Vec::new()
+    };
     // Picked bores: a round edge's centre, every round hole of a picked flat face, a sketch
     // point, or the circles of a sketch profile, in work XY.
     if let Some(holes) = p.get("holes") {
@@ -409,7 +413,10 @@ pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         let drills = matches!(op, CamOperation::Drill { .. });
         if drills != kind.cuts_down() {
             let what = if drills { "drills" } else { "mills" };
-            return Err(bad(cmd, format!("tool {number} {what} in operation `{}`, which a {} cannot do: give it another number", op.name(), kind.label())));
+            return Err(bad(
+                cmd,
+                format!("tool {number} {what} in operation `{}`, which a {} cannot do: give it another number", op.name(), kind.label()),
+            ));
         }
     }
     let diameter = num(p, "diameter").ok_or_else(|| bad(cmd, "`diameter` is required (mm)"))?;
@@ -633,7 +640,16 @@ fn put_machine(s: &mut Session, cmd: &str, machine: Machine) -> Result<()> {
         post_fits(&post, machine.kind).map_err(|e| bad(cmd, format!("machine `{}`: {e}", machine.name)))?;
     }
     if let Some(setup) = s.doc.cam.setups.iter().find(|x| x.machine.as_deref() == Some(machine.name.as_str()) && !kind_fits(x, machine.kind)) {
-        return Err(bad(cmd, format!("setup `{}` is a {} setup and runs on `{}`: it cannot become a {} machine", setup.name, setup.operation_type.key(), machine.name, machine.kind.key())));
+        return Err(bad(
+            cmd,
+            format!(
+                "setup `{}` is a {} setup and runs on `{}`: it cannot become a {} machine",
+                setup.name,
+                setup.operation_type.key(),
+                machine.name,
+                machine.kind.key()
+            ),
+        ));
     }
     let doc = s.doc_mut();
     let full = doc.cam.machines.len() >= MAX_MACHINES;
@@ -1045,10 +1061,16 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     {
         return Err(bad(
             cmd,
-            format!("machine `{}` is a {} machine; a {} setup runs on {}", machine.name, machine.kind.key(), setup.operation_type.key(), match setup.operation_type.machine_kind() {
-                Some(kind) => format!("a {} machine", kind.key()),
-                None => "no machine yet".into(),
-            }),
+            format!(
+                "machine `{}` is a {} machine; a {} setup runs on {}",
+                machine.name,
+                machine.kind.key(),
+                setup.operation_type.key(),
+                match setup.operation_type.machine_kind() {
+                    Some(kind) => format!("a {} machine", kind.key()),
+                    None => "no machine yet".into(),
+                }
+            ),
         ));
     }
     let post_name = setup.post.clone().or_else(|| machine.as_ref().and_then(|m| m.post.clone()));
@@ -1676,7 +1698,9 @@ fn post_program(s: &Session, p: &Value) -> Result<Value> {
         let live = live_setup(s, &setup).map_err(|e| bad(cmd, e))?;
         // A torch has no shank or holder, and cuts through the sheet it stands over.
         if op.uses_tool()
-            && let Some(hit) = super::cam_collide::first_collision(s, &live, &tool, &path).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))? {
+            && let Some(hit) =
+                super::cam_collide::first_collision(s, &live, &tool, &path).map_err(|e| bad(cmd, format!("operation `{}`: {e}", op.name())))?
+        {
             return Err(bad(cmd, format!("operation `{}`: {}", op.name(), super::cam_collide::describe(&hit))));
         }
         move_count = move_count.saturating_add(path.moves.len());
@@ -3350,12 +3374,14 @@ fn compensated_contour_path(
     if !tabs.is_empty() {
         return Err("holding tabs lift the tool in the middle of the contour, which compensation on the control cannot follow: leave them out, or compensate in the CAM".into());
     }
-    let length = |lead: &Lead| match *lead {
+    let length = |lead: &Lead| {
+        match *lead {
         Lead::Direct => Ok(0.0),
         Lead::Perpendicular { length } => Ok(length),
         Lead::Arc { .. } | Lead::Tangent { .. } => Err(
             "with compensation on the control the tool comes on and leaves along a straight line square to the contour: choose no lead or a square lead".to_string(),
         ),
+    }
     };
     let lead = length(&leads.lead_in)?.max(length(&leads.lead_out)?);
     if let CamGeometry::Edges { .. } = geometry {
@@ -4768,9 +4794,21 @@ mod tests {
         let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
         // A 1 mm chamfer round the outline: the tip 1.5 mm down, the centre 1 mm off the wall.
         run(&mut s, "cam.op.chamfer", json!({"setup": "Top", "name": "Fase", "tool": 1, "outer": outer, "width": 1, "spindle_rpm": 8000}));
-        run(&mut s, "cam.op.engrave", json!({"setup": "Top", "name": "Gravur", "tool": 2, "outer": [[10, 10], [50, 10], [50, 30], [10, 30]], "bottom": -0.3, "spindle_rpm": 12000}));
-        run(&mut s, "cam.op.helix", json!({"setup": "Top", "name": "Bohrung", "tool": 3, "points": [[30, 20]], "diameter": 16, "bottom": -12, "stepdown": 2, "spindle_rpm": 8000}));
-        run(&mut s, "cam.op.thread", json!({"setup": "Top", "name": "M10", "tool": 4, "points": [[10, 20]], "diameter": 10, "bottom": -10, "spindle_rpm": 6000}));
+        run(
+            &mut s,
+            "cam.op.engrave",
+            json!({"setup": "Top", "name": "Gravur", "tool": 2, "outer": [[10, 10], [50, 10], [50, 30], [10, 30]], "bottom": -0.3, "spindle_rpm": 12000}),
+        );
+        run(
+            &mut s,
+            "cam.op.helix",
+            json!({"setup": "Top", "name": "Bohrung", "tool": 3, "points": [[30, 20]], "diameter": 16, "bottom": -12, "stepdown": 2, "spindle_rpm": 8000}),
+        );
+        run(
+            &mut s,
+            "cam.op.thread",
+            json!({"setup": "Top", "name": "M10", "tool": 4, "points": [[10, 20]], "diameter": 10, "bottom": -10, "spindle_rpm": 6000}),
+        );
         run(&mut s, "cam.op.tap", json!({"setup": "Top", "name": "M10 Gewinde", "tool": 5, "points": [[50, 20]], "bottom": -12}));
         let paths = s.cam_toolpaths();
         let lowest = |name: &str| {
@@ -4851,7 +4889,8 @@ mod tests {
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20}));
         // Round the plate the cutter stays 4 mm off the jaw; 4 mm further out it runs into it.
         let around = |w: f64| json!([[0, 0], [w, 0], [w, 30], [0, 30]]);
-        let contour = |name: &str, w: f64| json!({"setup": "Top", "name": name, "tool": 1, "outer": around(w), "side": "outside", "bottom": -3, "stepdown": 3});
+        let contour =
+            |name: &str, w: f64| json!({"setup": "Top", "name": name, "tool": 1, "outer": around(w), "side": "outside", "bottom": -3, "stepdown": 3});
         run(&mut s, "cam.op.contour", contour("Round", 40.0));
         run(&mut s, "cam.post", json!({"setup": "Top"}));
         run(&mut s, "cam.op.contour", contour("Wide", 44.0));
@@ -4859,14 +4898,22 @@ mod tests {
         assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("fixture `Jaw`")), "{refused:?}");
         // A holder wider than the cutter counts too: the cutter passes the jaw, its holder 5 mm above the tip does not.
         run(&mut s, "cam.op.remove", json!({"setup": "Top", "name": "Wide"}));
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "stick_out": 5, "holder": {"diameter": 40, "length": 50}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 20, "stick_out": 5, "holder": {"diameter": 40, "length": 50}}),
+        );
         assert!(s.execute("cam.post", &json!({"setup": "Top"})).is_err(), "the holder sweeps over the jaw");
         // Not a body, or both part and fixture: refused.
         assert!(s.execute("cam.setup", &json!({"name": "Top", "fixtures": ["Nope"]})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Top", "model_bodies": ["Jaw"]})).is_err());
         // Part zero kept where it was saved, or following the model when asked.
         run(&mut s, "cam.setup", json!({"name": "Kept", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner}));
-        run(&mut s, "cam.setup", json!({"name": "Live", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner, "zero_follows": true}));
+        run(
+            &mut s,
+            "cam.setup",
+            json!({"name": "Live", "fixtures": ["Jaw"], "wcs_origin_mode": "model_box_point", "box_point": corner, "zero_follows": true}),
+        );
         block(&mut s, [0.0, 0.0], [10.0, 10.0], 20.0, "Boss");
         let z = |s: &Session, name: &str| s.cam_setup_outline(name).unwrap().origin.z;
         assert!((z(&s, "Kept") - 8.0).abs() < 1e-6 && (z(&s, "Live") - 20.0).abs() < 1e-6, "{} {}", z(&s, "Kept"), z(&s, "Live"));
@@ -4886,8 +4933,12 @@ mod tests {
             "torch": {"kerf": 1.5, "feed": 2500, "pierce_height": 3.8, "cut_height": 1.5, "pierce_delay": 0.5}});
         run(&mut s, "cam.machine.define", table);
         let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
-        run(&mut s, "cam.setup", json!({"name": "Cut", "part": "Bracket", "operation_type": "plasma", "machine": "Table",
-            "wcs_origin_mode": "model_box_point", "box_point": corner}));
+        run(
+            &mut s,
+            "cam.setup",
+            json!({"name": "Cut", "part": "Bracket", "operation_type": "plasma", "machine": "Table",
+            "wcs_origin_mode": "model_box_point", "box_point": corner}),
+        );
         let outer = json!([[0, 0], [60, 0], [60, 40], [0, 40]]);
         let holes = json!([[[20, 15], [20, 19], [24, 19], [24, 15]]]);
         // No tool: the kerf, heights, delay and feed come from the plasma table.
@@ -4944,7 +4995,11 @@ mod tests {
         // Machines and posts by kind: a milling setup refuses the plasma table, a plasma setup a
         // mill and a milling post; a plasma table refuses a milling post; a torch is no tool.
         assert!(s.execute("cam.setup", &json!({"name": "Mill", "machine": "Table"})).is_err_and(|e| e.to_string().contains("plasma machine")));
-        run(&mut s, "cam.machine.define", json!({"name": "Router", "x": [0, 600], "y": [0, 400], "z": [-100, 0], "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000}));
+        run(
+            &mut s,
+            "cam.machine.define",
+            json!({"name": "Router", "x": [0, 600], "y": [0, 400], "z": [-100, 0], "spindle_min": 1000, "spindle_max": 24000, "max_feed": 5000}),
+        );
         assert!(s.execute("cam.setup", &json!({"name": "Cut", "machine": "Router"})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Cut", "post": "linuxcnc"})).is_err_and(|e| e.to_string().contains("mill machine")));
         assert!(s.execute("cam.post", &json!({"setup": "Cut", "post": "heidenhain"})).is_err());
@@ -4952,7 +5007,10 @@ mod tests {
         milling_post["post"] = json!("grbl");
         assert!(s.execute("cam.machine.define", &milling_post).is_err_and(|e| e.to_string().contains("not a plasma machine")));
         assert!(s.execute("cam.setup", &json!({"name": "Cut", "operation_type": "milling"})).is_err());
-        assert!(s.execute("cam.tool.define", &json!({"number": 2, "kind": "plasma", "diameter": 1.5, "flute_length": 6})).is_err_and(|e| e.to_string().contains("no tool")));
+        assert!(
+            s.execute("cam.tool.define", &json!({"number": 2, "kind": "plasma", "diameter": 1.5, "flute_length": 6}))
+                .is_err_and(|e| e.to_string().contains("no tool"))
+        );
         // The part's sheet: both setups, the cut's torch data and no tool for it.
         let sheet = run(&mut s, "cam.sheet", json!({"part": "Bracket"}));
         assert_eq!(sheet["setups"].as_array().map(Vec::len), Some(2));
@@ -4971,15 +5029,27 @@ mod tests {
         run(&mut s, "sketch.finish", json!({}));
         run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
         let holder = json!({"description": "ER16", "diameter": 28, "length": 40});
-        run(&mut s, "cam.tool.define", json!({"number": 3, "diameter": 6, "flute_length": 12, "description": "=6 mm, carbide", "stick_out": 30, "holder": holder}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 3, "diameter": 6, "flute_length": 12, "description": "=6 mm, carbide", "stick_out": 30, "holder": holder}),
+        );
         run(&mut s, "cam.tool.define", json!({"number": 7, "kind": "chamfer", "diameter": 10, "flute_length": 5, "tip_angle": 90}));
         run(&mut s, "cam.tool.define", json!({"number": 9, "diameter": 2, "flute_length": 5}));
         let corner = json!({"x": "negative", "y": "negative", "z": "positive"});
         run(&mut s, "cam.setup", json!({"name": "Top", "wcs_origin_mode": "model_box_point", "box_point": corner, "material": "aluminium"}));
         run(&mut s, "cam.setup", json!({"name": "Bottom"}));
         let outer = json!([[0, 0], [40, 0], [40, 30], [0, 30]]);
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Outline", "tool": 3, "outer": outer, "side": "outside", "bottom": -3, "stepdown": 3}));
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Edge", "tool": 7, "outer": outer, "side": "outside", "bottom": -1, "stepdown": 1}));
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Outline", "tool": 3, "outer": outer, "side": "outside", "bottom": -3, "stepdown": 3}),
+        );
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Edge", "tool": 7, "outer": outer, "side": "outside", "bottom": -1, "stepdown": 1}),
+        );
         run(&mut s, "cam.op.skip", json!({"setup": "Top", "name": "Edge", "skip": true}));
         let sheet = run(&mut s, "cam.sheet", json!({}));
         // Only the tools a step uses, by number, each with the steps it cuts in.
@@ -5043,14 +5113,26 @@ mod tests {
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10}));
         // Round the plate's left part, 3 mm off it: the cutter's centre runs at x = 23, 7 mm from the wall.
         let outer = json!([[0, 0], [20, 0], [20, 30], [0, 30]]);
-        run(&mut s, "cam.op.contour", json!({"setup": "Top", "name": "Near", "tool": 1, "outer": outer, "side": "outside", "clearance": 60, "retract": 10, "top": 8, "bottom": 5, "stepdown": 3}));
+        run(
+            &mut s,
+            "cam.op.contour",
+            json!({"setup": "Top", "name": "Near", "tool": 1, "outer": outer, "side": "outside", "clearance": 60, "retract": 10, "top": 8, "bottom": 5, "stepdown": 3}),
+        );
         let post = |s: &mut Session| s.execute("cam.post", &json!({"setup": "Top"})).map(|_| ()).map_err(|e| e.to_string());
         // A 30 mm holder 25 mm above the tip reaches over the wall, which stands 10 mm higher.
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 25, "holder": {"diameter": 30, "length": 40}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 25, "holder": {"diameter": 30, "length": 40}}),
+        );
         let refused = post(&mut s);
         assert!(refused.as_ref().is_err_and(|e| e.contains("tool holder runs into body `Wall`")), "{refused:?}");
         // Sticking out 45 mm it clears the wall; the 6 mm shank keeps 4 mm off it.
-        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "holder": {"diameter": 30, "length": 40}}));
+        run(
+            &mut s,
+            "cam.tool.define",
+            json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "holder": {"diameter": 30, "length": 40}}),
+        );
         assert_eq!(post(&mut s), Ok(()));
         // A 20 mm shank above the flutes does not.
         run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 10, "stick_out": 45, "shank_diameter": 20}));
@@ -5084,7 +5166,10 @@ mod tests {
         assert_eq!((order["setup"].clone(), order["order"].clone()), (json!("S4"), json!(["Drill", "Bore"])));
         // Renaming follows into the skipped list; the copy is its own step.
         let order = run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Core", "new_name": "  Kernloch "}));
-        assert_eq!((order["order"].clone(), order["skipped"].clone()), (json!(["Kernloch", "Core 2", "Core 3", "Drill"]), json!(["Kernloch", "Core 2", "Core 3"])));
+        assert_eq!(
+            (order["order"].clone(), order["skipped"].clone()),
+            (json!(["Kernloch", "Core 2", "Core 3", "Drill"]), json!(["Kernloch", "Core 2", "Core 3"]))
+        );
         run(&mut s, "cam.op.rename", json!({"setup": "S3", "name": "Drill", "new_name": "Drill"}));
         assert_eq!(s.doc.cam.setup("S3").unwrap().operations.len(), 4);
         // Undo takes a copy back.
@@ -5097,8 +5182,11 @@ mod tests {
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "Core 2"})),
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": " "})),
             ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "x".repeat(129)})),
-            ("cam.op.rename", json!({"setup": "S3", "name": "Kernloch", "new_name": "a
-b"})),
+            (
+                "cam.op.rename",
+                json!({"setup": "S3", "name": "Kernloch", "new_name": "a
+b"}),
+            ),
             ("cam.op.rename", json!({"setup": "S3", "name": "Missing", "new_name": "B"})),
             ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "to_setup": "Nope"})),
             ("cam.op.duplicate", json!({"setup": "S3", "name": "Drill", "new_name": "Core 2"})),

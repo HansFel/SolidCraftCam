@@ -3,13 +3,14 @@
 //! writes its programs, material and highest spindle speed. OK runs `cam.setup` with the picks;
 //! the engine works out the frame and copies the chosen machine and post into the design.
 use crate::selection::{EDGES, PLANAR_FACES, SelInput, VERTICES};
+use crate::ui_kit;
 use crate::viewport::Proj;
-use crate::{theme::Tokens, ui_kit};
 use egui::Stroke;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::cam::{MATERIALS, Machine, Post};
 use solidcraft_engine::doc::cam::{BoxAxisRef, CamSetup, CamStock, SetupOperationType, StockOffsetMode, WcsOriginMode};
+use solidcraft_theme::Tokens;
 
 /// What a setup does, in the order the form offers it. Each runs on machines of its own kind.
 pub(crate) const TYPES: [(SetupOperationType, &str); 2] =
@@ -194,7 +195,7 @@ impl CamSetupForm {
     }
 
     pub fn params(&self, inputs: &[SelInput]) -> Result<Value, String> {
-        let tr = crate::i18n::tr;
+        let tr = solidcraft_ui_text::tr;
         let name = self.name.trim();
         if name.is_empty() {
             return Err(tr("ui.cam.setup_name_needed").into());
@@ -296,7 +297,7 @@ fn note(ui: &mut egui::Ui, text: &str) {
 
 /// Above the pick rows: name, work offset and how part zero is found.
 pub fn head_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     part_row(app, ui, form);
     let kinds: Vec<&str> = TYPES.iter().map(|(_, key)| tr(key)).collect();
     let mut kind = form.kind.unwrap_or(usize::MAX);
@@ -340,7 +341,7 @@ pub fn head_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupFo
 
 /// Below the pick rows: the axes, the stock, machine, material and highest spindle speed.
 pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     note(ui, tr("ui.cam.axis_hint"));
     if form.editing.is_some() {
         note(ui, tr("ui.cam.kept_axes"));
@@ -378,7 +379,7 @@ pub fn rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
 
 /// The bodies holding the part: each body of the design with a box to make it a fixture.
 fn fixture_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let Ok(state) = app.session.world_state() else { return };
     let bodies: Vec<String> = state.bodies.iter().map(|b| b.name.clone()).collect();
     if bodies.len() < 2 && form.fixtures.is_empty() {
@@ -401,7 +402,7 @@ fn fixture_rows(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupFor
 
 /// The part the setup makes: one the design's setups already name, or a new one typed here.
 fn part_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let parts = crate::cam_panel::parts(&app.session.doc.cam);
     let named: Vec<&str> = parts.iter().filter_map(|p| p.as_deref()).collect();
     if named.is_empty() {
@@ -428,7 +429,7 @@ fn part_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
 
 /// The machine: none, or one of its kind from the personal list or only the design has.
 fn machine_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let kind = form.operation_type(app).machine_kind();
     // A machine of another kind does not run this setup: changing what it does drops it.
     if form.machine.as_ref().is_some_and(|m| Some(m.kind) != kind) {
@@ -457,7 +458,7 @@ fn machine_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm
 /// The post the setup's programs are written with: its machine's (or the type's default), or
 /// another post for that kind of machine.
 fn post_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
-    let tr = crate::i18n::tr;
+    let tr = solidcraft_ui_text::tr;
     let Some(kind) = form.operation_type(app).machine_kind() else { return };
     let posts = crate::cam_panel::posts_for(app, kind);
     if form.post.as_ref().is_some_and(|p| !posts.iter().any(|(n, _)| n == p)) {
@@ -467,7 +468,7 @@ fn post_row(app: &crate::SolveApp, ui: &mut egui::Ui, form: &mut CamSetupForm) {
         SetupOperationType::Plasma => "plasma".into(),
         _ => "rs274".into(),
     });
-    let first = crate::i18n::format("ui.cam.post_of_machine", &[("post", &crate::cam_panel::post_label(&inherited))]);
+    let first = solidcraft_ui_text::format("ui.cam.post_of_machine", &[("post", &crate::cam_panel::post_label(&inherited))]);
     let labels: Vec<String> = std::iter::once(first).chain(posts.iter().map(|(n, _)| crate::cam_panel::post_label(n))).collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     let current = form.post.as_ref().and_then(|p| posts.iter().position(|(n, _)| n == p)).map_or(0, |i| i + 1);

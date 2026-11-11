@@ -194,7 +194,9 @@ fn setup_row(s: &mut Session, setup: &CamSetup) -> SheetSetup {
                 tool: op.uses_tool().then(|| op.tool()),
                 torch: torch_row(s, op),
                 compensation: match op {
-                    CamOperation::Contour { params, .. } if !params.compensation.is_cam() => serde_json::to_value(params.compensation).ok().and_then(|v| v.as_str().map(str::to_string)),
+                    CamOperation::Contour { params, .. } if !params.compensation.is_cam() => {
+                        serde_json::to_value(params.compensation).ok().and_then(|v| v.as_str().map(str::to_string))
+                    }
                     _ => None,
                 },
                 skipped: skipped(op),
@@ -347,7 +349,11 @@ const HEADINGS: &[(&str, &str)] = &[
 /// The sheet as one printable HTML page, its own styles inline.
 fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> String {
     let l = |key: &str| -> String {
-        labels.get(key).cloned().or_else(|| HEADINGS.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_string())).unwrap_or_else(|| key.to_string())
+        labels
+            .get(key)
+            .cloned()
+            .or_else(|| HEADINGS.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_string()))
+            .unwrap_or_else(|| key.to_string())
     };
     let kind = |prefix: &str, key: &str| labels.get(&format!("{prefix}.{key}")).cloned().unwrap_or_else(|| key.replace('_', " "));
     let v3 = |v: [f64; 3]| format!("{} / {} / {}", mm(v[0]), mm(v[1]), mm(v[2]));
@@ -363,27 +369,27 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
     h.push_str(&format!("<h1>{}</h1>\n", esc(title)));
     // The tool list, when a step uses a tool (a plasma cut needs none).
     if !sheet.tools.is_empty() {
-    h.push_str(&format!("<section><h2>{}</h2>\n<table><tr>", esc(&l("tools"))));
-    for key in ["number", "kind", "description", "diameter", "flute_length", "flutes", "sizes", "stick_out", "holder", "used_in"] {
-        h.push_str(&format!("<th>{}</th>", esc(&l(key))));
-    }
-    h.push_str("</tr>\n");
-    for t in &sheet.tools {
-        let mut sizes = Vec::new();
-        for (label, value) in [
-            ("R", t.corner_radius),
-            ("∠", t.tip_angle.map(|a| a.round())),
-            ("⌀tip", t.tip_diameter),
-            ("P", t.pitch),
-            ("⌀shank", t.shank_diameter),
-            ("L", t.overall_length),
-        ] {
-            if let Some(v) = value {
-                sizes.push(format!("{label} {}", mm(v)));
-            }
+        h.push_str(&format!("<section><h2>{}</h2>\n<table><tr>", esc(&l("tools"))));
+        for key in ["number", "kind", "description", "diameter", "flute_length", "flutes", "sizes", "stick_out", "holder", "used_in"] {
+            h.push_str(&format!("<th>{}</th>", esc(&l(key))));
         }
-        let holder = t.holder.as_ref().map_or(String::new(), |h| format!("{} ⌀{} × {}", h.description, mm(h.diameter), mm(h.length)));
-        h.push_str(&format!(
+        h.push_str("</tr>\n");
+        for t in &sheet.tools {
+            let mut sizes = Vec::new();
+            for (label, value) in [
+                ("R", t.corner_radius),
+                ("∠", t.tip_angle.map(|a| a.round())),
+                ("⌀tip", t.tip_diameter),
+                ("P", t.pitch),
+                ("⌀shank", t.shank_diameter),
+                ("L", t.overall_length),
+            ] {
+                if let Some(v) = value {
+                    sizes.push(format!("{label} {}", mm(v)));
+                }
+            }
+            let holder = t.holder.as_ref().map_or(String::new(), |h| format!("{} ⌀{} × {}", h.description, mm(h.diameter), mm(h.length)));
+            h.push_str(&format!(
             "<tr><td class=\"n\">T{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td>{}</td><td class=\"n\">{}</td><td>{}</td><td>{}</td></tr>\n",
             t.number,
             esc(&kind("kind", &t.kind)),
@@ -396,8 +402,8 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
             esc(holder.trim()),
             t.used_in.iter().map(|u| esc(u)).collect::<Vec<_>>().join("<br>"),
         ));
-    }
-    h.push_str("</table></section>\n");
+        }
+        h.push_str("</table></section>\n");
     }
     // A sheet per setup.
     h.push_str(&format!("<h2>{}</h2>\n", esc(&l("setups"))));
@@ -419,7 +425,15 @@ fn html(sheet: &SheetResult, title: &str, labels: &BTreeMap<String, String>) -> 
             (
                 l("stock"),
                 s.stock.as_ref().map_or(none.clone(), |st| {
-                    format!("{}: {} × {} × {} ({} … {})", kind("stock", &st.kind), mm(st.size[0]), mm(st.size[1]), mm(st.size[2]), v3(st.min), v3(st.max))
+                    format!(
+                        "{}: {} × {} × {} ({} … {})",
+                        kind("stock", &st.kind),
+                        mm(st.size[0]),
+                        mm(st.size[1]),
+                        mm(st.size[2]),
+                        v3(st.min),
+                        v3(st.max)
+                    )
                 }),
             ),
             (l("fixtures"), list(&s.fixtures)),

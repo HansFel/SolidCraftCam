@@ -303,7 +303,8 @@ mod tests {
     #[test]
     fn runs_join_straight_points_and_split_at_bends_and_rapids() {
         let p = |x: f64, y: f64, z: f64, cut: bool| (Vec3::new(x, y, z), cut);
-        let points = [p(0.0, 0.0, 5.0, false), p(0.0, 0.0, -2.0, false), p(10.0, 0.0, -2.0, true), p(20.0, 0.0, -2.0, true), p(20.0, 10.0, -2.0, true)];
+        let points =
+            [p(0.0, 0.0, 5.0, false), p(0.0, 0.0, -2.0, false), p(10.0, 0.0, -2.0, true), p(20.0, 0.0, -2.0, true), p(20.0, 10.0, -2.0, true)];
         let r = runs(&points);
         assert_eq!(r.len(), 3, "a plunge, the straight cut along X and the turn into Y");
         assert!(r[0].rapid && !r[1].rapid);

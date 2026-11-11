@@ -297,7 +297,11 @@ fn contour_params(side: Side) -> ContourParams {
 }
 
 fn one_op(path: Toolpath, tool: Tool) -> Program {
-    Program { name: "Comp".into(), operations: vec![Operation { name: "Contour".into(), tool, spindle_rpm: 8000.0, coolant: false, path }], work_offset: None }
+    Program {
+        name: "Comp".into(),
+        operations: vec![Operation { name: "Contour".into(), tool, spindle_rpm: 8000.0, coolant: false, path }],
+        work_offset: None,
+    }
 }
 
 #[test]
@@ -331,7 +335,11 @@ fn a_contour_compensated_on_the_control_writes_the_contour_with_g41_and_g40_roun
         assert!(matches!(path.moves.get(run.start - 1), Some(Move::Feed { to, .. }) if (to.x - 20.0).abs() < 1e-9 && (to.y + 7.5).abs() < 1e-9));
     }
     let program = one_op(path.clone(), mill.clone());
-    for (post, on, off) in [(Post::linuxcnc(), "G41 D1 G1 Y0", "G40 G1 Y-7.5"), (Post::fanuc(), "G41 D1 G01 Y0.", "G40 G01 Y-7.5"), (Post::sinumerik(), "G41 G1 Y0", "G40 G1 Y-7.5")] {
+    for (post, on, off) in [
+        (Post::linuxcnc(), "G41 D1 G1 Y0", "G40 G1 Y-7.5"),
+        (Post::fanuc(), "G41 D1 G01 Y0.", "G40 G01 Y-7.5"),
+        (Post::sinumerik(), "G41 G1 Y0", "G40 G1 Y-7.5"),
+    ] {
         let text = emit(&program, &post).unwrap();
         assert_eq!(text.matches(on).count(), 2, "{}: {text}", post.name);
         assert_eq!(text.matches(off).count(), 2, "{}: {text}", post.name);
@@ -385,7 +393,9 @@ fn wear_compensation_writes_the_nominal_centre_path_and_stock_and_overlap_are_ke
     assert!(contour.iter().filter_map(Move::target).all(|p| (shape.dist(Vec2::new(p.x, p.y)) - 0.5).abs() < 1e-6));
     assert!(cutting_points(&path, -1.0).iter().all(|p| shape.dist(Vec2::new(p.x, p.y)) >= 3.5 - 1e-6));
     // The longer lead: 3 + 10 mm off the contour; the overlap runs 5 mm past the start.
-    let (Some(Move::Feed { to: on, .. }), Some(Move::Feed { to: off, .. })) = (run.programmed.first(), run.programmed.last()) else { panic!("entry and exit lines") };
+    let (Some(Move::Feed { to: on, .. }), Some(Move::Feed { to: off, .. })) = (run.programmed.first(), run.programmed.last()) else {
+        panic!("entry and exit lines")
+    };
     close(shape.dist(Vec2::new(off.x, off.y)), 13.5, 1e-6);
     let last_on_contour = contour.last().and_then(Move::target).unwrap();
     close(Vec2::new(on.x, on.y).dist(Vec2::new(last_on_contour.x, last_on_contour.y)), 5.0, 1e-6);
@@ -1338,7 +1348,9 @@ fn the_load_of_a_cut_gives_chip_power_and_torque_and_thin_chips_raise_the_feed()
     let tap = Tool { pitch: Some(1.5), ..Tool::new(3, ToolKind::Tap, 10.0, 20.0) };
     assert_eq!(load(&tap, "steel", 300.0, 450.0, 1.0, 1.0), None);
     assert_eq!(load(&mill, "unobtainium", 10_000.0, 900.0, 6.0, 3.0), None);
-    for (rpm, feed, ap, ae) in [(0.0, 900.0, 6.0, 3.0), (f64::NAN, 900.0, 6.0, 3.0), (1e4, f64::INFINITY, 6.0, 3.0), (1e4, 900.0, 0.0, 3.0), (1e4, 900.0, 6.0, -1.0)] {
+    for (rpm, feed, ap, ae) in
+        [(0.0, 900.0, 6.0, 3.0), (f64::NAN, 900.0, 6.0, 3.0), (1e4, f64::INFINITY, 6.0, 3.0), (1e4, 900.0, 0.0, 3.0), (1e4, 900.0, 6.0, -1.0)]
+    {
         assert_eq!(load(&mill, "aluminium", rpm, feed, ap, ae), None);
     }
     // A machine names what its spindle has: more is flagged, so are speeds beyond it.
@@ -2288,7 +2300,8 @@ fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     let heights = cut(0.0, -12.0, 2.0);
     let path = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, ..Default::default() }, &heights).unwrap();
     // Down the helix 2 mm a turn, one turn at the bottom, out through the middle.
-    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    let arcs: Vec<(Vec3, bool)> =
+        path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     assert_eq!(arcs.len(), 12 + 2);
     assert!(arcs.iter().all(|(to, ccw)| *ccw && (Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) - 3.0).abs() < 1e-9));
     assert!(arcs.windows(2).all(|w| w[1].0.z <= w[0].0.z + 1e-9), "the helix only goes down");
@@ -2317,7 +2330,8 @@ fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     let drill = Tool::new(2, ToolKind::Drill, 6.0, 30.0);
     assert!(helical_bore(&[v(0.0, 0.0)], &drill, &HelixParams { diameter: 10.0, climb: true, ..Default::default() }, &heights).is_err());
     // A pitch of its own replaces the stepdown: 4 mm a turn is 3 turns down 12 mm.
-    let steep = helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, pitch: Some(4.0), outside: false }, &heights).unwrap();
+    let steep =
+        helical_bore(&[v(20.0, 20.0)], &mill, &HelixParams { diameter: 16.0, climb: true, pitch: Some(4.0), outside: false }, &heights).unwrap();
     assert_eq!(steep.moves.iter().filter(|m| matches!(m, Move::Arc { .. })).count(), 6 + 2);
     for pitch in [0.0, -1.0, f64::NAN] {
         let params = HelixParams { diameter: 16.0, climb: true, pitch: Some(pitch), outside: false };
@@ -2327,9 +2341,13 @@ fn a_helically_bored_hole_is_round_and_flat_and_reads_back_for_every_post() {
     // groove. The boss stands, the groove is 12 deep, and a boss wider than twice the tool is fine.
     let boss = HelixParams { diameter: 20.0, climb: true, pitch: None, outside: true };
     let path = helical_bore(&[v(20.0, 20.0)], &mill, &boss, &heights).unwrap();
-    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    let arcs: Vec<(Vec3, bool)> =
+        path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     assert!(arcs.iter().all(|(to, ccw)| !*ccw && (Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) - 15.0).abs() < 1e-9));
-    assert!(path.moves.iter().all(|m| !matches!(m, Move::Feed { to, .. } if Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) < 14.0)), "never into the boss");
+    assert!(
+        path.moves.iter().all(|m| !matches!(m, Move::Feed { to, .. } if Vec2::new(to.x, to.y).dist(v(20.0, 20.0)) < 14.0)),
+        "never into the boss"
+    );
     let mut stock = StockMap::new_box(Vec3::new(0.0, 0.0, -20.0), Vec3::new(40.0, 40.0, 0.0), 0.25).unwrap();
     let report = stock.cut(&mill, &path, Vec3::new(20.0, 20.0, 10.0)).unwrap();
     assert!(report.rapid_hits.is_empty(), "{report:?}");
@@ -2349,7 +2367,8 @@ fn a_milled_thread_rises_one_pitch_a_turn_in_its_hand() {
     let heights = cut(0.0, -10.0, 10.0);
     let m10 = ThreadParams { diameter: 10.0, pitch: 1.5, internal: true, left_hand: false };
     let path = thread_mill(&[v(0.0, 0.0)], &mill, &m10, &heights).unwrap();
-    let arcs: Vec<(Vec3, bool)> = path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
+    let arcs: Vec<(Vec3, bool)> =
+        path.moves.iter().filter_map(|m| if let Move::Arc { to, ccw, .. } = m { Some((*to, *ccw)) } else { None }).collect();
     // Up from the bottom, counter-clockwise for a right-hand thread, 0.75 mm a half turn, on a 2 mm radius.
     assert_eq!(arcs.len(), 14);
     for (i, (to, ccw)) in arcs.iter().enumerate() {
@@ -2404,7 +2423,8 @@ fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
     .unwrap();
     let drill_tool = Tool::new(3, ToolKind::Drill, 5.0, 40.0);
     let drill_path = drill(&[v(10.0, 15.0), v(25.0, 15.0)], &drill_tool, &cut(0.0, -5.0, 2.0), 0.25).unwrap();
-    let bore = helical_bore(&[v(20.0, 15.0)], &tool(6.0), &HelixParams { diameter: 10.0, climb: true, ..Default::default() }, &cut(0.0, -4.0, 2.0)).unwrap();
+    let bore =
+        helical_bore(&[v(20.0, 15.0)], &tool(6.0), &HelixParams { diameter: 10.0, climb: true, ..Default::default() }, &cut(0.0, -4.0, 2.0)).unwrap();
     let mut program = Program {
         name: "Saugbacke S1".into(),
         operations: vec![
@@ -2445,7 +2465,11 @@ fn heidenhain_klartext_writes_numbered_blocks_and_reads_back() {
 fn a_plasma_torch_cuts_holes_first_and_is_lit_only_from_pierce_to_rapid() {
     let mut torch = Tool::new(1, ToolKind::Plasma, 1.5, 10.0);
     (torch.pierce_height, torch.cut_height, torch.pierce_delay) = (Some(3.8), Some(1.5), Some(0.5));
-    let c = Cut { heights: Heights { clearance: 10.0, retract: 5.0, top: 0.0, bottom: -3.0 }, feeds: Feeds { cut: 2000.0, plunge: 500.0 }, stepdown: 3.0 };
+    let c = Cut {
+        heights: Heights { clearance: 10.0, retract: 5.0, top: 0.0, bottom: -3.0 },
+        feeds: Feeds { cut: 2000.0, plunge: 500.0 },
+        stepdown: 3.0,
+    };
     let outside = ContourParams { side: Side::Outside, climb: false, stock_to_leave: 0.0, tolerance: 0.01, ramp_angle: 0.0 };
     let inside = ContourParams { side: Side::Inside, ..outside };
     // The outline first, then a 4 mm hole in it: the torch cuts the hole first, at half the feed.

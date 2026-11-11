@@ -73,7 +73,15 @@ pub fn plasma(path: &Toolpath, tool: &Tool, p: &PlasmaParams) -> Result<Toolpath
         stretches
             .iter()
             .enumerate()
-            .filter(|(j, b)| *j != i && b.closed && b.lo.x <= a.lo.x && b.lo.y <= a.lo.y && b.hi.x >= a.hi.x && b.hi.y >= a.hi.y && (b.hi - b.lo).len() > (a.hi - a.lo).len())
+            .filter(|(j, b)| {
+                *j != i
+                    && b.closed
+                    && b.lo.x <= a.lo.x
+                    && b.lo.y <= a.lo.y
+                    && b.hi.x >= a.hi.x
+                    && b.hi.y >= a.hi.y
+                    && (b.hi - b.lo).len() > (a.hi - a.lo).len()
+            })
             .count()
     };
     let depths: Vec<usize> = (0..stretches.len()).map(depth).collect();

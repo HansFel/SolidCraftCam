@@ -2,9 +2,9 @@
 //! shows on hover. Both read the same messages, so a field explains itself in the words the
 //! manual uses.
 
-use crate::i18n::tr;
 use crate::ui_kit;
 use crate::ui_kit::BackingTooltipExt as _;
+use solidcraft_ui_text::tr;
 
 /// The manual's sections in reading order: heading and text.
 const SECTIONS: &[(&str, &str)] = &[
@@ -153,7 +153,7 @@ pub(crate) fn manual_tab(ui: &mut egui::Ui) {
         for paragraph in tr(text).split("\n\n") {
             ui.add(egui::Label::new(paragraph).wrap());
         }
-        ui.add_space(crate::theme::Tokens::get().space_8);
+        ui.add_space(solidcraft_theme::Tokens::get().space_8);
     }
     ui_kit::text(ui, tr("ui.cam.manual.fields"), ui_kit::Text::Heading("cam-manual"));
     let mut done: Vec<&str> = Vec::new();
@@ -175,6 +175,7 @@ mod tests {
     /// Every section and every explanation has its English words, and no explanation is unused.
     #[test]
     fn the_cam_manual_and_every_field_explanation_have_their_words() {
+        crate::i18n::install();
         for (title, text) in SECTIONS {
             for id in [title, text] {
                 assert_ne!(tr(id), *id, "{id} has no message");

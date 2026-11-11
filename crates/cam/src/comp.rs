@@ -100,7 +100,14 @@ impl CompParams {
 /// documentation. The toolpath's moves are the tool centre's path, its [`Toolpath::comp`] runs
 /// what the program says. Refused for a ramp, a contour on the line and wherever the control
 /// could not offset the contour without cutting into the part.
-pub fn contour_compensated(regions: &[Region2], tool: &Tool, params: &ContourParams, comp: &CompParams, cut: &Cut, start: Option<Vec2>) -> Result<Toolpath> {
+pub fn contour_compensated(
+    regions: &[Region2],
+    tool: &Tool,
+    params: &ContourParams,
+    comp: &CompParams,
+    cut: &Cut,
+    start: Option<Vec2>,
+) -> Result<Toolpath> {
     if start.is_some_and(|p| !p.is_finite() || p.x.abs() > MAX_COORD || p.y.abs() > MAX_COORD) {
         return invalid("the start point must be finite and within 1e6 mm");
     }

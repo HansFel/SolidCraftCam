@@ -18,9 +18,9 @@ use solidcraft_engine::doc::cam::{CamOperation, CamSettings, CamSetup, SetupOper
 use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
-use crate::i18n::tr;
-use crate::theme::Tokens;
 use crate::ui_kit;
+use solidcraft_theme::Tokens;
+use solidcraft_ui_text::tr;
 
 /// Most tools the library keeps.
 const MAX_TOOLS: usize = 500;
@@ -252,7 +252,9 @@ pub(crate) fn posts_for(app: &SolveApp, kind: MachineKind) -> Vec<(String, Optio
     let mut out: Vec<(String, Option<Post>)> =
         Post::BUILTIN.iter().filter_map(|n| Post::builtin(n)).filter(|p| p.machine == kind).map(|p| (p.name, None)).collect();
     out.extend(cam.posts.iter().filter(|p| p.machine == kind).map(|p| (p.name.clone(), None)));
-    out.extend(app.preferences.cam_posts.0.iter().filter(|p| p.machine == kind && cam.post(&p.name).is_none()).map(|p| (p.name.clone(), Some(p.clone()))));
+    out.extend(
+        app.preferences.cam_posts.0.iter().filter(|p| p.machine == kind && cam.post(&p.name).is_none()).map(|p| (p.name.clone(), Some(p.clone()))),
+    );
     out
 }
 
@@ -447,16 +449,8 @@ impl ToolEdit {
             flute_length: number(tool.flute_length),
             description: tool.description.clone(),
             cutting,
-            sizes: [
-                tool.corner_radius,
-                tool.tip_angle,
-                tool.tip_diameter,
-                tool.pitch,
-                tool.shank_diameter,
-                tool.overall_length,
-                tool.stick_out,
-            ]
-            .map(|v| v.map(number).unwrap_or_default()),
+            sizes: [tool.corner_radius, tool.tip_angle, tool.tip_diameter, tool.pitch, tool.shank_diameter, tool.overall_length, tool.stick_out]
+                .map(|v| v.map(number).unwrap_or_default()),
             holder: match &tool.holder {
                 Some(h) => [h.description.clone(), number(h.diameter), number(h.length)],
                 None => Default::default(),
@@ -485,15 +479,7 @@ impl ToolEdit {
                 sizes[i] = optional(text)?;
             }
         }
-        [
-            tool.corner_radius,
-            tool.tip_angle,
-            tool.tip_diameter,
-            tool.pitch,
-            tool.shank_diameter,
-            tool.overall_length,
-            tool.stick_out,
-        ] = sizes;
+        [tool.corner_radius, tool.tip_angle, tool.tip_diameter, tool.pitch, tool.shank_diameter, tool.overall_length, tool.stick_out] = sizes;
         tool.holder = match (optional(&self.holder[1])?, optional(&self.holder[2])?) {
             (None, None) => None,
             (Some(diameter), Some(length)) => {
@@ -790,7 +776,7 @@ pub(crate) fn export_library(app: &mut SolveApp) {
     app.pick_save(LIBRARY_FILE, &["json"], move |app, path| {
         let Some(path) = path else { return };
         match solidcraft_engine::io::write_atomic(std::path::Path::new(&path), text.as_bytes(), true) {
-            Ok(()) => app.set_status(crate::i18n::format("ui.cam.library_exported", &[("path", &path)]), false),
+            Ok(()) => app.set_status(solidcraft_ui_text::format("ui.cam.library_exported", &[("path", &path)]), false),
             Err(e) => set_error(app, format!("{path}: {e}")),
         }
     });
@@ -1101,12 +1087,12 @@ pub(crate) fn export(app: &mut SolveApp, setup: &str) -> Result<(), String> {
         let path = std::path::Path::new(&folder).join(&file).to_string_lossy().into_owned();
         match app.run("cam.export", json!({"setup": setup, "path": path, "overwrite": true})) {
             Ok(_) => {
-                app.set_status(crate::i18n::format("ui.cam.exported_to", &[("path", &path)]), false);
+                app.set_status(solidcraft_ui_text::format("ui.cam.exported_to", &[("path", &path)]), false);
                 return Ok(());
             }
             Err(e) => {
                 app.pick_save_command(&file, &[&extension], "cam.export", json!({"setup": setup}));
-                return Err(crate::i18n::format("ui.cam.folder_unreachable", &[("folder", &folder), ("error", &e)]));
+                return Err(solidcraft_ui_text::format("ui.cam.folder_unreachable", &[("folder", &folder), ("error", &e)]));
             }
         }
     }
@@ -1160,7 +1146,8 @@ fn setup_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSe
     });
     // What the setup does, the machine it runs on and the post that writes its program.
     let cam = &app.session.doc.cam;
-    let machine = setup.machine.as_ref().map_or_else(|| tr("ui.cam.machine_none").to_string(), |n| cam.machine(n).map_or_else(|| n.clone(), machine_label));
+    let machine =
+        setup.machine.as_ref().map_or_else(|| tr("ui.cam.machine_none").to_string(), |n| cam.machine(n).map_or_else(|| n.clone(), machine_label));
     let line = format!(
         "{} · {}: {machine} · {}: {}",
         setup_type_label(setup.operation_type),
@@ -1275,7 +1262,7 @@ fn step_rows(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, setup: &CamSet
                     }
                     // Only into setups that take the step: plasma cuts into plasma setups and so on.
                     for other in app.session.doc.cam.setups.iter().filter(|o| o.name != setup.name && o.operation_type.takes(op)) {
-                        let text = crate::i18n::format("ui.cam.copy_to", &[("setup", &other.name)]);
+                        let text = solidcraft_ui_text::format("ui.cam.copy_to", &[("setup", &other.name)]);
                         if ui_kit::list_picker_start(ui, &format!("cam-dup-{}-{name}-{}", setup.name, other.name), &text, false).clicked() {
                             actions.push(Action::Run("cam.op.duplicate", json!({"setup": setup.name, "name": name, "to_setup": other.name})));
                             ui.close();
@@ -1369,7 +1356,7 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView, actions: 
     });
     let Ok(program) = &view.program else { return };
     if let Some(time) = &program.time {
-        let text = crate::i18n::format(
+        let text = solidcraft_ui_text::format(
             "ui.cam.run_time",
             &[
                 ("total", &clock(time.total)),
@@ -1408,8 +1395,10 @@ fn gcode_rows(app: &SolveApp, ui: &mut egui::Ui, view: &mut GcodeView, actions: 
             .changed();
     let count = program.lines.len().to_string();
     ui.add(
-        egui::Label::new(RichText::new(crate::i18n::format("ui.cam.gcode_lines", &[("lines", &count), ("post", &program.post)])).color(t.text_dim))
-            .wrap(),
+        egui::Label::new(
+            RichText::new(solidcraft_ui_text::format("ui.cam.gcode_lines", &[("lines", &count), ("post", &program.post)])).color(t.text_dim),
+        )
+        .wrap(),
     );
     ui.add(egui::Label::new(RichText::new(tr("ui.cam.gcode_hint")).color(t.text_dim)).wrap());
     // Searching the lines, right above them.
@@ -1493,13 +1482,13 @@ fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulatio
     };
     let volume = format!("{:.1}", sim.removed / 1000.0);
     let cell = format!("{:.2}", sim.cell);
-    ui.add(egui::Label::new(crate::i18n::format("ui.cam.sim_removed", &[("volume", &volume), ("cell", &cell)])).wrap());
+    ui.add(egui::Label::new(solidcraft_ui_text::format("ui.cam.sim_removed", &[("volume", &volume), ("cell", &cell)])).wrap());
     let mut warned = false;
     for step in &sim.operations {
         for (key, count) in [("ui.cam.sim_rapid_hits", step.report.rapid_hits.len()), ("ui.cam.sim_too_deep", step.report.too_deep.len())] {
             if count > 0 {
                 warned = true;
-                let text = crate::i18n::format(key, &[("step", &step.name), ("count", &count.to_string())]);
+                let text = solidcraft_ui_text::format(key, &[("step", &step.name), ("count", &count.to_string())]);
                 ui.add(egui::Label::new(RichText::new(text).color(t.warning)).wrap());
             }
         }
@@ -1620,11 +1609,7 @@ const SHEET_STEPS: &[(&str, &str)] = &[
 ];
 
 /// The stock kinds of the setup sheet, and their names in the setup form.
-const SHEET_STOCKS: &[(&str, &str)] = &[
-    ("box", "ui.cam.stock_box"),
-    ("cylinder", "ui.cam.stock_round"),
-    ("relative_box", "ui.cam.stock_around"),
-];
+const SHEET_STOCKS: &[(&str, &str)] = &[("box", "ui.cam.stock_box"), ("cylinder", "ui.cam.stock_round"), ("relative_box", "ui.cam.stock_around")];
 
 /// The setup sheet's words in the language shown: headings, tool kinds, step types, stocks.
 fn sheet_labels() -> Value {
@@ -1741,9 +1726,9 @@ fn tools_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &mut 
             tools.iter().filter(|tool| library.find(tool.number).is_some_and(|old| old != *tool)).map(|tool| format!("T{}", tool.number)).collect();
         let (count, new, changed) = (tools.len().to_string(), fresh.to_string(), differ.join(", "));
         let line = if differ.is_empty() {
-            crate::i18n::format("ui.cam.import_summary", &[("count", &count), ("new", &new)])
+            solidcraft_ui_text::format("ui.cam.import_summary", &[("count", &count), ("new", &new)])
         } else {
-            crate::i18n::format("ui.cam.import_summary_replace", &[("count", &count), ("new", &new), ("tools", &changed)])
+            solidcraft_ui_text::format("ui.cam.import_summary_replace", &[("count", &count), ("new", &new), ("tools", &changed)])
         };
         ui.add(egui::Label::new(line).wrap());
         ui.horizontal_wrapped(|ui| {
@@ -1885,7 +1870,8 @@ fn machines_tab(app: &SolveApp, ui: &mut egui::Ui, d: &mut CamPanel, actions: &m
     }
     ui_kit::text_row(ui, tr("ui.cam.max_feed"), &mut edit.max_feed, "");
     // The default, the posts for this kind of machine, and the machine's own if it names another.
-    let mut posts: Vec<String> = Post::BUILTIN.iter().filter(|p| Post::builtin(p).is_some_and(|p| p.machine == kind)).map(|p| (*p).to_string()).collect();
+    let mut posts: Vec<String> =
+        Post::BUILTIN.iter().filter(|p| Post::builtin(p).is_some_and(|p| p.machine == kind)).map(|p| (*p).to_string()).collect();
     posts.extend(app.preferences.cam_posts.0.iter().filter(|p| p.machine == kind).map(|p| p.name.clone()));
     if let Some(own) = &edit.post
         && !posts.contains(own)
@@ -2028,7 +2014,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // right, so the model stays free; closing it brings the window back.
     if let Some(view) = d.gcode.as_mut() {
         let t = Tokens::get();
-        let title = crate::i18n::format("ui.cam.gcode_title", &[("setup", &view.setup)]);
+        let title = solidcraft_ui_text::format("ui.cam.gcode_title", &[("setup", &view.setup)]);
         let corner = ctx.content_rect().right_bottom() - egui::vec2(t.space_24, t.space_24);
         let mut actions = Vec::new();
         let closed = ui_kit::Window::new(egui::Id::unique("sc_cam_gcode"), "cut", &title)
@@ -2133,7 +2119,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             Action::EditSetup(name) => {
                 if let Some(setup) = app.session.doc.cam.setup(&name) {
                     let form = crate::dialogs_cam_setup::CamSetupForm::edit(app, setup);
-                    app.dialog = Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::CamSetup(Box::new(form)), crate::dialogs_cam_setup::inputs()));
+                    app.dialog =
+                        Some(crate::dialogs::Dialog::new(crate::dialogs::Kind::CamSetup(Box::new(form)), crate::dialogs_cam_setup::inputs()));
                 }
                 Ok(())
             }
@@ -2180,7 +2167,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 let tools = d.import.take().unwrap_or_default();
                 take_tools(&mut app.preferences.cam_tools, &tools, replace).map(|(added, replaced)| {
                     let (added, replaced) = (added.to_string(), replaced.to_string());
-                    app.set_status(crate::i18n::format("ui.cam.imported", &[("added", &added), ("replaced", &replaced)]), false);
+                    app.set_status(solidcraft_ui_text::format("ui.cam.imported", &[("added", &added), ("replaced", &replaced)]), false);
                 })
             }
             Action::Machine(machine) => {
@@ -2200,7 +2187,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
             Action::Unpost(name) => match app.preferences.cam_machines.0.iter().find(|m| m.post.as_deref() == Some(name.as_str())) {
                 // A renamed post is taken off after its new name is saved, so its machines are asked about here too.
-                Some(m) => Err(crate::i18n::format("ui.cam.post_in_use", &[("machine", &m.name)])),
+                Some(m) => Err(solidcraft_ui_text::format("ui.cam.post_in_use", &[("machine", &m.name)])),
                 None => {
                     app.preferences.cam_posts.0.retain(|p| p.name != name);
                     if d.post.as_ref().is_some_and(|(n, _)| n.as_deref() == Some(name.as_str())) {

@@ -2,9 +2,9 @@
 use super::{CommandSpec, cam};
 use crate::params::bad;
 use crate::schema::cam::{ExportParams, ExportResult, JobKind, JobParams, JobResult, PreviewPoint};
-use solidcraft_doc::cam::SetupOperationType;
 use crate::{EngineError, Result, Session};
 use serde_json::{Value, json};
+use solidcraft_doc::cam::SetupOperationType;
 
 const JOB: crate::schema::TypedContract<JobParams> = crate::schema::TypedContract::new();
 const EXPORT: crate::schema::TypedContract<ExportParams> = crate::schema::TypedContract::new();
@@ -197,7 +197,8 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                 // Its depth follows from its width; the stored bottom is the edge's height.
                 map.remove("bottom");
                 map.remove("stepdown");
-                let width = a.chamfer_width.filter(|w| w.is_finite() && *w > 0.0).ok_or_else(|| bad(cmd, "a chamfer needs its `chamfer_width` above 0"))?;
+                let width =
+                    a.chamfer_width.filter(|w| w.is_finite() && *w > 0.0).ok_or_else(|| bad(cmd, "a chamfer needs its `chamfer_width` above 0"))?;
                 map.insert("width".into(), json!(width));
                 if let Some(v) = a.tip_offset {
                     map.insert("tip_offset".into(), json!(v));
@@ -251,7 +252,11 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                     }
                     if matches!(a.kind, JobKind::Thread) {
                         map.remove("stepdown");
-                        for (key, value) in [("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v))), ("left_hand", a.left_hand.map(|v| json!(v)))] {
+                        for (key, value) in [
+                            ("pitch", a.pitch.map(|v| json!(v))),
+                            ("internal", a.internal.map(|v| json!(v))),
+                            ("left_hand", a.left_hand.map(|v| json!(v))),
+                        ] {
                             if let Some(value) = value {
                                 map.insert(key.into(), value);
                             }
@@ -259,7 +264,9 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                         cam::thread_cmd(&mut work, &op)?;
                     } else {
                         // A pitch replaces the stepdown as the rise per turn; `internal: false` mills a boss.
-                        for (key, value) in [("climb", a.climb.map(|v| json!(v))), ("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v)))] {
+                        for (key, value) in
+                            [("climb", a.climb.map(|v| json!(v))), ("pitch", a.pitch.map(|v| json!(v))), ("internal", a.internal.map(|v| json!(v)))]
+                        {
                             if let Some(value) = value {
                                 map.insert(key.into(), value);
                             }

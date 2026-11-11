@@ -356,7 +356,8 @@ pub fn emit(program: &Program, post: &Post) -> Result<String> {
     if program.operations.len() > MAX_OPERATIONS {
         return Err(CamError::TooLarge(format!("more than {MAX_OPERATIONS} operations")));
     }
-    let mut w = Writer { post, out: String::new(), line: post.line_numbers.map(|n| n.start), x: None, y: None, z: None, pos: None, feed: None, prefix: None };
+    let mut w =
+        Writer { post, out: String::new(), line: post.line_numbers.map(|n| n.start), x: None, y: None, z: None, pos: None, feed: None, prefix: None };
     let offset = program.work_offset.unwrap_or(1);
     // A post that leaves the offset to the operator can only mean the first one.
     if offset != 1 && !post.writes_work_offset() {

@@ -161,6 +161,18 @@ The files in this repository are provided as is, without warranty, liability or 
 - 🤝 **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)
 - 💬 **Need help?** Join the [Discord community](https://discord.gg/FtU4NQNVDH)
 
+SolidCraft's brand and interface are licensed separately, under
+[LICENSE-BRAND](LICENSE-BRAND): the UI kit, the look (interface icons, glyphs, built-in themes),
+the theme's design tokens and palettes, and the SolidCraft name, logo and app icon. Use them freely
+as part of SolidCraft. Using them in another program or product needs the maintainers' written
+permission first.
+
+SolidCraft is independent. Behaviour is designed from public documentation, general CAD
+conventions and user feedback. Reference tests use analytic values and open-source tools.
+SolidCraft is not affiliated with, sponsored by or endorsed by Autodesk, Dassault Systèmes, PTC,
+Siemens or any other CAD vendor. Fusion, AutoCAD, Inventor, SolidWorks, Onshape, Creo, Blender and
+Tinkercad are trademarks of their respective owners, named only to describe compatibility
+(see [NOTICE](NOTICE)).
 ---
 
 **Made with ❤️ for the maker and CNC community**
