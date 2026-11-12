@@ -238,7 +238,7 @@ Before each export:
 
 | Feature | Status |
 |---|---|
-| Holes and threads from SolidCraft's own hole and thread features (exact sizes, no guessing) | Planned |
+| Holes and threads from SolidCraft's own hole and thread features (exact sizes, no guessing) | Partial: hole features (`holes: [{feature}]`, **Hole features** in the hole forms) give every hole and pattern copy, their depth to the drill point or through the exit, and a thread's size, pitch, hand and depth; a tap of another pitch is refused; `solid.thread` on studs not yet; the step does not follow later hole edits |
 | Holes, counterbores and countersinks recognised on imported bodies | Planned |
 | Pockets and slots | Planned |
 | Outer contours | Partial: picking edges and faces |

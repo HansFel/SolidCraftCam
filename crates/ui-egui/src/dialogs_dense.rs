@@ -1584,6 +1584,41 @@ mod tests {
         assert_eq!(points, [[10.0, 10.0], [30.0, 25.0]]);
     }
 
+    /// The thread-milling form lists the design's hole features: one ticked, the step mills every
+    /// hole it made, with its thread's size and depth instead of the form's.
+    #[test]
+    fn cam_thread_form_takes_its_holes_depth_and_thread_from_a_hole_feature() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1400,"height":1600}));
+        h.app.run("solid.box", json!({"length": 60, "width": 40, "height": 10, "body_name": "Plate"})).unwrap();
+        let bolt = json!({"position": [15, 10, 10], "direction": [0, 0, -1], "diameter": 5, "depth": 8, "thread": "M6x1", "thread_depth": 6,
+            "name": "Bolt"});
+        h.app.run("solid.hole", bolt).unwrap();
+        h.app.run("solid.pattern.rectangular", json!({"features": ["Bolt"], "dir1": [1, 0, 0], "count1": 2, "spacing1": 20})).unwrap();
+        h.app.run("cam.tool.define", json!({"number": 4, "kind": "thread_mill", "diameter": 4, "flute_length": 12, "pitch": 1.5})).unwrap();
+        h.app.run("cam.setup", json!({"name": "Top", "work_origin": [0, 0, 10]})).unwrap();
+        h.step(&json!({"start":"cam.op.thread"})).unwrap();
+        h.frames(2);
+        if let Some(Kind::Milling(form)) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+            form.set_field("tool", "4");
+            form.set_field("diameter", "4");
+            form.set_field("flute_length", "12");
+        }
+        h.frames(2);
+        // The first feature sits on the row labelled Hole features.
+        h.step(&json!({"click":{"handle":"dialog:Hole features"}})).unwrap();
+        h.frames(2);
+        assert!(h.widget("Depth and thread from the hole features").is_some(), "the depth switch shows with a feature ticked");
+        h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+        h.frames(3);
+        let op = h.app.session.doc.cam.setup("Top").and_then(|s| s.operations.first().cloned()).expect("the thread step");
+        let solidcraft_engine::doc::cam::CamOperation::ThreadMill { geometry, params, cut, .. } = op else { panic!("{op:?}") };
+        let solidcraft_engine::doc::cam::CamGeometry::Points { points } = geometry else { panic!("{geometry:?}") };
+        assert_eq!(points.len(), 2, "both holes of the pattern");
+        assert_eq!((params.diameter.as_str(), params.pitch.as_str(), cut.bottom.as_str()), ("6 mm", "1", "-6"));
+    }
+
     /// A library drill picked in a pocket form, while T1 is the design's end mill that a contour
     /// uses: the step becomes a drill on a free number and the contour still posts.
     #[test]

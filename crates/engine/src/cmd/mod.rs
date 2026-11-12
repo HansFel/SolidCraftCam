@@ -24,6 +24,7 @@ mod bom;
 pub(crate) mod browser;
 mod cam;
 mod cam_collide;
+mod cam_holes;
 mod cam_job;
 mod cam_sheet;
 pub(crate) mod clearance;

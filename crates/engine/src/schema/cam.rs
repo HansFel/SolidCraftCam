@@ -234,6 +234,8 @@ pub struct SketchPointParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct HolePickParams {
+    /// A hole feature (name or id): every hole it made, its pattern copies too.
+    pub feature: Option<String>,
     pub body: Option<String>,
     pub at: Option<[f64; 3]>,
     pub edge: Option<bool>,
@@ -478,9 +480,11 @@ pub struct DrillParams {
     #[serde(default)]
     pub points: Vec<[f64; 2]>,
     /// Picked bores: `{body, at, edge?}` (an edge gives its centre, a flat face its round
-    /// holes), or `{sketch, point}` (a sketch point) or `{sketch, profile}` (a profile's circles).
+    /// holes), `{sketch, point}` (a sketch point), `{sketch, profile}` (a profile's circles) or
+    /// `{feature}` (every hole of a hole feature).
     pub holes: Option<Vec<HolePickParams>>,
-    pub bottom: NumberExpr,
+    /// Required unless every hole is picked by its feature, which then gives the depth.
+    pub bottom: Option<NumberExpr>,
     pub clearance: Option<NumberExpr>,
     pub retract: Option<NumberExpr>,
     pub top: Option<NumberExpr>,
@@ -538,7 +542,8 @@ pub struct HoleMillParams {
     pub left_hand: Option<bool>,
     /// Helical boring: climb milling (default).
     pub climb: Option<bool>,
-    pub bottom: NumberExpr,
+    /// Required unless every hole is picked by its feature, which then gives the depth.
+    pub bottom: Option<NumberExpr>,
     pub clearance: Option<NumberExpr>,
     pub retract: Option<NumberExpr>,
     pub top: Option<NumberExpr>,
@@ -684,6 +689,13 @@ pub struct JobParams {
     /// Drilling: sketch points picked as hole centres.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sketch_points: Option<Vec<SketchPointParams>>,
+    /// Holes: hole features (names) whose every hole the step machines, pattern copies too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_features: Option<Vec<String>>,
+    /// Holes picked only by `hole_features`: the step goes to the depth (and a thread to the
+    /// size) the features give, not to `bottom`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub depth_from_holes: bool,
     /// Contours: leads, overlap and the open-contour settings, as `cam.op.contour` takes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_in: Option<serde_json::Value>,

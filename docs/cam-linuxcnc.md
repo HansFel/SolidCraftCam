@@ -343,6 +343,29 @@ while nothing is picked: one hole per line, `10 20`, `10.5; 20`, `10,5 20` (a de
 or `10,20`. The centres are taken in the setup's work XY when the step is saved, so moving the
 sketch afterwards needs the step saved again.
 
+## Holes from hole features
+
+The drilling, tapping, helix and thread-milling forms list the design's hole features under
+**Hole features**. A ticked feature gives every hole it made, its pattern copies too, at their
+exact centres: they come from the body's exact cylinder faces (the faces the hole feature
+named), not from the display mesh. Commands take it as `holes: [{"feature": "Bolt"}]`.
+
+With **Depth and thread from the hole features** (on by default) the step takes no depth from
+the form; the depth comes from the hole's exact rims and the feature:
+
+| Step | Blind hole | Through hole |
+|---|---|---|
+| Drill | to the drill point's tip (the feature's tip angle), else the floor | the exit, plus the drill's point and 1 mm |
+| Tap | the thread depth, else the bore's full length | the thread depth, else two pitches past the exit |
+| Thread mill | the thread depth, else the floor; the thread's size, pitch and hand from its designation | as blind |
+| Helix | the floor | 1 mm past the exit |
+
+Checked before the step is stored: a tap whose pitch is not the thread's is refused, holes that
+end at different depths need one step per depth (or a typed bottom), and a hole that does not
+point along the setup's tool axis needs a setup facing it. Not checked: that the drill's
+diameter matches the hole (pick the tool), and later changes to the hole: the step keeps the
+places and depth it was made with, so make it again after moving or resizing the hole.
+
 ## Job list, tool library and machines
 
 On the **Machining** tab, the **Setup** panel opens **Job list**, **Tool library** and

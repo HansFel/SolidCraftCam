@@ -140,6 +140,13 @@ taken without an error; still try the first ones in the control's test run.
   the helix goes down; empty uses the stepdown.
 - **Thread mill**: a thread in a hole or on a stud, right or left hand, one pitch a turn.
 
+The hole steps can take their holes from a **hole feature**: tick it under **Hole features** and
+the step machines every hole it made, its pattern copies too. With **Depth and thread from the
+hole features** the step also takes the depth (to the drill point, or through the exit), and a
+thread mill the thread's size, pitch and hand. A tap of another pitch than the thread is
+refused. The step keeps the places and depth it was made with: after changing the hole, make
+the step again.
+
 ## Plasma cutting
 
 Plasma cuts go into a plasma setup on a plasma table and need no tool. The torch data (kerf,

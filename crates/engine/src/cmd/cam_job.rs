@@ -13,7 +13,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.job.create", "2.5D CAM — LinuxCNC", crate::checked!("cam.job.create", create))
         .icon("cam_contour").contract(&JOB)
         .output(crate::schema::output_schema_for::<JobResult>)
-        .params("Guided rectangle contour/pocket or hole-pattern job in work XY; dimensions mm, feeds mm/min. Creates or replaces one named operation; returns LinuxCNC G-code and preview points."),
+        .params("Guided rectangle contour/pocket or hole-pattern job in work XY; dimensions mm, feeds mm/min. Creates or replaces one named operation; returns LinuxCNC G-code and preview points. Hole steps also take hole_features: [names] (every hole of each, pattern copies too) and depth_from_holes: true (their depth and thread, not bottom)."),
     CommandSpec::new("cam.job.preview", "Preview CAM Job", crate::checked!("cam.job.preview", preview))
         .icon("cut").noundo().contract(&JOB).output(crate::schema::output_schema_for::<JobResult>)
         .params("Same inputs as cam.job.create; computes in an isolated document without changing the design."),
@@ -45,8 +45,10 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     if values.iter().any(|v| !v.is_finite() || v.abs() > 1.0e6) || !(1..=6).contains(&a.work_offset) {
         return Err(bad(cmd, "finite values within 1e6 and a work offset 1 to 6 are required"));
     }
-    let picked = a.sketch.is_some() || a.faces.is_some() || a.edges.is_some() || a.geometry.is_some();
-    if (!picked && (a.width <= 0.0 || a.height <= 0.0)) || a.bottom >= a.top {
+    let by_feature = a.hole_features.as_ref().is_some_and(|f| !f.is_empty());
+    let picked = a.sketch.is_some() || a.faces.is_some() || a.edges.is_some() || a.geometry.is_some() || by_feature;
+    let from_holes = a.depth_from_holes && by_feature;
+    if (!picked && (a.width <= 0.0 || a.height <= 0.0)) || (a.bottom >= a.top && !from_holes) {
         return Err(bad(cmd, "width, height and cutting depth must be positive"));
     }
     let mut work = s.scratch();
@@ -235,6 +237,13 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
             for point in a.sketch_points.iter().flatten() {
                 holes.push(json!({"sketch": point.sketch, "point": point.point}));
             }
+            for feature in a.hole_features.iter().flatten() {
+                holes.push(json!({"feature": feature}));
+            }
+            // The features give the depth (and a thread its size) themselves.
+            if from_holes {
+                map.remove("bottom");
+            }
             if holes.is_empty() {
                 map.insert("points".into(), json!(a.points));
             } else {
@@ -248,6 +257,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                             map.insert("diameter".into(), json!(diameter));
                         }
                         None if matches!(a.kind, JobKind::Helix) && map.contains_key("holes") => {}
+                        None if matches!(a.kind, JobKind::Thread) && by_feature => {}
                         None => return Err(bad(cmd, "give the `hole_diameter`")),
                     }
                     if matches!(a.kind, JobKind::Thread) {

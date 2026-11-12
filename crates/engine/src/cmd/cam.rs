@@ -124,19 +124,19 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("cam_drill")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index); bottom; stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index) or [{feature}] (every hole a hole feature made, its pattern copies too); bottom (none: the hole features' own, a blind hole's drill point or a through hole's exit plus the drill's point and 1 mm); stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
     CommandSpec::new("cam.op.tap", "Tap", crate::checked!("cam.op.tap", tap_cmd)).icon("cam_tap")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool: a tap (kind tap, with its pitch); points?/holes? as for cam.op.drill; bottom: the thread's depth; spindle_rpm (or the tap's): the feed is one pitch a turn; clearance?; retract?; top?; coolant?. Written as the post's rigid tapping cycle (G84, G33.1, G331); a post without one refuses the program."),
+        .params("setup; name; tool: a tap (kind tap, with its pitch); points?/holes? as for cam.op.drill; bottom: the thread's depth (none: the hole features' thread depth, through a hole two pitches past its exit); the tap's pitch must be the features' thread's; spindle_rpm (or the tap's): the feed is one pitch a turn; clearance?; retract?; top?; coolant?. Written as the post's rigid tapping cycle (G84, G33.1, G331); a post without one refuses the program."),
     CommandSpec::new("cam.op.helix", "Helical Bore", crate::checked!("cam.op.helix", helix_cmd)).icon("cam_helix")
         .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool: an end mill; points?/holes? as for cam.op.drill; diameter: the hole's, above the tool's and at most twice it; bottom; stepdown?: depth per turn; climb? (default true); clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+        .params("setup; name; tool: an end mill; points?/holes? as for cam.op.drill; diameter: the hole's, above the tool's and at most twice it; bottom (none: the hole features' floor, through a hole 1 mm past its exit); stepdown?: depth per turn; climb? (default true); clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
     CommandSpec::new("cam.op.thread", "Thread Mill", crate::checked!("cam.op.thread", thread_cmd)).icon("cam_thread")
         .contract(&crate::schema::TypedContract::<crate::schema::cam::HoleMillParams>::new())
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool: a thread mill; points?/holes? as for cam.op.drill; diameter: the thread's major diameter; pitch? (default the tool's); internal? (default true: in a hole, the core hole drilled before); left_hand?; bottom: the thread's depth; top?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?. Rises from the bottom one pitch a turn."),
+        .params("setup; name; tool: a thread mill; points?/holes? as for cam.op.drill; diameter: the thread's major diameter (none: the hole features' thread); pitch? (default the features' thread's, else the tool's); internal? (default true: in a hole, the core hole drilled before); left_hand? (default the features' hand); bottom: the thread's depth (none: the features' thread depth); top?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?. Rises from the bottom one pitch a turn."),
     CommandSpec::new("cam.op.chamfer", "Chamfer", crate::checked!("cam.op.chamfer", chamfer_cmd)).contract(&crate::schema::TypedContract::<crate::schema::cam::MillingParams>::new()).output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>).icon("cam_chamfer").params(
         "setup; name; tool: a chamfer or engraving cutter; edges?: [{body, at}] the edges to chamfer (closed chains round, open ones along their side), or faces?/sketch?/outer: their contours; \
          width: the chamfer's width on the face; tip_offset? (default 0.5 mm: how far the tip runs below the chamfer); side? auto|outside|inside; top?: the edge's height (default 0); tolerance?; clearance?; retract?; feed?; plunge_feed?; spindle_rpm?; coolant?",
@@ -223,11 +223,28 @@ fn hole_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let args: crate::schema::cam::DrillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, "define the drill tool first"))?;
     let points = hole_points(s, cmd, p, &args.setup)?;
+    let features = picked_features(s, cmd, p, &args.setup)?;
+    // A tap cuts the thread its holes were drawn with, or the step is refused.
+    if tool.kind == ToolKind::Tap
+        && let Some(thread) = features_thread(cmd, &features, false)?
+        && let Some(pitch) = tool.pitch
+        && (pitch - thread.pitch).abs() > 1e-6
+    {
+        return Err(bad(cmd, format!("the tap's pitch is {pitch} mm, the holes' thread has {} mm: pick the tap for that thread", thread.pitch)));
+    }
+    let mut p = p.clone();
+    if p.get("bottom").is_none() {
+        let use_ = match tool.kind {
+            ToolKind::Tap => super::cam_holes::BoreUse::Tap { pitch: tool.pitch.unwrap_or(0.0) },
+            _ => super::cam_holes::BoreUse::Drill { point: super::cam_holes::drill_point(&tool) },
+        };
+        p["bottom"] = json!(feature_bottom(cmd, &features, use_)?);
+    }
     let op = CamOperation::Drill {
         name: args.name.clone(),
         tool: args.tool,
         geometry: CamGeometry::Points { points: points.iter().map(|p| [p.x, p.y]).collect() },
-        cut: cut_param(cmd, p, &tool)?,
+        cut: cut_param(cmd, &p, &tool)?,
         dwell: args.dwell,
         spindle_rpm: args.spindle_rpm.or(tool.spindle_rpm),
         coolant: args.coolant,
@@ -241,14 +258,34 @@ fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, format!("no tool {} (cam.tool.define first)", args.tool)))?;
     let circles = hole_circles(s, cmd, p, &args.setup)?;
     let geometry = CamGeometry::Points { points: circles.iter().map(|(p, _)| [p.x, p.y]).collect() };
+    let features = picked_features(s, cmd, p, &args.setup)?;
+    // Without a size, a thread takes its hole feature's: diameter, pitch and hand.
+    let feature_thread = if thread && (p.get("diameter").is_none() || p.get("pitch").is_none() || p.get("left_hand").is_none()) {
+        features_thread(cmd, &features, p.get("diameter").is_none())?
+    } else {
+        None
+    };
     // Without a diameter, a helix takes the picked circles': round a boss's rim, or a hole's wall.
-    let diameter = match expr(p, "diameter") {
-        Some(d) => d,
-        None if !thread => Expr::new(format!("{} mm", picked_diameter(cmd, &circles)?)),
-        None => req_expr(cmd, p, "diameter")?,
+    let diameter = match (expr(p, "diameter"), &feature_thread) {
+        (Some(d), _) => d,
+        (None, _) if !thread => Expr::new(format!("{} mm", picked_diameter(cmd, &circles)?)),
+        (None, Some(t)) => Expr::new(format!("{} mm", t.major)),
+        (None, None) => req_expr(cmd, p, "diameter")?,
     };
     // A thread rises one pitch a turn over its whole depth: one pass from the bottom.
     let mut p = p.clone();
+    if let Some(t) = &feature_thread {
+        if p.get("pitch").is_none() {
+            p["pitch"] = json!(t.pitch);
+        }
+        if p.get("left_hand").is_none() {
+            p["left_hand"] = json!(t.left_hand);
+        }
+    }
+    if p.get("bottom").is_none() {
+        let use_ = if thread { super::cam_holes::BoreUse::ThreadMill } else { super::cam_holes::BoreUse::HelicalBore };
+        p["bottom"] = json!(feature_bottom(cmd, &features, use_)?);
+    }
     if thread && p.get("stepdown").is_none() {
         p["stepdown"] = json!(1000);
     }
@@ -263,7 +300,7 @@ fn hole_mill_cmd(s: &mut Session, p: &Value, cmd: &str, thread: bool) -> Result<
             diameter,
             pitch,
             internal: args.internal.unwrap_or(true),
-            left_hand: args.left_hand.unwrap_or(false),
+            left_hand: bool_(&p, "left_hand").unwrap_or(false),
         };
         CamOperation::ThreadMill { name: args.name.clone(), tool: args.tool, geometry, params, cut, spindle_rpm, coolant }
     } else {
@@ -372,6 +409,15 @@ fn hole_circles(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<V
         let setup = s.doc.cam.setup(setup_name).ok_or_else(|| bad(cmd, "create the setup first"))?;
         let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
         for pick in holes {
+            // A hole feature's bores are in work coordinates already.
+            if pick.get("feature").is_some() {
+                for bore in feature_pick(s, cmd, pick, &frame)?.bores {
+                    if !points.iter().any(|(q, _)| q.dist(bore.centre) < 1e-6) {
+                        points.push((bore.centre, Some(bore.radius)));
+                    }
+                }
+                continue;
+            }
             let centres = if pick.get("sketch").is_some() {
                 sketch_hole_centres(s, cmd, pick)?
             } else {
@@ -392,6 +438,50 @@ fn hole_circles(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<V
         }
     }
     Ok(points)
+}
+
+/// The hole feature a `{feature}` pick names, with its bores in `frame`.
+fn feature_pick(s: &Session, cmd: &str, pick: &Value, frame: &WorkFrame) -> Result<super::cam_holes::FeatureBores> {
+    let name = pick
+        .get("feature")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|f| !f.is_empty() && f.len() <= 128)
+        .ok_or_else(|| bad(cmd, "`feature` must name a hole feature"))?;
+    super::cam_holes::feature_bores(s, name, frame).map_err(|e| bad(cmd, e))
+}
+
+/// The hole features picked in `holes`; empty when a pick (or a typed point) is not one, since
+/// only a feature knows its holes' depth and thread.
+fn picked_features(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<super::cam_holes::FeatureBores>> {
+    let Some(holes) = p.get("holes").and_then(Value::as_array) else { return Ok(Vec::new()) };
+    let typed = p.get("points").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+    if typed || holes.is_empty() || holes.iter().any(|h| h.get("feature").is_none()) {
+        return Ok(Vec::new());
+    }
+    let setup = s.doc.cam.setup(setup_name).ok_or_else(|| bad(cmd, "create the setup first"))?;
+    let frame = work_frame(setup).map_err(|e| bad(cmd, e))?;
+    holes.iter().map(|pick| feature_pick(s, cmd, pick, &frame)).collect()
+}
+
+/// The depth the picked hole features give a step that has none.
+fn feature_bottom(cmd: &str, features: &[super::cam_holes::FeatureBores], use_: super::cam_holes::BoreUse) -> Result<f64> {
+    if features.is_empty() {
+        return Err(bad(cmd, "`bottom` is required (holes picked by their hole feature give it themselves)"));
+    }
+    super::cam_holes::bottom_for(features, use_).map_err(|e| bad(cmd, e))
+}
+
+/// The thread the picked hole features name; `needed`: an error when they name none.
+fn features_thread(cmd: &str, features: &[super::cam_holes::FeatureBores], needed: bool) -> Result<Option<super::cam_holes::BoreThread>> {
+    if features.is_empty() {
+        return Ok(None);
+    }
+    match super::cam_holes::thread_of(features) {
+        Ok(t) => Ok(t),
+        Err(_) if !needed && features.iter().all(|f| f.thread.is_none()) => Ok(None),
+        Err(e) => Err(bad(cmd, e)),
+    }
 }
 
 pub(super) fn tool_cmd(s: &mut Session, p: &Value) -> Result<Value> {
@@ -4776,6 +4866,98 @@ mod tests {
         assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": 3})).is_err());
         assert!(s.execute("cam.setup", &json!({"name": "Top", "machine_post": {"name": "linuxcnc"}})).is_err());
         assert_eq!(s.doc.to_json(), before);
+    }
+
+    #[test]
+    fn holes_picked_by_their_hole_feature_bring_their_places_depth_and_thread() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 60, "width": 40, "height": 10, "body_name": "Plate"}));
+        // A tapped M6 hole, 8 mm to the shoulder with a 118 degree drill point, threaded 6 mm
+        // deep, three times 15 mm apart; and a 6.6 mm clearance hole through the plate.
+        let bolt = json!({"position": [15, 10, 10], "direction": [0, 0, -1], "diameter": 5, "depth": 8, "thread": "M6x1",
+            "thread_depth": 6, "type": "drilled", "tip_angle": 118, "name": "Bolt"});
+        run(&mut s, "solid.hole", bolt);
+        run(&mut s, "solid.pattern.rectangular", json!({"features": ["Bolt"], "dir1": [1, 0, 0], "count1": 3, "spacing1": 15}));
+        run(&mut s, "solid.hole", json!({"position": [30, 30, 10], "direction": [0, 0, -1], "diameter": 6.6, "name": "Through"}));
+        for tool in [
+            json!({"number": 1, "kind": "drill", "diameter": 5, "flute_length": 30}),
+            json!({"number": 2, "kind": "drill", "diameter": 6.6, "flute_length": 40}),
+            json!({"number": 3, "kind": "tap", "diameter": 6, "flute_length": 20, "pitch": 1, "spindle_rpm": 500}),
+            json!({"number": 4, "kind": "thread_mill", "diameter": 4, "flute_length": 12, "pitch": 1.5}),
+            json!({"number": 5, "diameter": 4, "flute_length": 20}),
+            json!({"number": 6, "kind": "tap", "diameter": 6, "flute_length": 20, "pitch": 1.25}),
+        ] {
+            run(&mut s, "cam.tool.define", tool);
+        }
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 10]}));
+        let bolt = json!([{"feature": "Bolt"}]);
+        run(&mut s, "cam.op.drill", json!({"setup": "Top", "name": "Core", "tool": 1, "holes": bolt}));
+        run(&mut s, "cam.op.drill", json!({"setup": "Top", "name": "Clear", "tool": 2, "holes": [{"feature": "Through"}]}));
+        run(&mut s, "cam.op.tap", json!({"setup": "Top", "name": "Tap", "tool": 3, "holes": bolt}));
+        run(&mut s, "cam.op.thread", json!({"setup": "Top", "name": "Mill", "tool": 4, "holes": bolt, "spindle_rpm": 6000}));
+        run(&mut s, "cam.op.helix", json!({"setup": "Top", "name": "Bore", "tool": 5, "holes": [{"feature": "Through"}], "stepdown": 1}));
+        let ops = &s.doc.cam.setup("Top").unwrap().operations;
+        let op = |name: &str| ops.iter().find(|o| o.name() == name).unwrap();
+        let mut centres = match op("Core") {
+            CamOperation::Drill { geometry: CamGeometry::Points { points }, .. } => points.clone(),
+            other => panic!("{other:?}"),
+        };
+        centres.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let expected = [[15.0, 10.0], [30.0, 10.0], [45.0, 10.0]];
+        assert!(
+            centres.len() == 3 && centres.iter().zip(expected).all(|(c, e)| (c[0] - e[0]).abs() < 1e-6 && (c[1] - e[1]).abs() < 1e-6),
+            "{centres:?}"
+        );
+        let bottom = |name: &str| match op(name) {
+            CamOperation::Drill { cut, .. } | CamOperation::ThreadMill { cut, .. } | CamOperation::HelicalBore { cut, .. } => {
+                cut.bottom.as_str().parse::<f64>().unwrap()
+            }
+            other => panic!("{other:?}"),
+        };
+        // Blind: to the drill point's tip, 2.5 / tan 59 degrees below the shoulder at -8.
+        let tip = 2.5 / 59f64.to_radians().tan();
+        assert!((bottom("Core") - ((-8.0 - tip) * 1000.0).round() / 1000.0).abs() < 1e-9, "{}", bottom("Core"));
+        // Through: the 6.6 mm drill's whole point and 1 mm more past the exit at -10.
+        let point = 3.3 / 59f64.to_radians().tan();
+        assert!((bottom("Clear") - ((-11.0 - point) * 1000.0).round() / 1000.0).abs() < 1e-9, "{}", bottom("Clear"));
+        // The thread's own depth, 6 mm; a helix through the plate, 1 mm past the exit.
+        assert!((bottom("Tap") + 6.0).abs() < 1e-9 && (bottom("Mill") + 6.0).abs() < 1e-9, "{} {}", bottom("Tap"), bottom("Mill"));
+        assert!((bottom("Bore") + 11.0).abs() < 1e-9, "{}", bottom("Bore"));
+        // The thread mill takes the feature's M6x1, not the tool's 1.5 mm pitch; the helix the bore's 6.6 mm.
+        let CamOperation::ThreadMill { params, .. } = op("Mill") else { panic!("the thread") };
+        assert_eq!((params.diameter.as_str(), params.pitch.as_str(), params.left_hand), ("6 mm", "1", false));
+        let CamOperation::HelicalBore { params, .. } = op("Bore") else { panic!("the helix") };
+        assert_eq!(params.diameter.as_str(), "6.6 mm");
+        let core = bottom("Core");
+        assert!(s.execute("cam.post", &json!({"setup": "Top", "post": "linuxcnc"})).is_ok());
+        // Refused, the design unchanged: a tap of another pitch, a feature that is no hole, one
+        // that does not exist, and no depth for a pick that is not a feature.
+        let before = s.doc.to_json();
+        for (id, p) in [
+            ("cam.op.tap", json!({"setup": "Top", "name": "X", "tool": 6, "holes": bolt})),
+            ("cam.op.drill", json!({"setup": "Top", "name": "X", "tool": 1, "holes": [{"feature": "Box1"}]})),
+            ("cam.op.drill", json!({"setup": "Top", "name": "X", "tool": 1, "holes": [{"feature": "Nothing"}]})),
+            (
+                "cam.op.drill",
+                json!({"setup": "Top", "name": "X", "tool": 1, "holes": [{"feature": "Bolt"}, {"body": "Plate", "at": [32, 30, 10], "edge": true}]}),
+            ),
+            ("cam.op.thread", json!({"setup": "Top", "name": "X", "tool": 4, "holes": [{"feature": "Through"}]})),
+            ("cam.op.drill", json!({"setup": "Top", "name": "X", "tool": 1, "holes": [{"feature": "Bolt"}, {"feature": "Through"}]})),
+        ] {
+            assert!(s.execute(id, &p).is_err(), "{id} {p}");
+        }
+        assert_eq!(s.doc.to_json(), before);
+        // The guided job (the form) picks by feature too, and leaves the depth to it.
+        let job = json!({"setup": "Top", "name": "JobCore", "kind": "drill", "tool": 1, "diameter": 5, "flute_length": 30,
+            "x": 0, "y": 0, "width": 0, "height": 0, "hole_features": ["Bolt"], "depth_from_holes": true,
+            "top": 0, "bottom": 0, "clearance": 10, "retract": 2, "stepdown": 2, "stepover": 1, "feed": 100, "plunge_feed": 100,
+            "spindle_rpm": 2000, "work_offset": 1});
+        run(&mut s, "cam.job.create", job);
+        let job_bottom = match s.doc.cam.setup("Top").unwrap().operations.iter().find(|o| o.name() == "JobCore") {
+            Some(CamOperation::Drill { cut, .. }) => cut.bottom.as_str().parse::<f64>().unwrap(),
+            other => panic!("{other:?}"),
+        };
+        assert!((job_bottom - core).abs() < 1e-9, "{job_bottom}");
     }
 
     #[test]

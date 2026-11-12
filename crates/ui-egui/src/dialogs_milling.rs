@@ -62,6 +62,10 @@ pub struct Milling {
     /// Thread milling: in a hole (else on a stud), and a left-hand thread.
     internal: bool,
     left_hand: bool,
+    /// Hole steps: the hole features whose every hole the step machines.
+    hole_features: Vec<String>,
+    /// With hole features: their depth (and a thread's size) instead of the fields'.
+    depth_from_holes: bool,
     /// Use cutting data raises the feed until the thickest chip is fz again (small stepovers).
     pub(crate) thin_chips: bool,
     /// A contour's cutter compensation, as [`COMPENSATIONS`] lists them.
@@ -240,6 +244,8 @@ impl Milling {
             tabs: false,
             internal: true,
             left_hand: false,
+            hole_features: Vec::new(),
+            depth_from_holes: true,
             thin_chips: false,
             compensation: 0,
         }
@@ -781,6 +787,18 @@ impl Milling {
                 }
             }
         }
+        // Holes picked by their hole feature; its depth and thread replace the fields'.
+        if self.at_holes() && !self.hole_features.is_empty() {
+            p["hole_features"] = json!(self.hole_features);
+            if self.depth_from_holes {
+                p["depth_from_holes"] = json!(true);
+                if let Some(map) = p.as_object_mut() {
+                    for key in ["hole_diameter", "pitch", "left_hand"] {
+                        map.remove(key);
+                    }
+                }
+            }
+        }
         if let Some(material) = self.material.as_ref().filter(|_| !self.plasma()) {
             p["material"] = json!(material);
         }
@@ -1231,6 +1249,10 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
     {
         form.error = Some(e);
     }
+    // Holes by their hole feature, beside the picks they stand in for.
+    if form.at_holes() {
+        hole_feature_rows(app, ui, form);
+    }
     if form.kind < 2 || form.kind == 7 {
         let directions = [tr("ui.cam.climb"), tr("ui.cam.conventional")];
         let mut direction = usize::from(!form.climb);
@@ -1396,7 +1418,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::text_row(ui, tr(label), value, "");
     }
     load_rows(app, ui, form);
-    if form.at_holes() && !picked {
+    if form.at_holes() && !picked && form.hole_features.is_empty() {
         ui.add(egui::Label::new(tr("ui.cam.holes_hint")).wrap());
         ui_kit::text_area(ui, tr("ui.cam.holes_hint"), egui::Id::unique("cam-holes"), &mut form.holes, 3, 100_000);
     }
@@ -1609,6 +1631,34 @@ fn tool_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
 
 /// The cut's load as typed: chip, removal, power and torque, and in the warning colour what the
 /// setup's machine cannot give.
+/// The design's hole features, each ticked to machine every hole it made (its pattern copies
+/// too); with one ticked, whether the step takes its depth and thread from them.
+fn hole_feature_rows(app: &SolveApp, ui: &mut egui::Ui, form: &mut Milling) {
+    let names: Vec<String> = app
+        .session
+        .doc
+        .features
+        .iter()
+        .filter(|f| !f.suppressed && matches!(f.kind, solidcraft_engine::doc::FeatureKind::Hole { .. }))
+        .map(|f| f.name.clone())
+        .collect();
+    form.hole_features.retain(|n| names.contains(n));
+    for (i, name) in names.iter().enumerate() {
+        let mut on = form.hole_features.contains(name);
+        let label = if i == 0 { solidcraft_ui_text::tr("ui.cam.hole_features") } else { "" };
+        if ui_kit::row(ui, label, |ui| ui_kit::checkbox(ui, name, &mut on)).changed() {
+            if on {
+                form.hole_features.push(name.clone());
+            } else {
+                form.hole_features.retain(|n| n != name);
+            }
+        }
+    }
+    if !form.hole_features.is_empty() {
+        ui_kit::row(ui, "", |ui| crate::cam_manual::checkbox(ui, "ui.cam.depth_from_holes", &mut form.depth_from_holes));
+    }
+}
+
 fn load_rows(app: &SolveApp, ui: &mut egui::Ui, form: &Milling) {
     let tr = solidcraft_ui_text::tr;
     let Some((load, ap, ae, over)) = form.load(app) else { return };
