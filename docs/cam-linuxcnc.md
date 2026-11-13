@@ -108,9 +108,13 @@ the lead-out, so no mark is left where it began.
 
 **Holding tabs** keep a part cut right round in the stock: **Tabs per contour** are spread evenly
 round each closed contour (none on its start), each **Tab width** long and **Tab height** high
-from the cut's bottom. On the passes below a tab's top the tool lifts over it at the cutting feed
-and comes back down; cut the tabs off by hand afterwards. A tab as high as the cut, or tabs wider
-than the gap between them, are refused; open contours take no tabs.
+from the cut's bottom. The width is the material that stays on the wall: on the passes below a
+tab's top the tool centre lifts over the width plus the tool's diameter, crosses at the cutting
+feed and comes back down. On a straight wall that leaves exactly the width; round a corner it is
+measured along the tool centre's path. Cut the tabs off by hand afterwards. A tab as high as the
+cut, or tabs that with the tool's diameter are wider than the gap between them, are refused;
+open contours take no tabs. Tabs only hold the part when stock remains outside the cut: with
+less than a tool's diameter of stock round the part, nothing is left for them to hold on to.
 
 **Side** and **Direction** sit right below the picked contours. **Side** says where the tool rides:
 

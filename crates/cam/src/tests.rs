@@ -1861,10 +1861,15 @@ fn tabs_lift_the_tool_over_them_on_the_passes_below_them() {
             .sum::<f64>()
     };
     close(cut_at(-3.0), loop_len, 0.01);
-    // The lower pass leaves the four 2 mm tabs uncut below their top.
-    close(cut_at(-6.0), loop_len - 4.0 * 2.0, 0.01);
+    // The lower pass lifts over 2 mm of tab plus the 6 mm tool's diameter at each tab: lifting
+    // over the width alone left no material, the cutter's edge reaching a radius past its centre
+    // on both sides of the gap.
+    let window = 2.0 + 6.0;
+    close(cut_at(-6.0), loop_len - 4.0 * window, 0.01);
     // Each tab is crossed at its top and the tool goes back down behind it.
-    close(cut_at(-4.0), 4.0 * 2.0, 0.01);
+    close(cut_at(-4.0), 4.0 * window, 0.01);
+    // What stays of each tab on the wall is the gap less the tool's diameter: the 2 mm asked for.
+    close(window - 2.0 * tool(6.0).radius(), 2.0, 1e-12);
     // Spacing instead of a count: a 158.8 mm loop takes 7 tabs 20 mm apart.
     let spaced = Tabs { count: 0, spacing: 20.0, width: 2.0, height: 2.0 };
     let path = contour_with_tabs(&regions, &tool(6.0), &params, &Leads::default(), &spaced, &c, None).unwrap();
@@ -1881,7 +1886,12 @@ fn tabs_that_do_not_fit_are_refused() {
     let run = |tabs: Tabs| contour_with_tabs(&regions, &tool(6.0), &params, &Leads::default(), &tabs, &c, None);
     // Wider than the gap between them.
     let err = run(Tabs { count: 200, spacing: 0.0, width: 2.0, height: 2.0 }).unwrap_err();
-    assert!(format!("{err}").contains("the tab width must be at most"), "{err}");
+    assert!(format!("{err}").contains("the tab width plus the tool's diameter must be at most"), "{err}");
+    // 20 tabs on the 158.8 mm loop are 7.94 mm apart: 2 mm of tab fits, but not with the 6 mm
+    // tool's diameter added, which the tool lifts over too.
+    let err = run(Tabs { count: 20, spacing: 0.0, width: 2.0, height: 2.0 }).unwrap_err();
+    assert!(format!("{err}").contains("the tab width plus the tool's diameter must be at most"), "{err}");
+    assert!(run(Tabs { count: 19, spacing: 0.0, width: 2.0, height: 2.0 }).is_ok());
     // Taller than the cut.
     let err = run(Tabs { count: 4, spacing: 0.0, width: 2.0, height: 6.0 }).unwrap_err();
     assert!(format!("{err}").contains("the tab height must be less than the depth"), "{err}");

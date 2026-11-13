@@ -17,7 +17,8 @@ pub struct Tabs {
     pub count: u32,
     /// Distance between tab centres along the loop when `count` is 0 (mm, > 0).
     pub spacing: f64,
-    /// Length of each tab along the loop (mm, > 0), at most the distance between tabs.
+    /// Length of material each tab keeps along the wall (mm, > 0). The tool centre lifts over
+    /// this plus the tool's diameter, so that the cutter's edge stays off the tab on both sides.
     pub width: f64,
     /// How much of the wall's height each tab keeps, up from the cut's bottom (mm, > 0).
     pub height: f64,
@@ -67,14 +68,21 @@ impl Tabs {
         }
     }
 
-    /// Refuses tabs the loop cannot carry: wider than the gaps between them, or so tall that
-    /// they reach the stock's top.
-    pub(crate) fn check_fit(&self, step: f64, depth: f64) -> Result<()> {
+    /// The length of tool-centre path the tool lifts over for each tab: the tab's width plus the
+    /// tool's diameter. Lifting over the width alone leaves no tab, because the cutter's edge
+    /// reaches a radius past its centre on both sides of the window.
+    pub(crate) fn window(&self, tool_diameter: f64) -> f64 {
+        self.width + tool_diameter.max(0.0)
+    }
+
+    /// Refuses tabs the loop cannot carry: wider (with the tool's diameter) than the gaps
+    /// between them, or so tall that they reach the stock's top.
+    pub(crate) fn check_fit(&self, step: f64, depth: f64, tool_diameter: f64) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
-        if self.width > step + 1e-9 {
-            return invalid("the tab width must be at most the distance between the tabs");
+        if self.window(tool_diameter) > step + 1e-9 {
+            return invalid("the tab width plus the tool's diameter must be at most the distance between the tabs");
         }
         if !(depth > 0.0) || !(self.height < depth - 1e-9) {
             return invalid("the tab height must be less than the depth of the cut");

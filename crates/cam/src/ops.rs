@@ -567,8 +567,9 @@ fn cut_loop_with_leads(
     let loop_len: f64 = lp.iter().map(Piece::length).sum();
     let run_len: f64 = run.iter().map(Piece::length).sum();
     let (centres, step) = tabs.centres(loop_len)?;
-    tabs.check_fit(step, cut.heights.top - cut.heights.bottom)?;
-    let windows = tab_windows(&centres, tabs.width, loop_len, run_len);
+    let tool_diameter = 2.0 * tool.radius();
+    tabs.check_fit(step, cut.heights.top - cut.heights.bottom, tool_diameter)?;
+    let windows = tab_windows(&centres, tabs.window(tool_diameter), loop_len, run_len);
     let tab_top = cut.heights.bottom + tabs.height;
     let plunge = in_piece.map_or(s, |piece| piece.start());
     b.travel_to(plunge)?;
