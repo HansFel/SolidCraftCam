@@ -412,6 +412,9 @@ again whenever the design changes; **Hide simulation** takes it away. The stock 
 colour of a body still to be made, apart from the model. When it is no larger than the model
 in X and Y (the default **Model box** without allowance) the panel says so, since cuts round the
 part then remove nothing: give the setup's stock an allowance under **Stock › Sides (mm)**.
+It also names every step that takes no material off (it misses the stock, runs above it, or
+cuts only what an earlier step removed; a very thin finishing pass can stay below the grid),
+and says when the stock does not hold the whole part.
 
 Under the summary the panel shows the estimated **run time**, split into cutting, rapids and tool
 changes. Each move accelerates and brakes (500 mm/s² per axis); moves that join almost straight
@@ -611,7 +614,10 @@ the guided job and export fall back to `linuxcnc`.
 `cam.simulate {"setup": "Top", "cell": 0.2}` cuts the setup's steps from its stock (`cell`, the
 grid size in mm, is optional) and returns `removed` (mm³), the `cell` used, per step `removed`,
 `rapid_hits` and `too_deep` (move indices, the first 100) and `warnings` as text. A stock box
-given to `cam.setup` as `stock` is used as it is; otherwise the setup's stock around the model.
+given to `cam.setup` as `stock` is used as it is, in work coordinates measured from part zero;
+otherwise the setup's stock around the model. When the part reaches outside the setup's stock
+(typically a box given in model coordinates), `cam.setup` returns `warnings` saying so, with
+both boxes, and `cam.simulate` repeats it; the setup is saved either way.
 `cam.sheet {"setup": "Top", "path": "sheet.html"}` returns the tool list and setup sheets as
 data (`tools`, `setups`, `seconds`) and, given a `path`, writes them as `html`, `csv` (the tool
 list) or `json` (`format`, else from the extension; `overwrite`, `title` and `labels` for the

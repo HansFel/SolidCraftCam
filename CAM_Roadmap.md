@@ -138,6 +138,7 @@ Project
 | Stock from a body in the design or an imported STEP/STL | Partial: `from_solid` in the data model |
 | Stock material group (aluminium, steel, stainless steel, brass/bronze, plastic, wood/MDF) | Done (on the setup) |
 | Stock shown in the viewport | Partial: as a box outline, and as a translucent solid after **Simulate material removal** |
+| Stock checked against the part: a stock that does not hold the whole part (for example a box given in model coordinates where work coordinates are meant) is refused by name when the setup is saved, before any step is planned | Partial: `cam.setup` returns a warning naming both boxes and the simulation repeats it; refused once the simulation gates export |
 
 ### 5. 2.5D strategies
 
@@ -153,7 +154,9 @@ Project
 | Bore and helical bore | Partial: helical bore (`cam.op.helix`) in a hole or round a boss, with its own rise per turn; no boring bar |
 | Thread milling and tapping (rigid or floating) | Partial: thread milling (`cam.op.thread`, inside or on a stud, right or left hand) and rigid tapping (`cam.op.tap`: G84, M29+G84, G33.1, G331/G332); no floating tapping |
 | Engraving along sketch text and curves | Done: `cam.op.engrave`, the cutter's tip on picked edges, sketch curves and text |
-| Tabs (bridges) on through contours | Done |
+| Tabs (bridges) on through contours | Done: the width is the material left on the wall; the tool centre lifts over the width plus the tool's diameter |
+| Tabs checked against the stock: tabs with less than a tool's diameter of stock outside the contour have nothing to hold on to and are warned about | Planned |
+| A drill step feeds at its plunge feed (the form shows only that one); the command's docs and schema say that `feed` is not used for drilling | Done |
 | Lead-in and lead-out: tangent arc, tangent line, square line or direct/ramp, with overlap | Done |
 | Cutter radius compensation on the control (`G41`/`G42`/`G40`, Heidenhain `RL`/`RR`/`R0`): the contour or, for wear, the centre path in the program; every pass entered and left square on a straight line of at least 1.25 diameters; what the control could not offset refused before posting | Done: run through LinuxCNC 2.9's interpreter over and under size without an error; not yet on Fanuc, Sinumerik or Heidenhain |
 | Open contours along an edge chain: side, direction, run-on at both ends | Done |
@@ -196,6 +199,8 @@ All posts are written from the controllers' public programming manuals.
 | Rapid moves shown apart from cutting moves | Done (preview) |
 | Material removal (dexel or voxel stock, shown in the viewport) | Partial: height-field stock for box and round bar; flat, ball, bull-nose and cone tools (drill, centre drill, chamfer, V-bit), T-slot, reamer, tap and thread mill as flat; `cam.simulate` and **Simulate material removal** in the G-code panel draw the stock left and report rapids through stock and cuts above the flutes; no undercuts, not yet along the playback |
 | Collision of tool, holder and fixtures with stock and model | Partial: posting refuses a step whose shank or holder meets the part, whose tool meets it at a rapid across the axis, or which comes within 0.5 mm of a fixture: the tool's parts swept along the path and intersected with the bodies' exact faces (`crates/engine/src/cmd/cam_collide.rs`); not the stock, not a T-slot cutter's undercut |
+| The material-removal check as a gate: export refuses a setup whose simulation reports a rapid through stock, a cut above the flutes or a cut into the part, naming the step and the place (today `cam.simulate` and `cam.export` are separate) | Planned |
+| Workholding as geometry: vise jaws, clamps and plates with their sizes, checked against tool, holder and rapids like fixtures; a contour or hole running below the part while the stock is held at its sides is refused | Planned |
 | Machine kinematics (axes, travels) | Partial: travels checked by reach on export |
 | Machining time with accelerations, rapids and tool changes | Partial: `estimate`/`move_times` in `crates/cam/src/time.rs` (trapezoid per run, axis limits, stops at corners over 10°, arcs held to their bend, tool changes); shown in the G-code panel and returned by `cam.post` (`time`); acceleration and tool-change time not yet set per machine |
 
@@ -208,6 +213,9 @@ Before each export:
 | Read-back of the program against the planned toolpaths | Done |
 | Rest material shown on the model | Partial: rest against a target height (`RestMap`) in the CAM crate; not shown yet |
 | Areas no tool can reach marked | Planned |
+| Cuts into the finished part: a tool centre nearer the part's surface than its radius less the stock to leave is refused by name | Planned |
+| A step that removes no material is named (a cut that missed, or one entirely above the stock) instead of reporting success | Done: by `cam.simulate` and **Simulate material removal** |
+| Tool reach for holes: a hole deeper from its entry than flute, shank and holder allow is refused, read from the drilling cycles | Planned |
 | Collisions marked | Partial: the refusal names the tool's part, the body and the place; not marked in the viewport |
 | A warning list per setup (shown in the panel, returned by `cam.post`) | Partial: rapids through stock and cuts above the flutes, per step, from `cam.simulate` |
 

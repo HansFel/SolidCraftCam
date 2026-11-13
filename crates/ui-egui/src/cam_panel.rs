@@ -1492,6 +1492,15 @@ fn sim_rows(ui: &mut egui::Ui, sim: &Result<solidcraft_engine::cmd::CamSimulatio
                 ui.add(egui::Label::new(RichText::new(text).color(t.warning)).wrap());
             }
         }
+        if step.removes_nothing() {
+            warned = true;
+            let text = solidcraft_ui_text::format("ui.cam.sim_removes_nothing", &[("step", &step.name)]);
+            ui.add(egui::Label::new(RichText::new(text).color(t.warning)).wrap());
+        }
+    }
+    if sim.stock_misses_part.is_some() {
+        warned = true;
+        ui.add(egui::Label::new(RichText::new(tr("ui.cam.sim_stock_misses_part")).color(t.warning)).wrap());
     }
     if !warned {
         ui.add(egui::Label::new(tr("ui.cam.sim_ok")).wrap());

@@ -161,7 +161,8 @@ Posting refuses a step whose shank or holder meets the part, or which comes too 
 fixture (bodies ticked as fixtures in the setup), and checks the travels against the machine.
 
 **Simulate material removal** in the G-code view cuts the stock and reports rapid moves through
-material and cuts above the flutes. The cutting time counts accelerations and tool changes.
+material, cuts above the flutes, steps that take no material off, and a stock that does not hold
+the whole part. The cutting time counts accelerations and tool changes.
 
 ## G-code
 

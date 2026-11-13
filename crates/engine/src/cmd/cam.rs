@@ -124,7 +124,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("cam.op.drill", "Drill", crate::checked!("cam.op.drill", drill_cmd)).icon("cam_drill")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
-        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index) or [{feature}] (every hole a hole feature made, its pattern copies too); bottom (none: the hole features' own, a blind hole's drill point or a through hole's exit plus the drill's point and 1 mm); stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; feed?; plunge_feed?; spindle_rpm?; coolant?"),
+        .params("setup; name; tool; points?: [[x,y], ...] in work XY; holes?: [{body, at, edge?}] (a round edge's centre, else every round hole of the flat face at that point) or [{sketch, point}] (a sketch point by id) or [{sketch, profile}] (the circles of a sketch profile by index) or [{feature}] (every hole a hole feature made, its pattern copies too); bottom (none: the hole features' own, a blind hole's drill point or a through hole's exit plus the drill's point and 1 mm); stepdown?: maximum peck depth; dwell?: seconds; clearance?; retract?; top?; plunge_feed?: the drilling feed (a drill only plunges; `feed` is not used); spindle_rpm?; coolant?"),
     CommandSpec::new("cam.op.tap", "Tap", crate::checked!("cam.op.tap", tap_cmd)).icon("cam_tap")
         .contract(&DRILL_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::cam::OperationResult>)
@@ -1192,7 +1192,16 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => doc.cam.setups.push(setup.clone()),
     }
-    Ok(json!({"setup": setup_json(s.doc.cam.setup(&setup.name).unwrap_or(&setup))}))
+    let saved = s.doc.cam.setup(&setup.name).unwrap_or(&setup);
+    let misses = live_frame(s, saved).ok().and_then(|(frame, live)| {
+        let (lo, hi) = sheet_stock(s, &live, &frame).ok()?;
+        stock_misses_part(s, &live, &frame, lo, hi)
+    });
+    let mut out = json!({"setup": setup_json(saved)});
+    if let Some(warning) = misses {
+        out["warnings"] = json!([warning]);
+    }
+    Ok(out)
 }
 
 fn parse_value<T: serde::de::DeserializeOwned>(cmd: &str, p: &Value, k: &str, fallback: T) -> Result<T> {
@@ -2699,6 +2708,26 @@ fn part_extent(s: &Session, setup: &CamSetup, frame: &WorkFrame) -> std::result:
     bodies_extent(s, &setup.model_bodies, &setup.fixtures, frame)
 }
 
+/// Why the stock box `lo`..`hi` (work coordinates) cannot be the raw material of the setup's
+/// part: the part reaches outside it. None when it holds the part, or when there is no part
+/// to compare with. A box given in model coordinates where work coordinates are meant is the
+/// usual cause.
+fn stock_misses_part(s: &Session, setup: &CamSetup, frame: &WorkFrame, lo: Vec3, hi: Vec3) -> Option<String> {
+    const TOL: f64 = 0.01;
+    let (plo, phi) = part_extent(s, setup, frame).ok()?;
+    let holds =
+        plo.x >= lo.x - TOL && plo.y >= lo.y - TOL && plo.z >= lo.z - TOL && phi.x <= hi.x + TOL && phi.y <= hi.y + TOL && phi.z <= hi.z + TOL;
+    if holds {
+        return None;
+    }
+    let span = |a: Vec3, b: Vec3| format!("X {:.2} to {:.2}, Y {:.2} to {:.2}, Z {:.2} to {:.2}", a.x, b.x, a.y, b.y, a.z, b.z);
+    Some(format!(
+        "the stock ({}) does not hold the part ({}), both in work coordinates from part zero: a stock box is given in work coordinates, not model coordinates",
+        span(lo, hi),
+        span(plo, phi)
+    ))
+}
+
 /// The box in `frame` round `bodies` (empty: every body), leaving `without` out; from each
 /// body's exact outline bounds.
 fn bodies_extent(s: &Session, bodies: &[String], without: &[String], frame: &WorkFrame) -> std::result::Result<(Vec3, Vec3), String> {
@@ -2885,6 +2914,7 @@ impl Session {
         // No more than a tenth of a millimetre beyond the model on any side in XY: no allowance.
         let fits_model = part_extent(self, found, &frame)
             .is_ok_and(|(mlo, mhi)| [lo.x - mlo.x, lo.y - mlo.y, mhi.x - hi.x, mhi.y - hi.y].iter().all(|d| *d >= -0.1));
+        let stock_misses_part = stock_misses_part(self, found, &frame, lo, hi);
         let round = found.stock.is_none()
             && matches!(found.stock_spec, CamStock::Cylinder { .. } | CamStock::RelativeCylinder { .. } | CamStock::Tube { .. });
         let cell = match cell {
@@ -2928,6 +2958,7 @@ impl Session {
             normals: normals.iter().map(normal).collect(),
             indices,
             fits_model,
+            stock_misses_part,
         })
     }
 }
@@ -2945,12 +2976,22 @@ pub struct CamSimulation {
     pub indices: Vec<u32>,
     /// The stock is no larger than the model's box, so nothing around the part is cut.
     pub fits_model: bool,
+    /// Why the stock cannot be the part's raw material (the part reaches outside it), if so.
+    pub stock_misses_part: Option<String>,
 }
 
 /// What one step did to the stock.
 pub struct CamSimStep {
     pub name: String,
     pub report: solidcraft_cam::SimReport,
+}
+
+impl CamSimStep {
+    /// The step took nothing off the simulated stock: it missed the stock, ran above it, or
+    /// only cut what an earlier step had already removed.
+    pub fn removes_nothing(&self) -> bool {
+        !(self.report.removed > 1e-9)
+    }
 }
 
 impl CamSimulation {
@@ -2964,6 +3005,15 @@ impl CamSimulation {
             if !o.report.too_deep.is_empty() {
                 out.push(format!("operation `{}`: {} move(s) cut above the tool's flute length", o.name, o.report.too_deep.len()));
             }
+            if o.removes_nothing() {
+                out.push(format!(
+                    "operation `{}` removes no material at this grid ({:.2} mm): check that it reaches the stock; a very thin finishing pass can stay below the grid",
+                    o.name, self.cell
+                ));
+            }
+        }
+        if let Some(why) = &self.stock_misses_part {
+            out.push(why.clone());
         }
         if self.fits_model {
             out.push("the stock is the size of the model, so cuts around it remove nothing: give the setup's stock an allowance".into());
@@ -4435,6 +4485,37 @@ mod tests {
             assert!(s.execute("cam.op.drill", &json!({"setup": "Top", "name": "Bad", "tool": 2, "bottom": -8, "holes": holes})).is_err());
         }
         assert_eq!(s.doc.to_json(), before);
+    }
+
+    #[test]
+    fn stock_that_misses_the_part_and_steps_that_cut_nothing_are_named() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "kind": "flat_endmill", "diameter": 10, "flute_length": 30}));
+        // Part zero on the plate's top: the part is at work Z -8 to 0. A stock box given in model
+        // coordinates (Z 0 to 9) lies above it, and the setup says so.
+        let wrong = run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8], "stock": {"min": [0, 0, 0], "max": [40, 30, 9]}}));
+        let warnings = wrong["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().any(|w| w.as_str().is_some_and(|w| w.contains("does not hold the part"))), "{wrong}");
+        let sim = s.cam_simulate("Top", None).unwrap();
+        assert!(sim.stock_misses_part.is_some() && sim.warnings().iter().any(|w| w.contains("does not hold the part")), "{:?}", sim.warnings());
+        // In work coordinates, 1 mm round the part and on top: nothing to say.
+        let right = run(&mut s, "cam.setup", json!({"name": "Top", "stock": {"min": [-1, -1, -8], "max": [41, 31, 1]}}));
+        assert!(right.get("warnings").is_none(), "{right}");
+        // Facing takes the top millimetre off; the same facing again takes nothing and is named.
+        run(&mut s, "cam.op.face", json!({"setup": "Top", "name": "Face", "tool": 1, "bottom": 0, "allowance": 1}));
+        run(&mut s, "cam.op.face", json!({"setup": "Top", "name": "Again", "tool": 1, "bottom": 0, "allowance": 1}));
+        let sim = s.cam_simulate("Top", None).unwrap();
+        assert!(sim.stock_misses_part.is_none());
+        let face = sim.operations.iter().find(|o| o.name == "Face").unwrap();
+        assert!((face.report.removed - 42.0 * 32.0).abs() < 42.0 * 32.0 * 0.02, "{}", face.report.removed);
+        assert!(!face.removes_nothing() && sim.operations.iter().any(|o| o.name == "Again" && o.removes_nothing()));
+        let warnings = sim.warnings();
+        assert!(warnings.iter().any(|w| w.contains("`Again` removes no material")), "{warnings:?}");
+        assert!(!warnings.iter().any(|w| w.contains("`Face` removes no material")), "{warnings:?}");
     }
 
     #[test]

@@ -441,8 +441,16 @@ pub struct DeleteResult {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SetupResult {
-    Setup { setup: serde_json::Value },
-    Delete { deleted: String },
+    Setup {
+        setup: serde_json::Value,
+        /// What makes the setup doubtful, such as a stock that does not hold the part; absent
+        /// when there is nothing to say.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warnings: Option<Vec<String>>,
+    },
+    Delete {
+        deleted: String,
+    },
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PostResult {
@@ -489,7 +497,9 @@ pub struct DrillParams {
     pub retract: Option<NumberExpr>,
     pub top: Option<NumberExpr>,
     pub stepdown: Option<NumberExpr>,
+    /// Not used: a drill only plunges, at `plunge_feed`.
     pub feed: Option<NumberExpr>,
+    /// The drilling feed (mm/min), down into each hole and each peck.
     pub plunge_feed: Option<NumberExpr>,
     pub spindle_rpm: Option<f64>,
     #[serde(default)]
