@@ -289,7 +289,7 @@ fn dist_to_cuts(path: &Toolpath, below: f64, q: Vec2) -> f64 {
 }
 
 fn comp(mode: Compensation) -> CompParams {
-    CompParams { mode, register: 1, lead: 0.0, overlap: 0.0 }
+    CompParams { mode, register: 1, lead: 0.0, overlap: 0.0, arc_in: None, arc_out: None }
 }
 
 fn contour_params(side: Side) -> ContourParams {
@@ -369,6 +369,67 @@ fn a_contour_compensated_on_the_control_writes_the_contour_with_g41_and_g40_roun
     assert!(below.iter().any(|p| (p.x - 3.0).abs() < 1e-6 && (p.y - 3.0).abs() < 1e-6), "the corner is cut to the tool");
     let text = emit(&one_op(path.clone(), mill.clone()), &Post::linuxcnc()).unwrap();
     assert!(readback(&text, &one_op(path, mill.clone()), &Post::linuxcnc()).unwrap().within());
+}
+
+#[test]
+fn compensation_on_the_control_takes_arc_leads_larger_than_the_tool_radius() {
+    let part = [rect(0.0, 0.0, 40.0, 30.0)];
+    let shape = Shape::from_regions(&part, 0.01).unwrap();
+    let mill = tool(6.0);
+    let c = cut(0.0, -2.0, 2.0);
+    let arcs = |radius: f64| CompParams {
+        arc_in: Some(CompArc { radius, sweep: FRAC_PI_2 }),
+        arc_out: Some(CompArc { radius, sweep: FRAC_PI_2 }),
+        ..comp(Compensation::Control)
+    };
+    // Climb milling round the outside starts in the middle of the bottom side, (20, 0), going -X
+    // with the tool below it. An arc of 5 mm round (20, -5) rolls onto it from (25, -5); the
+    // entry line runs 1.25 diameters (7.5 mm) up onto the arc's start, from (25, -12.5). The
+    // exit arc rolls off to (15, -5), the exit line down to (15, -12.5).
+    let path = contour_compensated(&part, &mill, &contour_params(Side::Outside), &arcs(5.0), &c, None).unwrap();
+    let run = &path.comp[0];
+    assert_eq!(run.side, CompSide::Left);
+    let Some(Move::Feed { to: on, .. }) = run.programmed.first() else { panic!("an entry line") };
+    close(on.x, 25.0, 1e-9);
+    close(on.y, -5.0, 1e-9);
+    let Some(Move::Arc { to, center, ccw: true, .. }) = run.programmed.get(1) else { panic!("the arc onto the contour") };
+    close(to.x, 20.0, 1e-9);
+    close(to.y, 0.0, 1e-9);
+    close(center.x, 20.0, 1e-9);
+    close(center.y, -5.0, 1e-9);
+    let Some(Move::Feed { to: off, .. }) = run.programmed.last() else { panic!("an exit line") };
+    close(off.x, 15.0, 1e-9);
+    close(off.y, -12.5, 1e-9);
+    let n = run.programmed.len();
+    let Some(Move::Arc { to, ccw: true, .. }) = run.programmed.get(n - 2) else { panic!("the arc off the contour") };
+    close(to.x, 15.0, 1e-9);
+    close(to.y, -5.0, 1e-9);
+    // The tool centre runs the arcs 3 mm smaller (2 mm), so it ends on the contour's offset at
+    // (20, -3); it starts at the entry point itself, compensation still off there.
+    assert!(matches!(path.moves.get(run.start - 1), Some(Move::Feed { to, .. }) if (to.x - 25.0).abs() < 1e-9 && (to.y + 12.5).abs() < 1e-9));
+    assert!(matches!(path.moves.get(run.start), Some(Move::Feed { to, .. }) if (to.x - 22.0).abs() < 1e-9 && (to.y + 5.0).abs() < 1e-9));
+    assert!(matches!(path.moves.get(run.start + 1), Some(Move::Arc { to, .. }) if (to.x - 20.0).abs() < 1e-9 && (to.y + 3.0).abs() < 1e-9));
+    assert!(cutting_points(&path, -1.0).iter().all(|p| shape.dist(Vec2::new(p.x, p.y)) >= 3.0 - 1e-6));
+    // Written and read back: G41 on the straight line, G3 onto the contour, G40 on the exit line.
+    let program = one_op(path.clone(), mill.clone());
+    let text = emit(&program, &Post::linuxcnc()).unwrap();
+    assert!(text.contains("G41 D1 G1 Y-5") && text.contains("G40 G1 Y-12.5"), "{text}");
+    let between = text.split("G41").nth(1).and_then(|b| b.split("G40").next()).unwrap_or_default();
+    assert!(between.contains("G3") && !between.contains('Z'), "{between}");
+    assert!(readback(&text, &program, &Post::linuxcnc()).unwrap().within());
+    // An arc no larger than the tool's radius leaves the control nothing to run the tool round:
+    // refused, saying how large it must be. Just above it is taken.
+    let e = contour_compensated(&part, &mill, &contour_params(Side::Outside), &arcs(3.0), &c, None).unwrap_err().to_string();
+    assert!(e.contains("larger than the tool's radius") && e.contains("3.100"), "{e}");
+    assert!(contour_compensated(&part, &mill, &contour_params(Side::Outside), &arcs(3.0 + ARC_ROOM), &c, None).is_ok());
+    // Wear compensation programs the centre path itself: any arc, the same one in both.
+    let wear = CompParams { mode: Compensation::Wear, ..arcs(1.0) };
+    let path = contour_compensated(&part, &mill, &contour_params(Side::Outside), &wear, &c, None).unwrap();
+    let run = &path.comp[0];
+    assert_eq!(run.programmed.as_slice(), &path.moves[run.start..run.end]);
+    // A bad arc is refused by the parameters' own check.
+    let bad = CompParams { arc_in: Some(CompArc { radius: f64::NAN, sweep: FRAC_PI_2 }), ..comp(Compensation::Control) };
+    assert!(contour_compensated(&part, &mill, &contour_params(Side::Outside), &bad, &c, None).is_err());
 }
 
 #[test]

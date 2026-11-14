@@ -6,9 +6,9 @@
 use serde_json::{Value, json};
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_cam::{
-    CommentStyle, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind, Move,
-    OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool, ToolKind,
-    Units, contour_compensated, contour_open, contour_with_tabs, drill, emit, estimate, face, pocket, readback, slot,
+    CommentStyle, CompArc, CompParams, Compensation, ContourParams, Cut, FaceParams, Feeds, Heights, Lead, Leads, LineNumbers, Machine, MachineKind,
+    Move, OpenContourParams, OpenPath, OpenSide, Operation, PocketParams, Post, Program, Side, SlotParams, Tabs, TimeEstimate, TimeModel, Tool,
+    ToolKind, Units, contour_compensated, contour_open, contour_with_tabs, drill, emit, estimate, face, pocket, readback, slot,
 };
 use solidcraft_doc::cam::{
     BoxAxisRef, CamCompensation, CamContourParams, CamCut, CamEdgeRef, CamFaceRef, CamGeometry, CamLead, CamOpenSide, CamOperation, CamPocketParams,
@@ -222,7 +222,9 @@ pub(super) fn tap_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 fn hole_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let args: crate::schema::cam::DrillParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     let tool = s.doc.cam.tool(args.tool).cloned().ok_or_else(|| bad(cmd, "define the drill tool first"))?;
-    let points = hole_points(s, cmd, p, &args.setup)?;
+    let circles = hole_circles(s, cmd, p, &args.setup)?;
+    let points: Vec<Vec2> = circles.iter().map(|(c, _)| *c).collect();
+    let warnings = if tool.kind == ToolKind::Tap { Vec::new() } else { oversize_holes(&tool, &circles) };
     let features = picked_features(s, cmd, p, &args.setup)?;
     // A tap cuts the thread its holes were drawn with, or the step is refused.
     if tool.kind == ToolKind::Tap
@@ -249,7 +251,43 @@ fn hole_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
         spindle_rpm: args.spindle_rpm.or(tool.spindle_rpm),
         coolant: args.coolant,
     };
-    store_op(s, cmd, &args.setup, op)
+    let mut out = store_op(s, cmd, &args.setup, op)?;
+    if !warnings.is_empty() {
+        out["warnings"] = json!(warnings);
+    }
+    Ok(out)
+}
+
+/// One warning for each size of picked hole the drill is larger than: such a hole comes out
+/// oversize. Not refused, since a hole drawn under size (to be reamed, or a pilot) can be meant;
+/// typed centres have no size and are not checked.
+fn oversize_holes(tool: &Tool, circles: &[(Vec2, Option<f64>)]) -> Vec<String> {
+    let mm = |v: f64| format!("{}", (v * 1000.0).round() / 1000.0);
+    let mut sizes: Vec<(f64, Vec2, usize)> = Vec::new();
+    for (centre, radius) in circles {
+        let Some(diameter) = radius.map(|r| 2.0 * r) else { continue };
+        if !(tool.diameter > diameter + 1e-3) {
+            continue;
+        }
+        match sizes.iter_mut().find(|(d, _, _)| (d - diameter).abs() < 1e-6) {
+            Some((_, _, count)) => *count += 1,
+            None => sizes.push((diameter, *centre, 1)),
+        }
+    }
+    sizes
+        .into_iter()
+        .map(|(diameter, at, count)| {
+            let holes = if count == 1 { "the hole".to_string() } else { format!("{count} holes") };
+            format!(
+                "tool {} (Ø{} mm) is larger than {holes} of Ø{} mm (at {}, {}): the hole comes out oversize; pick a smaller drill, or mill the hole",
+                tool.number,
+                mm(tool.diameter),
+                mm(diameter),
+                mm(at.x),
+                mm(at.y)
+            )
+        })
+        .collect()
 }
 
 /// Helical boring and thread milling: hole centres as drilling picks them, and the diameter.
@@ -387,12 +425,8 @@ pub(super) fn engrave_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Hole centres in work XY from `points` and `holes` picks (a round edge's centre, every round
 /// hole of a flat face, a sketch point, or the circles of a sketch profile), each once.
-fn hole_points(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<Vec2>> {
-    Ok(hole_circles(s, cmd, p, setup_name)?.into_iter().map(|(c, _)| c).collect())
-}
-
-/// [`hole_points`] with the radius of each picked circle where the pick is one (a round edge,
-/// a round hole of a face, a sketch circle); typed centres and sketch points have none.
+/// With the radius of each picked circle where the pick is one (a round edge, a round hole of
+/// a face, a sketch circle); typed centres and sketch points have none.
 fn hole_circles(s: &Session, cmd: &str, p: &Value, setup_name: &str) -> Result<Vec<(Vec2, Option<f64>)>> {
     let mut points: Vec<(Vec2, Option<f64>)> = if p.get("points").is_some() {
         vec2_list(cmd, p, "points", solidcraft_doc::cam::MAX_LOOP_POINTS)?.into_iter().map(|c| (c, None)).collect()
@@ -3152,11 +3186,30 @@ fn filled_above(body: &solidcraft_kernel::Body, plane: &Plane, lp: &Loop2) -> bo
         .is_some_and(|p| matches!(body.classify_point(plane.to_world(p) + plane.normal() * 0.1), Ok(solidcraft_kernel::PointClass::Inside)))
 }
 
+/// What picked geometry is resolved for: it decides what the inner loops of a picked face are.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resolve {
+    /// A contour: an inner loop with material standing on it (a boss's foot) is an outline of
+    /// its own, gone round by the automatic side; the others are openings.
+    Contour,
+    /// A pocket: an inner loop with material standing on it is an island; one that is open
+    /// above the face (a hole going down from the floor) is not, and is cut over.
+    Pocket,
+    /// Every loop as it is: the paths of a slot or engraving, the box round a facing.
+    Loops,
+}
+
 /// The regions to machine in work XY, and the openings: holes of a face picked as single
-/// contours, which an automatic side machines from inside. For a contour (`contour`), an inner
-/// loop with material standing on it (a boss's foot) is an outline, not an opening, so the
-/// automatic side goes round the boss; a pocket keeps it as an island either way.
-fn resolve_geometry(s: &Session, setup: &CamSetup, source: &CamGeometry, contour: bool) -> std::result::Result<(Vec<Region2>, Vec<Region2>), String> {
+/// contours, which an automatic side machines from inside. What a picked face's inner loops
+/// become depends on `purpose` ([`Resolve`]); whether material stands on one is asked of the
+/// body itself (a point just above the face inside the loop), not of its mesh.
+fn resolve_geometry(
+    s: &Session,
+    setup: &CamSetup,
+    source: &CamGeometry,
+    purpose: Resolve,
+) -> std::result::Result<(Vec<Region2>, Vec<Region2>), String> {
+    let contour = purpose == Resolve::Contour;
     let frame = work_frame(setup)?;
     let state = s.model.state();
     match source {
@@ -3211,6 +3264,10 @@ fn resolve_geometry(s: &Session, setup: &CamSetup, source: &CamGeometry, contour
                             region.holes = holes;
                             let feet: Vec<Region2> = feet.into_iter().map(|lp| Region2 { outer: lp.ccw(), holes: Vec::new() }).collect();
                             regions.extend(to_setup(&plane, &frame, &feet)?);
+                        } else if purpose == Resolve::Pocket {
+                            // Only material standing on the floor is an island: a hole going down
+                            // from it is empty, and the pocket is cut over it.
+                            region.holes.retain(|lp| filled_above(&body.body, &plane, lp));
                         }
                         regions.extend(to_setup(&plane, &frame, &[region])?);
                     }
@@ -3350,16 +3407,17 @@ fn live_setup<'a>(s: &Session, setup: &'a CamSetup) -> std::result::Result<std::
 pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> std::result::Result<solidcraft_cam::Toolpath, String> {
     let setup = &*live_setup(s, setup)?;
     let mut cut = engine_cut(s, op.cut())?;
-    // Material left on the floor: the passes stop that far above the bottom.
+    // Material left on the floor: the passes stop that far above the bottom; a negative value
+    // takes them that much deeper (through a part's underside, or a floor to clean up).
     let floor = match op {
         CamOperation::Contour { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
         CamOperation::Pocket { params, .. } => eval_len(s, &params.floor_stock, "floor_stock")?,
         _ => 0.0,
     };
-    if !floor.is_finite() || floor < 0.0 {
-        return Err("the floor stock must be 0 or more".into());
+    if !floor.is_finite() || floor.abs() > 1e6 {
+        return Err("the floor stock must be a number of at most 1e6 mm either way".into());
     }
-    if floor > 0.0 {
+    if floor != 0.0 {
         cut.heights.bottom += floor;
         if cut.heights.bottom >= cut.heights.top {
             return Err("the floor stock leaves nothing to cut between top and bottom".into());
@@ -3401,7 +3459,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
             // A picked face (the top, or the base for the whole footprint) or sketch profile:
             // the box round its outline.
             CamGeometry::Faces { .. } | CamGeometry::Edges { .. } | CamGeometry::Sketch { .. } => {
-                let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+                let (regions, openings) = resolve_geometry(s, setup, geometry, Resolve::Loops)?;
                 let mut area = solidcraft_geom::Aabb2::EMPTY;
                 for seg in regions.iter().chain(&openings).flat_map(|r| r.outer.segs.iter()) {
                     for i in 0..=16 {
@@ -3432,7 +3490,7 @@ pub(super) fn build_path(s: &Session, setup: &CamSetup, op: &CamOperation) -> st
     match op {
         CamOperation::Contour { geometry, params, .. } => contour_path(s, setup, geometry, params, tool, &cut),
         CamOperation::Pocket { geometry, params, .. } => {
-            let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+            let (regions, openings) = resolve_geometry(s, setup, geometry, Resolve::Pocket)?;
             let params = engine_pocket(s, params)?;
             let all: Vec<Region2> = regions.into_iter().chain(openings).collect();
             pocket(&all, tool, &params, &cut).map_err(|e| e.to_string())
@@ -3514,7 +3572,7 @@ fn contour_path(
     tool: &Tool,
     cut: &Cut,
 ) -> std::result::Result<solidcraft_cam::Toolpath, String> {
-    let (regions, openings) = resolve_geometry(s, setup, geometry, true)?;
+    let (regions, openings) = resolve_geometry(s, setup, geometry, Resolve::Contour)?;
     let (params, other) = (engine_contour(s, p, false)?, engine_contour(s, p, true)?);
     let start = match p.start {
         Some(a) => {
@@ -3567,7 +3625,7 @@ fn contour_path(
 
 /// A closed contour whose cutter radius the control compensates: no open chains or tabs, the
 /// tool coming on and leaving along a straight line square to the contour (a square lead gives
-/// its length).
+/// its length), or along a straight line and then an arc lead (larger than the tool's radius).
 #[allow(clippy::too_many_arguments)]
 fn compensated_contour_path(
     s: &Session,
@@ -3584,16 +3642,19 @@ fn compensated_contour_path(
     if !tabs.is_empty() {
         return Err("holding tabs lift the tool in the middle of the contour, which compensation on the control cannot follow: leave them out, or compensate in the CAM".into());
     }
-    let length = |lead: &Lead| {
+    // The square lead's length, or the arc the entry (exit) line leads onto (off).
+    let lead = |lead: &Lead| {
         match *lead {
-        Lead::Direct => Ok(0.0),
-        Lead::Perpendicular { length } => Ok(length),
-        Lead::Arc { .. } | Lead::Tangent { .. } => Err(
-            "with compensation on the control the tool comes on and leaves along a straight line square to the contour: choose no lead or a square lead".to_string(),
+        Lead::Direct => Ok((0.0, None)),
+        Lead::Perpendicular { length } => Ok((length, None)),
+        Lead::Arc { radius, sweep } => Ok((0.0, Some(CompArc { radius, sweep }))),
+        Lead::Tangent { .. } => Err(
+            "with compensation on the control the tool comes on along a straight line, square to the contour or onto an arc lead: a lead in line with the contour would run along the part; choose no lead, a square lead or an arc lead".to_string(),
         ),
     }
     };
-    let lead = length(&leads.lead_in)?.max(length(&leads.lead_out)?);
+    let ((length_in, arc_in), (length_out, arc_out)) = (lead(&leads.lead_in)?, lead(&leads.lead_out)?);
+    let lead = length_in.max(length_out);
     if let CamGeometry::Edges { .. } = geometry {
         let (_, chains) = edge_chain(s, &work_frame(setup)?, &edge_refs(geometry))?;
         if !chains.is_empty() {
@@ -3605,7 +3666,7 @@ fn compensated_contour_path(
         CamCompensation::Wear => Compensation::Wear,
         CamCompensation::Cam => Compensation::Cam,
     };
-    let comp = CompParams { mode, register: tool.number, lead, overlap: leads.overlap };
+    let comp = CompParams { mode, register: tool.number, lead, overlap: leads.overlap, arc_in, arc_out };
     let mut path = solidcraft_cam::Toolpath::default();
     for (group, params) in groups {
         if !group.is_empty() {
@@ -3700,7 +3761,7 @@ fn slot_paths(s: &Session, setup: &CamSetup, geometry: &CamGeometry) -> std::res
     let (regions, open) = match geometry {
         CamGeometry::Edges { .. } => edge_chain(s, &work_frame(setup)?, &edge_refs(geometry))?,
         _ => {
-            let (regions, openings) = resolve_geometry(s, setup, geometry, false)?;
+            let (regions, openings) = resolve_geometry(s, setup, geometry, Resolve::Loops)?;
             (regions.into_iter().chain(openings).collect(), Vec::new())
         }
     };
@@ -4530,6 +4591,117 @@ mod tests {
     }
 
     #[test]
+    fn a_pocket_on_a_picked_face_cuts_over_holes_going_down_and_round_bosses_standing_up() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        // A boss standing on the top face at (12, 15), and a hole through the plate at (30, 15).
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [12, 15], "radius": 4}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 14, "operation": "join"}));
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [30, 15], "radius": 4}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "cut"}));
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200, "stepdown": 2}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        run(
+            &mut s,
+            "cam.op.pocket",
+            json!({"setup": "Top", "name": "Tasche", "tool": 1, "bottom": -2, "stepdown": 2,
+            "faces": [{"body": "Plate", "at": [5, 5, 8]}]}),
+        );
+        let paths = s.cam_toolpaths();
+        let cutting: Vec<Vec3> = paths
+            .iter()
+            .find(|p| p.operation == "Tasche")
+            .unwrap()
+            .points
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|(p, c)| *c && p.z < 8.0)
+            .map(|(p, _)| *p)
+            .collect();
+        assert!(!cutting.is_empty());
+        let from = |p: &Vec3, x: f64, y: f64| (p.x - x).hypot(p.y - y);
+        // The hole is open above the face: the rings run over it (a ring 9 mm in from the
+        // outline passes X 31, 1 mm from its axis). As an island the tool's centre would have
+        // stayed its radius plus the hole's, 7 mm, away.
+        assert!(cutting.iter().any(|p| from(p, 30.0, 15.0) < 4.0), "over the hole");
+        // The boss stands on the face: an island, the tool's centre never nearer than 7 mm.
+        assert!(cutting.iter().all(|p| from(p, 12.0, 15.0) > 7.0 - 1e-6), "round the boss");
+    }
+
+    #[test]
+    fn negative_stock_cuts_into_the_wall_and_below_the_floor() {
+        let mut s = Session::default();
+        run(&mut s, "cam.tool.define", json!({"number": 1, "diameter": 6, "flute_length": 20, "feed": 600, "plunge_feed": 200}));
+        run(&mut s, "cam.setup", json!({"name": "Top"}));
+        let op = |extra: Value| {
+            let mut p = json!({"setup": "Top", "name": "K", "tool": 1, "outer": [[0, 0], [40, 0], [40, 30], [0, 30]],
+                "bottom": -2, "stepdown": 2, "side": "outside"});
+            for (k, v) in extra.as_object().into_iter().flatten() {
+                p[k.as_str()] = v.clone();
+            }
+            p
+        };
+        // Wall -0.5: the tool's centre 2.5 mm off the outline (X -2.5 and 42.5), not 3.
+        // Floor -0.3: the pass goes to -2.3, not -2.
+        run(&mut s, "cam.op.contour", op(json!({"stock_to_leave": -0.5, "floor_stock": -0.3})));
+        let paths = s.cam_toolpaths();
+        let points: Vec<Vec3> =
+            paths.iter().find(|p| p.operation == "K").unwrap().points.as_ref().unwrap().iter().filter(|(_, c)| *c).map(|(p, _)| *p).collect();
+        let lowest = points.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
+        assert!((lowest + 2.3).abs() < 1e-6, "{lowest}");
+        let deep: Vec<&Vec3> = points.iter().filter(|p| p.z < -2.29).collect();
+        assert!(deep.iter().any(|p| (p.x + 2.5).abs() < 1e-6) && deep.iter().any(|p| (p.x - 42.5).abs() < 1e-6));
+        assert!(deep.iter().all(|p| p.x > -2.5 - 1e-6 && p.x < 42.5 + 1e-6));
+        // As deep as the tool's radius would put its centre on the wall: refused, saying why.
+        let e = s.execute("cam.op.contour", &op(json!({"stock_to_leave": -3}))).unwrap_err().to_string();
+        assert!(e.contains("tool's radius"), "{e}");
+        // On the control too: the programmed contour lies 0.5 mm inside the outline.
+        run(&mut s, "cam.op.contour", op(json!({"stock_to_leave": -0.5, "compensation": "control"})));
+        let g = run(&mut s, "cam.post", json!({"setup": "Top", "post": "linuxcnc"}))["gcode"].as_str().unwrap_or_default().to_string();
+        assert!(g.contains("G41") && g.contains("Y0.5"), "{g}");
+    }
+
+    #[test]
+    fn a_drill_larger_than_a_picked_hole_is_warned_of() {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "new", "body_name": "Plate"}));
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [20, 15], "radius": 3}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance": 8, "operation": "cut"}));
+        run(&mut s, "cam.tool.define", json!({"number": 8, "kind": "drill", "diameter": 8, "flute_length": 30}));
+        run(&mut s, "cam.tool.define", json!({"number": 5, "kind": "drill", "diameter": 5, "flute_length": 30}));
+        run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [0, 0, 8]}));
+        // The Ø6 hole, picked at its rim.
+        let drill = |tool: u32| {
+            json!({"setup": "Top", "name": "Bohren", "tool": tool, "bottom": -9,
+                "holes": [{"body": "Plate", "at": [23, 15, 8], "edge": true}]})
+        };
+        let out = run(&mut s, "cam.op.drill", drill(8));
+        let warnings = out["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{out}");
+        let w = warnings[0].as_str().unwrap();
+        assert!(w.contains("Ø8 mm") && w.contains("Ø6 mm") && w.contains("at 20, 15"), "{w}");
+        // The step is made all the same: a pilot or a hole to ream can be meant.
+        assert!(s.doc.cam.setup("Top").unwrap().operations.iter().any(|o| o.name() == "Bohren"));
+        // A drill that fits says nothing; typed centres have no size to compare.
+        assert!(run(&mut s, "cam.op.drill", drill(5)).get("warnings").is_none());
+        let typed = json!({"setup": "Top", "name": "Typed", "tool": 8, "bottom": -9, "points": [[20, 15]]});
+        assert!(run(&mut s, "cam.op.drill", typed).get("warnings").is_none());
+    }
+
+    #[test]
     fn drill_at_picked_bores() {
         let mut s = Session::default();
         run(&mut s, "sketch.create", json!({"plane": "XY"}));
@@ -4872,13 +5044,23 @@ mod tests {
         // What the control cannot follow is refused when the step is made.
         for (extra, says) in [
             (json!({"compensation": "control", "tabs": {"count": 4, "width": 5, "height": 1}}), "holding tabs"),
-            (json!({"compensation": "control", "lead_in": {"kind": "arc", "radius": 3, "sweep": 90}}), "square lead"),
+            (json!({"compensation": "control", "lead_in": {"kind": "arc", "radius": 3, "sweep": 90}}), "larger than the tool's radius"),
+            (json!({"compensation": "control", "lead_in": {"kind": "tangent", "length": 5}}), "run along the part"),
             (json!({"compensation": "control", "ramp_angle": "5 deg"}), "ramping"),
             (json!({"compensation": "sideways"}), "cam, control or wear"),
         ] {
             let e = s.execute("cam.op.contour", &op("Bad", extra)).unwrap_err().to_string();
             assert!(e.contains(says), "{says}: {e}");
         }
+        // Arc leads larger than the tool's radius (3 mm): a straight line with G41 onto the
+        // arc's start, the arc onto the contour (G3, climb milling round the outside), and back.
+        let arcs = json!({"compensation": "control", "lead_in": {"kind": "arc", "radius": 5, "sweep": 90},
+            "lead_out": {"kind": "arc", "radius": 5, "sweep": 90}});
+        run(&mut s, "cam.op.contour", op("Comp", arcs));
+        let g = run(&mut s, "cam.post", json!({"setup": "Top", "post": "linuxcnc"}))["gcode"].as_str().unwrap_or_default().to_string();
+        assert_eq!(g.matches("G41 D4 G1").count(), 2, "{g}");
+        let first = g.split("G41").nth(1).and_then(|b| b.split("G40").next()).unwrap_or_default();
+        assert!(first.lines().nth(1).is_some_and(|l| l.starts_with("G3")), "{first}");
         // Wear compensation with a square lead: the nominal centre path, entered 10 mm off it.
         run(&mut s, "cam.op.contour", op("Comp", json!({"compensation": "wear", "lead_in": {"kind": "perpendicular", "length": 10}})));
         let g = run(&mut s, "cam.post", json!({"setup": "Top", "post": "fanuc"}))["gcode"].as_str().unwrap_or_default().to_string();

@@ -88,8 +88,11 @@ worked out when the setup is saved; after a model change, open the setup and pre
 Instead of a rectangle, a contour or pocket can follow picked geometry. Under
 **Contours**, pick edges or planar faces in the viewport. A picked edge adds the one
 contour it lies on (**Edge contour**); a picked face adds its outline and holes
-(**Face with its holes**). Each entry can be removed again; a contour picked twice is
-used once. Under **Start point**, pick a corner or an edge (its middle): each contour then
+(**Face with its holes**). For a pocket, only a hole with material standing in it (a boss on
+the floor) stays an island; a hole that goes down from the face (a bore through the floor) is
+empty above it, so the pocket is cleared over it. Whether material stands there is asked of
+the solid itself, just above the face, not of its display mesh. Each entry can be removed
+again; a contour picked twice is used once. Under **Start point**, pick a corner or an edge (its middle): each contour then
 starts at its point nearest to it, otherwise at a corner.
 
 To mill along edges you pick one after another, tick **Edges as one chain**: the picked
@@ -137,7 +140,12 @@ less than a tool's diameter of stock round the part, nothing is left for them to
 
 **Wall stock to leave** keeps that much material on the walls and **Floor stock to leave**
 stops the last pass that far above the bottom, so a later finishing step can take the rest:
-rough with stock left, then finish with a second contour at 0.
+rough with stock left, then finish with a second contour at 0. Both can be negative: a
+negative wall stock cuts that much into the wall (a fit with clearance), as long as it stays
+smaller than the tool's radius (the tool's centre must stay off the wall); a negative floor
+stock takes the last pass that much below the bottom (through a part's underside, or a
+floor to clean up). The checks of flute length and travel apply to the deeper pass as to any
+other; a slot keeps its stock 0 or more.
 
 ## Radius compensation on the control
 
@@ -156,10 +164,14 @@ rough with stock left, then finish with a second contour at 0.
 Controls are strict about compensation, and most trouble on the machine comes from it, so every
 compensated depth pass is written the same way: compensation off, a rapid to the entry point
 square off the contour on the tool's side, down to the pass depth there; `G41`/`G42` on a
-straight entry move onto the contour, at least 1.25 tool diameters long (a **Square line** lead
-makes it longer; other leads are refused); the contour at that depth with nothing else in
-between (no Z moves, no dwells, no tabs); `G40` on a straight exit move as long as the entry;
-then up. The entry lands in the middle of the contour's longest straight side, or nearest the
+straight entry move, at least 1.25 tool diameters long: square onto the contour (a **Square
+line** lead makes it longer) or, with an **Arc** lead, in line with the arc onto its start and
+then the arc onto the contour; the contour at that depth with nothing else in between (no Z
+moves, no dwells, no tabs); the exit arc, when there is one, and `G40` on a straight exit move
+as long as the entry; then up. The control runs the tool round a lead arc at the arc's radius
+less the tool's, so with **On the control** the arc must be at least 0.1 mm larger than the
+tool's radius, or the step is refused saying how large it must be (wear only takes any arc). A
+**Tangent line** lead is refused: in line with the contour it would run along the part. The entry lands in the middle of the contour's longest straight side, or nearest the
 start point you picked, at least a tool diameter from a corner. Arcs are split below half a turn.
 Ramps and holding tabs cannot be compensated on the control and are refused, as are open edge
 chains.
@@ -374,9 +386,14 @@ the form; the depth comes from the hole's exact rims and the feature:
 
 Checked before the step is stored: a tap whose pitch is not the thread's is refused, holes that
 end at different depths need one step per depth (or a typed bottom), and a hole that does not
-point along the setup's tool axis needs a setup facing it. Not checked: that the drill's
-diameter matches the hole (pick the tool), and later changes to the hole: the step keeps the
-places and depth it was made with, so make it again after moving or resizing the hole.
+point along the setup's tool axis needs a setup facing it. A drill larger than a picked hole
+(a round edge, a face's holes, a hole feature, a sketch circle) is warned of when the step is
+made: the form shows it under **Show toolpaths** and in the status line after OK, and the
+command's reply lists it in `warnings`; the step is still made, since a pilot or a hole to ream
+can be meant (a tap, larger than its core hole by nature, is not warned of). Not checked: typed
+centres, which have no size, a drill smaller than the hole, and later changes to the hole: the
+step keeps the places and depth it was made with, so make it again after moving or resizing the
+hole.
 
 ## Job list, tool library and machines
 

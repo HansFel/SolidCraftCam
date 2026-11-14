@@ -512,6 +512,9 @@ pub struct DrillParams {
 pub struct OperationResult {
     pub setup: String,
     pub operation: String,
+    /// What was made but looks wrong (a drill larger than a picked hole).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -806,6 +809,9 @@ pub struct JobResult {
     pub extension: String,
     pub points: Vec<PreviewPoint>,
     pub cut_minutes: f64,
+    /// What the step's command warned of (a drill larger than a picked hole).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

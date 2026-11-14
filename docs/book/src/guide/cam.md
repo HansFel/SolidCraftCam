@@ -104,14 +104,17 @@ another setup that takes it, skipped or removed.
 - **Contour**: along a picked outline, inside, outside or on it; with lead-in and lead-out
   (direct, tangent arc, tangent line, square line), overlap and holding tabs. An open edge
   chain runs from the first picked edge towards the second.
-- **Pocket**: clears the inside of an outline and leaves its islands standing, with a ramp.
+- **Pocket**: clears the inside of an outline and leaves its islands standing, with a ramp. A
+  picked face's holes that go down from it (bores in the floor) are no islands: the pocket is
+  cleared over them.
 - **Facing**: takes the allowance off the top down to the finished height.
 - **Slot**: a groove along edges or curves.
 - **Chamfer**: a chamfer cutter along edges.
 - **Engraving**: the tip of a V-bit follows edges, sketch curves or text.
 
 Wall and floor stock leave material for a finishing step: rough with stock left, then finish
-with a second step at 0.
+with a second step at 0. Negative values cut that much into the wall (less than the tool's
+radius) or below the bottom.
 
 **Text on the model** (embossed or engraved letters) is many faces. Pick one letter's top (or,
 for engraved text, one letter's floor) and press **All faces in this plane**: every flat face of
@@ -124,11 +127,14 @@ is the contour itself and the control adds the radius from its tool table, so a 
 still cuts to size: enter its measured diameter there under the tool's number. **On the control,
 wear only** writes the centre path and the tool table holds just the difference between measured
 and nominal diameter. With the control compensating, each depth pass is entered and left on a
-straight line square to the contour, with no ramp and no tabs, and a corner or arc tighter than
-the tool, or contours closer together than it, are refused before anything is written. GRBL
-has no compensation. The setup sheet says what goes into the tool table. The programs were run
-through LinuxCNC 2.9's interpreter with tool tables above, at and below the nominal diameter and
-taken without an error; still try the first ones in the control's test run.
+straight line, square to the contour or onto an **Arc** lead that rolls onto it, with no ramp
+and no tabs. On the control a lead arc must be larger than the tool's radius (the control runs
+the tool round it at the difference); a corner or arc tighter than the tool, or contours closer
+together than it, are refused before anything is written. GRBL has no compensation. The setup
+sheet says what goes into the tool table. The programs with square entry lines were run through
+LinuxCNC 2.9's interpreter with tool tables above, at and below the nominal diameter and taken
+without an error; those with arc leads are checked by the program read-back only, not yet in a
+control's interpreter, so try the first ones in the control's test run.
 
 ## Holes
 

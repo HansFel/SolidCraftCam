@@ -976,7 +976,16 @@ fn text_impl(ui: &mut Ui, text: &str, style: Text<'_>, hover_hint: Option<&str>)
                 .inner_margin(egui::Margin::symmetric(t.form_inset as i8, t.space_6 as i8)),
             |ui| {
                 ui.set_min_width(dimension(ui.available_width()));
-                ui.add(egui::Label::new(RichText::new(text).font(font).color(ink)).wrap())
+                // An error is passed on to whoever looks into it: its text can be selected and
+                // copied, and the right-click menu copies all of it.
+                let label = ui.add(egui::Label::new(RichText::new(text).font(font).color(ink)).wrap().selectable(true));
+                crate::Menu::context(&label, |ui| {
+                    if crate::menu::button(ui, solidcraft_ui_text::tr_label("Copy"), "copy").clicked() {
+                        ui.ctx().copy_text(text.to_owned());
+                        ui.close();
+                    }
+                });
+                label
             },
         )
         .inner

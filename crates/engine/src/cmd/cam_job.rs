@@ -24,6 +24,7 @@ pub static COMMANDS: &[CommandSpec] = &[
 
 fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
     let a: JobParams = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+    let mut warnings: Vec<String> = Vec::new();
     let values = [
         a.x,
         a.y,
@@ -291,7 +292,8 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
                 }
                 _ => {
                     map.insert("dwell".into(), json!(a.dwell));
-                    cam::drill_cmd(&mut work, &op)?;
+                    let out = cam::drill_cmd(&mut work, &op)?;
+                    warnings.extend(out.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from));
                 }
             }
         }
@@ -320,6 +322,7 @@ fn build(s: &Session, p: &Value, cmd: &str) -> Result<(Session, JobResult)> {
         extension: posted.get("extension").and_then(Value::as_str).unwrap_or("ngc").into(),
         points,
         cut_minutes,
+        warnings,
     };
     Ok((work, result))
 }

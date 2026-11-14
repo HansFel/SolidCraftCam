@@ -408,8 +408,20 @@ pub(crate) fn check_ramp(angle: f64) -> Result<()> {
     if (0.0..=1.5).contains(&angle) { Ok(()) } else { invalid("the ramp angle must be between 0 and 85 degrees") }
 }
 
-pub(crate) fn check_leave(leave: f64) -> Result<()> {
-    if leave.is_finite() && (0.0..=MAX_COORD).contains(&leave) { Ok(()) } else { invalid("the stock to leave must be 0 or more") }
+/// Stock left on a wall: positive leaves material for a finishing pass, negative cuts that much
+/// into the part (a fit with clearance, a worn part to clean up). The tool centre then still runs
+/// outside the wall, so a negative value must stay smaller than the tool's radius.
+pub(crate) fn check_leave(leave: f64, tool: &Tool) -> Result<()> {
+    if !(leave.is_finite() && leave <= MAX_COORD) {
+        return invalid("the stock to leave must be a number of at most 1e6 mm");
+    }
+    let r = tool.radius();
+    if leave <= -r + 1e-6 {
+        return invalid(format!(
+            "a negative stock to leave of {leave:.3} mm would put the tool's centre on or past the wall: it must stay above -{r:.3} mm (the tool's radius)"
+        ));
+    }
+    Ok(())
 }
 
 /// A milling operation needs a tool that cuts with its side: a drill only cuts at its point.
@@ -485,7 +497,7 @@ pub fn contour_with_tabs(
     cut.validate()?;
     leads.validate()?;
     tabs.validate()?;
-    check_leave(params.stock_to_leave)?;
+    check_leave(params.stock_to_leave, tool)?;
     check_ramp(params.ramp_angle)?;
     let shape = Shape::from_regions(regions, params.tolerance)?;
     let away = tool.radius() + params.stock_to_leave;
@@ -756,7 +768,7 @@ pub fn pocket(regions: &[Region2], tool: &Tool, params: &PocketParams, cut: &Cut
     tool.validate()?;
     mills(tool)?;
     cut.validate()?;
-    check_leave(params.stock_to_leave)?;
+    check_leave(params.stock_to_leave, tool)?;
     check_ramp(params.ramp_angle)?;
     let r = tool.radius();
     if !(params.stepover > 0.0) || !(params.stepover <= tool.diameter) {

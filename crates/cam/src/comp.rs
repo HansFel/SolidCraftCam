@@ -8,12 +8,15 @@
 //!
 //! - compensation off, a rapid to the entry point, square off the contour on the tool's side,
 //!   and down to the pass depth there;
-//! - compensation on with a straight entry move onto the contour, at least 1.25 tool diameters
-//!   long (LinuxCNC wants the lead-in at least a radius, the move after `G40` longer than a
-//!   diameter; Fanuc switches only on straight moves);
+//! - compensation on with a straight entry move, at least 1.25 tool diameters long (LinuxCNC
+//!   wants the lead-in at least a radius, the move after `G40` longer than a diameter; Fanuc
+//!   switches only on straight moves): square onto the contour, or in line with a lead arc that
+//!   then rolls onto it (the control runs the tool round such an arc at its radius less the
+//!   tool's, so the arc must be larger than the tool's radius);
 //! - the contour at that depth, nothing else in between (no Z-only moves, no dwells, which
 //!   Fanuc's two-block look-ahead loses the path on), arcs split below half a turn;
-//! - compensation off with a straight exit move square off the contour, as long as the entry;
+//! - compensation off with a straight exit move square off the contour (or after a lead arc
+//!   rolling off it, in line with the arc), as long as the entry;
 //! - up. Every depth pass repeats this: compensation is never on across a Z move.
 //!
 //! Before writing, the programmed contour is offset here the way a control does it (lines moved
@@ -29,6 +32,7 @@ use solidcore_record::{Region2, Vec2};
 use solidcraft_geom::prelude::*;
 
 use crate::check::verify;
+use crate::lead::{Lead, lead_in, lead_out};
 use crate::offset::{Shape, reversed};
 use crate::ops::{Builder, ContourParams, Cut, MAX_COORD, Side, check_leave, check_ramp, free_normal, lead_is_clear, mills, run_overlap, start_at};
 use crate::path::{CompRun, CompSide, Move, Toolpath};
@@ -75,6 +79,29 @@ pub struct CompParams {
     pub lead: f64,
     /// How far the cut runs on past its start before the exit line (mm).
     pub overlap: f64,
+    /// An arc rolling onto the contour after the entry line; `None`: the entry line lands
+    /// square on the contour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_in: Option<CompArc>,
+    /// An arc rolling off the contour before the exit line; `None`: the exit line leaves square.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_out: Option<CompArc>,
+}
+
+/// A lead arc on a compensated contour. With compensation on the control its radius must
+/// exceed the tool's by [`ARC_ROOM`]: the control runs the tool round it at the difference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CompArc {
+    /// mm
+    pub radius: f64,
+    /// Radians, above 0 and at most a half turn.
+    pub sweep: f64,
+}
+
+impl CompArc {
+    fn lead(&self) -> Lead {
+        Lead::Arc { radius: self.radius, sweep: self.sweep }
+    }
 }
 
 impl CompParams {
@@ -90,6 +117,9 @@ impl CompParams {
         }
         if !(self.overlap.is_finite() && (0.0..=MAX_COORD).contains(&self.overlap)) {
             return invalid("the overlap must be 0 or more");
+        }
+        for arc in self.arc_in.iter().chain(&self.arc_out) {
+            arc.lead().validate()?;
         }
         Ok(())
     }
@@ -115,7 +145,7 @@ pub fn contour_compensated(
     mills(tool)?;
     cut.validate()?;
     comp.validate()?;
-    check_leave(params.stock_to_leave)?;
+    check_leave(params.stock_to_leave, tool)?;
     check_ramp(params.ramp_angle)?;
     if params.ramp_angle > 0.0 {
         return invalid("with compensation on the control the tool goes down at its entry point: ramping along the contour cannot be written");
@@ -129,15 +159,23 @@ pub fn contour_compensated(
     let r = tool.radius();
     let stock = params.stock_to_leave;
     // The tool centre's loops as the CAM works them out: what the control must make, too.
-    let centres = shape.offset(sign * (r + stock))?;
+    let mut centres = shape.offset(sign * (r + stock))?;
     if centres.is_empty() {
         return invalid("the tool does not fit the profile");
     }
     let programmed_loops = match comp.mode {
-        Compensation::Control if stock > 0.0 => shape.offset(sign * stock)?,
+        // Stock left (or, negative, cut away) moves the programmed contour off (into) the part.
+        Compensation::Control if stock != 0.0 => shape.offset(sign * stock)?,
         Compensation::Control => shape.loops().to_vec(),
         Compensation::Wear | Compensation::Cam => centres.clone(),
     };
+    // Stock cut away moves the contour into the part, where its outside corners stay sharp; the
+    // control then rounds them a radius out, round the moved corner, where one offset by the
+    // radius less the stock rounds them round the part's own corner. Both leave the same part,
+    // so the control is held to the offset of what it is given.
+    if comp.mode == Compensation::Control && stock < 0.0 {
+        centres = Shape::from_loops(programmed_loops.clone()).offset(sign * r)?;
+    }
     if programmed_loops.len() != centres.len() {
         return invalid(
             "the contours are closer together than the tool (or a gap is narrower than it): with compensation on the control the tool would cut into the part; compensate in the CAM, or use a smaller tool",
@@ -188,11 +226,16 @@ pub fn contour_compensated(
             }
         };
         let side = if first.tangent_at(0.0).perp().dot(n_in) > 0.0 { CompSide::Left } else { CompSide::Right };
-        let (entry, exit) = (s + n_in * length, e + n_out * length);
-        let (entry_line, exit_line) = (Piece::Line { a: entry, b: c_first.start() }, Piece::Line { a: c_last.end(), b: exit });
-        if !lead_is_clear(&shape, params.side, &entry_line, r + stock - 1e-6) || !lead_is_clear(&shape, params.side, &exit_line, r + stock - 1e-6) {
+        // How far the control moves the programmed path: the radius, or (wear) next to nothing.
+        let off = if comp.mode == Compensation::Control { r } else { 0.0 };
+        let (prog_in, centre_in) = approach(comp.arc_in, s, first.tangent_at(0.0), n_in, c_first.start(), off, length, r)?;
+        let (prog_out, centre_out) = departure(comp.arc_out, e, last.tangent_at(1.0), n_out, c_last.end(), off, length, r)?;
+        let Some(entry) = prog_in.first().map(Piece::start) else {
+            return invalid("the contour has no way on for the tool");
+        };
+        if centre_in.iter().chain(&centre_out).any(|piece| !lead_is_clear(&shape, params.side, piece, r + stock - 1e-6)) {
             return invalid(format!(
-                "with compensation on the control the tool comes on and leaves along a straight line {:.3} mm long square to the contour, and at ({:.3}, {:.3}) there is no room for it: pick another start point",
+                "with compensation on the control the tool comes on and leaves along a straight line {:.3} mm long (then an arc, when one is chosen), and at ({:.3}, {:.3}) there is no room for it: pick another start point or a smaller arc",
                 length, s.x, s.y
             ));
         }
@@ -204,16 +247,16 @@ pub fn contour_compensated(
             }
             b.plunge_to(z)?;
             let begin = b.len();
-            b.cut_to(c_first.start(), z)?;
+            centre_in.iter().try_for_each(|piece| b.cut_piece(piece, z, z))?;
             b.cut_loop(&centre_run, z)?;
-            b.cut_to(exit, z)?;
+            centre_out.iter().try_for_each(|piece| b.cut_piece(piece, z, z))?;
             let end = b.len();
             // What the program says: from the entry point onto the contour, round it, and off.
             let mut p = Builder::new(cut);
             p.push(Move::Rapid { to: entry.extend(z) })?;
-            p.cut_to(s, z)?;
+            prog_in.iter().try_for_each(|piece| p.cut_piece(piece, z, z))?;
             p.cut_loop(&run, z)?;
-            p.cut_to(exit, z)?;
+            prog_out.iter().try_for_each(|piece| p.cut_piece(piece, z, z))?;
             let programmed: Vec<Move> = p.into_moves().into_iter().skip(1).collect();
             runs.push(CompRun { start: begin, end, side, register: comp.register, programmed });
         }
@@ -223,6 +266,58 @@ pub fn contour_compensated(
     let path = Toolpath { moves: b.into_moves(), cycles: Vec::new(), comp: runs };
     verify(&path, &cut.heights)?;
     Ok(path)
+}
+
+/// The smallest a lead arc's radius may exceed the tool's radius by when the control
+/// compensates (mm): the control runs the tool round the arc at the difference.
+pub const ARC_ROOM: f64 = 0.1;
+
+/// The way onto the contour at `s` (travel `t`, the tool on side `n`): what the program says
+/// and the tool centre's path, both from the entry point, where compensation goes on. Without an
+/// arc, a straight line `length` long square onto the contour; with one, a straight line
+/// `length` long in line with the arc onto its start, then the arc rolling onto the contour.
+/// The tool centre starts at the entry point itself (compensation is still off there) and ends
+/// at `cs`, `off` from `s` on the tool's side.
+#[allow(clippy::too_many_arguments)]
+fn approach(arc: Option<CompArc>, s: Vec2, t: Vec2, n: Vec2, cs: Vec2, off: f64, length: f64, r: f64) -> Result<(Vec<Piece>, Vec<Piece>)> {
+    let Some(arc) = arc else {
+        let entry = s + n * length;
+        return Ok((vec![Piece::Line { a: entry, b: s }], vec![Piece::Line { a: entry, b: cs }]));
+    };
+    let (programmed, centre) = comp_arc(lead_in(&arc.lead(), s, t, n), off, r)?;
+    let start = programmed.start();
+    let entry = start - programmed.tangent_at(0.0) * length;
+    Ok((vec![Piece::Line { a: entry, b: start }, programmed], vec![Piece::Line { a: entry, b: centre.start() }, centre]))
+}
+
+/// The way off the contour at `e`, as [`approach`] the way on: an arc rolling off it, when one
+/// is chosen, then the straight line where compensation goes off; the tool centre leaves from
+/// `ce` and ends at the exit point itself.
+#[allow(clippy::too_many_arguments)]
+fn departure(arc: Option<CompArc>, e: Vec2, t: Vec2, n: Vec2, ce: Vec2, off: f64, length: f64, r: f64) -> Result<(Vec<Piece>, Vec<Piece>)> {
+    let Some(arc) = arc else {
+        let exit = e + n * length;
+        return Ok((vec![Piece::Line { a: e, b: exit }], vec![Piece::Line { a: ce, b: exit }]));
+    };
+    let (programmed, centre) = comp_arc(lead_out(&arc.lead(), e, t, n), off, r)?;
+    let end = programmed.end();
+    let exit = end + programmed.tangent_at(1.0) * length;
+    Ok((vec![programmed, Piece::Line { a: end, b: exit }], vec![centre, Piece::Line { a: centre.end(), b: exit }]))
+}
+
+/// A lead arc as programmed and as the tool centre runs it: round the same centre, `off`
+/// closer to it (the tool rides on the arc's inner side, the side its centre is on).
+fn comp_arc(arc: Option<Piece>, off: f64, r: f64) -> Result<(Piece, Piece)> {
+    let Some(Piece::Arc { c, r: radius, a0, sweep }) = arc else {
+        return invalid("a lead arc could not be laid onto the contour");
+    };
+    if off > 0.0 && radius < r + ARC_ROOM - 1e-9 {
+        return invalid(format!(
+            "with compensation on the control a lead arc must be larger than the tool's radius: the arc is {radius:.3} mm, the tool's radius {r:.3} mm; give the arc at least {:.3} mm, or choose a square lead",
+            r + ARC_ROOM
+        ));
+    }
+    Ok((Piece::Arc { c, r: radius, a0, sweep }, Piece::Arc { c, r: radius - off, a0, sweep }))
 }
 
 /// The unit vector along `v`.

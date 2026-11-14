@@ -36,7 +36,7 @@ mod time;
 mod tool;
 
 pub use check::verify;
-pub use comp::{CompParams, Compensation, ENTRY_DIAMETERS, contour_compensated};
+pub use comp::{ARC_ROOM, CompArc, CompParams, Compensation, ENTRY_DIAMETERS, contour_compensated};
 pub use cutting::{CuttingData, Load, MATERIALS, SPINDLE_EFFICIENCY, Speeds, chip_thinning, cutting_force, load, valid_material};
 pub use gcode::{Operation, Program, emit, parse, parse_lines, work_offset_code};
 pub use helix::{HelixParams, ThreadParams, helical_bore, thread_mill};

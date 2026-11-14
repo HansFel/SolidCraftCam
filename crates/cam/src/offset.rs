@@ -57,6 +57,12 @@ impl Shape {
         Ok(Shape { loops })
     }
 
+    /// A shape of loops already oriented with what they bound on their left, as [`Shape::offset`]
+    /// returns them.
+    pub fn from_loops(loops: Vec<Vec<Piece>>) -> Shape {
+        Shape { loops }
+    }
+
     pub fn loops(&self) -> &[Vec<Piece>] {
         &self.loops
     }

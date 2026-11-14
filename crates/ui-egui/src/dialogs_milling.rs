@@ -1204,7 +1204,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         ui_kit::choice_row(ui, tr("ui.cam.lead_out"), "cam-lead-out", &mut form.lead_out, &leads);
     }
     // Who offsets the contour by the tool radius. With the control doing it, the tool comes on
-    // and leaves on a straight line square to the contour, and nothing lifts it on the way.
+    // and leaves on a straight line, square to the contour or onto an arc lead larger than its
+    // radius, and nothing lifts it on the way.
     if form.kind == 0 {
         let modes = [tr("ui.cam.comp_cam"), tr("ui.cam.comp_control"), tr("ui.cam.comp_wear")];
         ui_kit::choice_row(ui, tr("ui.cam.compensation"), "cam-compensation", &mut form.compensation, &modes);
@@ -1490,6 +1491,10 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, form: &mut Milling, inputs: &
         crate::ui_kit::text(ui, error, crate::ui_kit::Text::Error("cam_preview"));
     }
     if let Some(value) = &form.preview {
+        // What the step's command warned of (a drill larger than a picked hole), before OK.
+        for warning in job_warnings(value) {
+            ui.add(egui::Label::new(egui::RichText::new(warning).color(Tokens::get().warning)).wrap().selectable(true));
+        }
         paint(ui, value);
         ui.add(egui::Label::new(tr("ui.cam.legend")).wrap());
         if ui_kit::button(ui, tr("ui.cam.copy"), ui_kit::Button::Normal).clicked()
@@ -1704,8 +1709,18 @@ pub fn run(app: &mut SolveApp, form: &Milling) -> Result<(), String> {
     if let Some(tool) = &form.library_tool {
         app.run("cam.tool.define", crate::cam_panel::define_params(tool))?;
     }
-    app.run("cam.job.create", params)?;
+    let made = app.run("cam.job.create", params)?;
+    // The step is made; what looks wrong about it stays in view in the status line.
+    let warnings = job_warnings(&made);
+    if !warnings.is_empty() {
+        app.set_status(warnings.join("\n"), true);
+    }
     Ok(())
+}
+
+/// The warnings a guided job's reply carries.
+fn job_warnings(reply: &Value) -> Vec<&str> {
+    reply.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect()
 }
 
 fn compute(session: &mut solidcraft_engine::Session, params: &Value, output: Option<String>, tool: Option<Value>) -> Result<Value, String> {
