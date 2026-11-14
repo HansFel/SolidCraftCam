@@ -15,7 +15,7 @@
 # Built from a tarball without .git, pass the commit for Help › About:
 #   --build-arg SOLIDCRAFT_GIT_COMMIT=$(git rev-parse --short HEAD)
 
-ARG RUST_VERSION=1.98.0
+ARG RUST_VERSION=1.99.1
 ARG TRUNK_VERSION=0.21.14
 
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build

@@ -37,28 +37,28 @@
 //! `Y`, `F` is the integral of its derivative, which lies in that hull wherever it exists,
 //! so the mean-value form `F(y) ∈ F(ỹ) + F′(Y) (y − ỹ)` holds [Neumaier 1990, §2.1]. Taken
 //! over enclosures that hold both forms past a u side, `K(Y)` holds each form's own, so a box
-//! it proves holds a root of whichever is built. At most [`KRAWCZYK_STEPS`] steps run.
+//! it proves holds a root of whichever is built. At most
+//! [`crate::geom::krawczyk::KRAWCZYK_STEPS`] steps run ([`crate::geom::krawczyk::krawczyk`]).
 
+use super::quadric::value_and_gradient as quadric_value_and_gradient;
 use std::cell::Cell;
 
 use crate::blend::fillet_section::certificate::{
-    curve_derivs_over, inverse4, nurbs_partials_over_box, NurbsCurve,
+    curve_derivs_over, nurbs_partials_over_box, NurbsCurve,
 };
 use crate::blend::fillet_section::interval::{round_up, Ivl};
 use crate::blend::fillet_section::station::Nurbs;
 use crate::error::{Result, SolidError};
+use crate::geom::krawczyk::{
+    inverse_of_columns2, inverse_of_columns3, inverse_of_columns4, krawczyk, newton, Linearised,
+    NEWTON_STEPS,
+};
 use crate::geom::vector3d::{sqrt, Vec3};
 use crate::kernel::Kernel;
 use crate::nurbs::b_spline_surface::SurfParamType;
 use crate::surface::implicit::Implicit;
 use crate::surface::side::BoxSide;
 use crate::surface::surface::{Surface, SurfaceKind};
-
-/// The most Krawczyk steps one meeting gets.
-const KRAWCZYK_STEPS: usize = 8;
-
-/// The most Newton steps for the root a Krawczyk box is centred on.
-const NEWTON_STEPS: usize = 40;
 
 /// The grid each parameter of a net is searched on for Newton's first guess (a guess only:
 /// every meeting is proved by its Krawczyk box).
@@ -792,147 +792,6 @@ fn clamped_and_continuous(knots: &[f64], p: usize) -> bool {
     true
 }
 
-/// The inverse of the 3 × 3 matrix of columns `c`, as rows; `None` where it is singular in
-/// floating point.
-fn inverse3(c: [Vec3; 3]) -> Option<[[f64; 3]; 3]> {
-    let [a, b, d] = c;
-    let det = a.dot(b.cross(d));
-    if !(det.is_finite() && det != 0.0) {
-        return None;
-    }
-    let rows = [b.cross(d), d.cross(a), a.cross(b)].map(|r| [r.x / det, r.y / det, r.z / det]);
-    rows.iter().flatten().all(|x| x.is_finite()).then_some(rows)
-}
-
-/// Krawczyk's test about `mid` with the approximate inverse `c` (rows), `F` enclosed at a
-/// point box by `value` and `F′` over a box by `jacobian` (columns): the box proved to hold
-/// a root (module docs), or `None` where none is within [`KRAWCZYK_STEPS`] steps.
-///
-/// # Errors
-///
-/// Those of `value` and `jacobian` (a cancel).
-fn krawczyk<const N: usize>(
-    mid: [f64; N],
-    c: [[f64; N]; N],
-    value: &dyn Fn([Ivl; N]) -> Result<Option<[Ivl; N]>>,
-    jacobian: &dyn Fn([Ivl; N]) -> Result<Option<[[Ivl; N]; N]>>,
-) -> Result<Option<[Ivl; N]>> {
-    let Some(f) = value(mid.map(Ivl::from))? else {
-        return Ok(None);
-    };
-    let times = |row: &[f64; N], x: &[Ivl; N]| {
-        row.iter()
-            .zip(x)
-            .fold(Ivl::from(0.0), |s, (&r, &v)| s + Ivl::from(r) * v)
-    };
-    let cf: [Ivl; N] = c.map(|row| times(&row, &f));
-    // the first box: twice Newton's step from the middle, and a little more
-    let mut radius = cf.map(|x| 2.0 * x.mag());
-    for (r, m) in radius.iter_mut().zip(&mid) {
-        *r = round_up(*r + 1e-12 * (1.0 + m.abs()));
-    }
-    for _ in 0..KRAWCZYK_STEPS {
-        let mut y = mid.map(Ivl::from);
-        for ((yi, &m), &r) in y.iter_mut().zip(&mid).zip(&radius) {
-            if !r.is_finite() {
-                return Ok(None);
-            }
-            *yi = Ivl::new(m - r, m + r);
-        }
-        let Some(j) = jacobian(y)? else {
-            return Ok(None);
-        };
-        let mut k = y;
-        for (i, ((ki, row), (&m, &cfi))) in
-            k.iter_mut().zip(&c).zip(mid.iter().zip(&cf)).enumerate()
-        {
-            let mut v = Ivl::from(m) - cfi;
-            for (jj, (col, (&yj, &mj))) in j.iter().zip(y.iter().zip(&mid)).enumerate() {
-                // (I − C F′(Y))_ij, formed before it multiplies Y − ỹ
-                let identity = Ivl::from(if i == jj { 1.0 } else { 0.0 });
-                v = v + (identity - times(row, col)) * (yj - Ivl::from(mj));
-            }
-            *ki = v;
-        }
-        let inside = k.iter().zip(&y).all(|(a, b)| a.lo > b.lo && a.hi < b.hi);
-        if inside {
-            let mut out = k;
-            for (o, b) in out.iter_mut().zip(&y) {
-                *o = Ivl::new(o.lo.max(b.lo), o.hi.min(b.hi));
-            }
-            return Ok(Some(out));
-        }
-        for ((r, ki), &m) in radius.iter_mut().zip(&k).zip(&mid) {
-            let reach = (ki.lo - m).abs().max((ki.hi - m).abs());
-            *r = round_up(1.5 * reach.max(*r) + 1e-12 * (1.0 + m.abs()));
-        }
-    }
-    Ok(None)
-}
-
-/// `F` at a point and its columns there, as numbers ([`newton`]).
-type Linearised<const N: usize> = Option<([f64; N], [[f64; N]; N])>;
-
-/// A square matrix's inverse (rows) from its columns, `None` where it is singular.
-type Inverse<const N: usize> = dyn Fn(&[[f64; N]; N]) -> Option<[[f64; N]; N]>;
-
-/// Newton's root of `F` from `start` (`at` gives `F` and its columns there): the root, or
-/// `None` where a step is not defined or the steps do not settle.
-fn newton<const N: usize>(
-    start: [f64; N],
-    at: &dyn Fn([f64; N]) -> Result<Linearised<N>>,
-    inverse: &Inverse<N>,
-) -> Result<Option<[f64; N]>> {
-    let mut y = start;
-    let mut last = f64::INFINITY;
-    for _ in 0..NEWTON_STEPS {
-        let Some((f, j)) = at(y)? else {
-            return Ok(None);
-        };
-        let Some(c) = inverse(&j) else {
-            return Ok(None);
-        };
-        let mut size = 0.0_f64;
-        let mut next = y;
-        for (yi, row) in next.iter_mut().zip(&c) {
-            let step: f64 = row.iter().zip(&f).map(|(r, x)| r * x).sum();
-            if !step.is_finite() {
-                return Ok(None);
-            }
-            size = size.max(step.abs());
-            *yi -= step;
-        }
-        // settled: the step no longer shrinks, at the rounding of `F` wherever the part
-        // lies (no stop relative to `y`, which a part far from the origin never meets)
-        if size == 0.0 || size >= last {
-            return Ok(Some(y));
-        }
-        y = next;
-        last = size;
-    }
-    // a start only: Krawczyk's box decides whether a root is near
-    Ok(y.iter().all(|x| x.is_finite()).then_some(y))
-}
-
-/// The inverse (rows) of a 3 × 3 matrix given by columns.
-fn inverse_of_columns3(j: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
-    inverse3(j.map(|[x, y, z]| Vec3::new(x, y, z)))
-}
-
-/// The inverse (rows) of a 4 × 4 matrix given by columns.
-fn inverse_of_columns4(j: &[[f64; 4]; 4]) -> Option<[[f64; 4]; 4]> {
-    let mut rows = [[0.0_f64; 4]; 4];
-    for (jj, col) in j.iter().enumerate() {
-        for (row, &x) in rows.iter_mut().zip(col) {
-            if let Some(r) = row.get_mut(jj) {
-                *r = x;
-            }
-        }
-    }
-    let inv = inverse4(&rows).ok()?;
-    inv.iter().flatten().all(|x| x.is_finite()).then_some(inv)
-}
-
 /// A line `x0 + τ u` (`u` a unit vector, both enclosed over a piece of an edge's
 /// parameters; `mid` the same at the piece's middle, as numbers) meeting the net: the
 /// enclosure of `τ` at a meeting proved for every parameter of the piece, by Krawczyk's
@@ -1078,50 +937,6 @@ pub(super) fn plane_and_nets_meet(
         return Ok(None);
     };
     Ok(a.jet(ua, va)?.map(|jet| length_bound(sub(jet.p, point(p)))))
-}
-
-/// The implicit function `F` of a cone (a cylinder) or sphere at `x`, and its gradient,
-/// enclosed: a cone's `|P v|² − (r + t z)²` (`v = x − origin`, `z = v·a`, `P` the projection
-/// off the axis), gradient `2 P v − 2 (r + t z) t a`; a sphere's `|v|² − r²`, gradient `2 v`.
-/// `None` for any other kind.
-fn quadric_value_and_gradient(q: &Implicit, x: I3) -> Option<(Ivl, I3)> {
-    let two = Ivl::from(2.0);
-    match *q {
-        Implicit::Cone {
-            origin,
-            axis,
-            radius,
-            tan_angle,
-        } => {
-            let a = point(axis);
-            let v = sub(x, point(origin));
-            let z = dot(v, a);
-            let pv = sub(v, scale(a, z));
-            let t = Ivl::from(tan_angle);
-            let r = Ivl::from(radius) + t * z;
-            Some((
-                dot(pv, pv) - r * r,
-                sub(scale(pv, two), scale(a, two * r * t)),
-            ))
-        }
-        Implicit::Sphere { centre, radius } => {
-            let v = sub(x, point(centre));
-            let r = Ivl::from(radius);
-            Some((dot(v, v) - r * r, scale(v, two)))
-        }
-        _ => None,
-    }
-}
-
-/// The inverse (rows) of a 2 × 2 matrix given by columns.
-fn inverse_of_columns2(j: &[[f64; 2]; 2]) -> Option<[[f64; 2]; 2]> {
-    let [[a, c], [b, d]] = *j;
-    let det = a * d - b * c;
-    if !(det.is_finite() && det != 0.0) {
-        return None;
-    }
-    let inv = [[d / det, -b / det], [-c / det, a / det]];
-    inv.iter().flatten().all(|x| x.is_finite()).then_some(inv)
 }
 
 /// Where the plane `(origin, normal)`, the quadric `q` and the net meet, near the vertex
@@ -1300,7 +1115,16 @@ mod tests {
 
     /// The plane x = `x` as a bilinear net over y in [−5, 5], z in [−5, 5].
     fn plane_net_at_x(x: f64) -> Surface {
-        let row = |y: f64| vec![CPoint::new(x, y, -5.0, NOW), CPoint::new(x, y, 5.0, NOW)];
+        plane_net_at_height(x, 0.0)
+    }
+
+    fn plane_net_at_height(x: f64, height: f64) -> Surface {
+        let row = |y: f64| {
+            vec![
+                CPoint::new(x, y, height - 5.0, NOW),
+                CPoint::new(x, y, height + 5.0, NOW),
+            ]
+        };
         let patch = Patch::new(
             vec![row(-5.0), row(5.0)],
             1,
@@ -1574,5 +1398,75 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(found >= want && found <= want + 1e-9, "{found} vs {want}");
+    }
+    /// The shared cone evaluator preserves the previous projected expression's value
+    /// and gradient enclosures exactly for cardinal unit axes, even at large heights.
+    /// The expanded v.v-z² form loses that sharpness by subtracting large squares.
+    #[test]
+    fn a_cardinal_cones_enclosures_match_the_previous_projected_form() {
+        use super::super::{quadric, Di, Dv};
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::Z] {
+            for height in [0.0, 1000.0, -1e6, 1e6, 1e8] {
+                for slope in [0.0, 0.02, -0.05] {
+                    let q = Implicit::Cone {
+                        origin: Vec3::ZERO,
+                        axis,
+                        radius: 2.0,
+                        tan_angle: slope,
+                    };
+                    let centre = axis * height + Vec3::new(1.0, 1.5, 0.5);
+                    let x = [centre.x, centre.y, centre.z].map(|c| Ivl::new(c - 1e-4, c + 1e-4));
+                    let [xx, yy, zz] = x.map(|v| Di {
+                        v,
+                        d: Ivl::from(0.0),
+                    });
+                    let v = Dv {
+                        x: xx,
+                        y: yy,
+                        z: zz,
+                    }
+                    .sub(Dv::constant(Vec3::ZERO));
+                    let a = Dv::constant(axis);
+                    let z = v.dot(a);
+                    let t = Di::constant(slope);
+                    let r = Di::constant(2.0) + t * z;
+                    let pv = v.sub(a.scale(z));
+                    let old_f = (pv.dot(pv) - r * r).v;
+                    let old_g = pv
+                        .scale(Di::constant(2.0))
+                        .sub(a.scale(Di::constant(2.0) * r * t));
+                    let (f, g) = quadric::value_and_gradient(&q, x).unwrap();
+                    let bits = |v: Ivl| (v.lo.to_bits(), v.hi.to_bits());
+                    assert_eq!(bits(f), bits(old_f));
+                    assert_eq!(g.map(bits), [old_g.x.v, old_g.y.v, old_g.z.v].map(bits));
+                }
+            }
+        }
+    }
+
+    /// A plane/net x = 1, a cylinder r = 2 and the plane z = H meet at
+    /// (1, √3, H), distance √3-1.5 from (1, 1.5, H), independently of H.
+    /// This exercises the existing plane/quadric/net corner certificate itself.
+    #[test]
+    fn a_plane_quadric_net_corner_still_certifies_at_large_axial_heights() {
+        let k = Kernel::default();
+        let q = Implicit::Cone {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 2.0,
+            tan_angle: 0.0,
+        };
+        let want = 3.0_f64.sqrt() - 1.5;
+        for height in [0.0, -1e6, 1e6, 1000.0] {
+            let n = net(&k, &plane_net_at_height(1.0, height));
+            let p = Vec3::new(1.0, 1.5, height);
+            let found = plane_quadric_and_net_meet(&n, &q, Vec3::new(0.0, 0.0, height), Vec3::Z, p)
+                .unwrap()
+                .unwrap_or_else(|| panic!("H={height}: the corner was not certified"));
+            assert!(
+                found >= want && found <= want + 1e-8,
+                "H={height}: {found} vs {want}"
+            );
+        }
     }
 }
