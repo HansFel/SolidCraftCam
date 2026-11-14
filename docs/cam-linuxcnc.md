@@ -65,6 +65,14 @@ setup's **Edit** button in the job list open the setup form:
   design with the setup.
 - **Material** and **Highest spindle speed (rpm)** for the cutting data.
 
+Moving part zero of a setup that already has steps keeps every step where it was on the
+part: typed hole positions and polygon corners, the heights (top, bottom, retract,
+clearance) and a stock box given in work coordinates move by the opposite of the shift, and
+steps on sketches, faces or edges follow the model anyway. A plain height stays a plain
+number (top 0 becomes -13 mm when zero rises 13 mm); a height that is an expression gains
+the offset. This holds while the axes stay as they were; when the axes turn as well, the
+steps keep their work coordinates, so check them after turning the axes.
+
 **Delete** in the job list removes a setup with its steps (undo brings it back).
 
 While the CAM window or the setup form is open, each setup shows its part zero with its

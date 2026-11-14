@@ -1180,15 +1180,16 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(machine) = new_machine {
         put_machine(s, cmd, machine)?;
     }
+    if let Some(old) = &existing {
+        rebase_setup_origin(s, old, &mut setup, p.get("stock").is_none()).map_err(|e| bad(cmd, e))?;
+    }
     let doc = s.doc_mut();
     if doc.cam.setups.len() >= MAX_SETUPS && !doc.cam.setups.iter().any(|x| x.name == name) {
         return Err(bad(cmd, format!("a design has at most {MAX_SETUPS} setups")));
     }
     match doc.cam.setups.iter_mut().find(|x| x.name == name) {
         Some(slot) => {
-            let (operations, skipped) = (std::mem::take(&mut slot.operations), std::mem::take(&mut slot.skipped));
             *slot = setup.clone();
-            (slot.operations, slot.skipped) = (operations, skipped);
         }
         None => doc.cam.setups.push(setup.clone()),
     }
@@ -1202,6 +1203,75 @@ pub(super) fn setup_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         out["warnings"] = json!([warning]);
     }
     Ok(out)
+}
+
+/// Preserve machining positions when only the setup's origin changes. Model references
+/// already resolve in the new frame; explicit XY geometry and absolute heights need rebasing.
+fn rebase_setup_origin(s: &Session, old: &CamSetup, new: &mut CamSetup, keep_stock: bool) -> std::result::Result<(), String> {
+    let old_frame = work_frame(&*live_setup(s, old)?)?;
+    let new_frame = work_frame(&*live_setup(s, new)?)?;
+    if old_frame.x != new_frame.x || old_frame.y != new_frame.y || old_frame.z != new_frame.z {
+        return Ok(());
+    }
+    let delta = new_frame.local(old_frame.o);
+    if delta == Vec3::ZERO {
+        return Ok(());
+    }
+    let shift_point = |p: &mut [f64; 2]| {
+        p[0] += delta.x;
+        p[1] += delta.y;
+    };
+    for op in &mut new.operations {
+        let (geometry, cut) = match op {
+            CamOperation::Contour { geometry, cut, .. }
+            | CamOperation::Pocket { geometry, cut, .. }
+            | CamOperation::Drill { geometry, cut, .. }
+            | CamOperation::Face { geometry, cut, .. }
+            | CamOperation::Slot { geometry, cut, .. }
+            | CamOperation::Chamfer { geometry, cut, .. }
+            | CamOperation::Engrave { geometry, cut, .. }
+            | CamOperation::HelicalBore { geometry, cut, .. }
+            | CamOperation::ThreadMill { geometry, cut, .. }
+            | CamOperation::Plasma { geometry, cut, .. } => (geometry, cut),
+        };
+        if delta.z != 0.0 {
+            for height in [&mut cut.top, &mut cut.bottom, &mut cut.retract, &mut cut.clearance] {
+                *height = shifted_height(height, delta.z);
+                eval_len(s, height, "rebased height")?;
+            }
+        }
+        match geometry {
+            CamGeometry::Points { points } => points.iter_mut().for_each(shift_point),
+            CamGeometry::Polygons { regions } => {
+                for region in regions {
+                    region.outer.iter_mut().for_each(shift_point);
+                    for hole in &mut region.holes {
+                        hole.iter_mut().for_each(shift_point);
+                    }
+                }
+            }
+            CamGeometry::Sketch { .. } | CamGeometry::Faces { .. } | CamGeometry::Edges { .. } | CamGeometry::Stock => {}
+        }
+        op.validate().map_err(|e| e.to_string())?;
+    }
+    if keep_stock && let Some(stock) = &mut new.stock {
+        for ((lo, hi), shift) in stock.min.iter_mut().zip(&mut stock.max).zip([delta.x, delta.y, delta.z]) {
+            *lo += shift;
+            *hi += shift;
+        }
+        stock.validate().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A height moved by `dz` mm: a plain number stays a plain number, an expression keeps its
+/// terms and gains the offset, so repeated zero shifts do not nest plain values.
+fn shifted_height(height: &Expr, dz: f64) -> Expr {
+    let text = height.as_str().trim();
+    match text.strip_suffix("mm").unwrap_or(text).trim().parse::<f64>() {
+        Ok(v) if v.is_finite() => Expr::new(format!("{} mm", ((v + dz) * 1e9).round() / 1e9)),
+        _ => Expr::new(format!("({text}) + ({dz} mm)")),
+    }
 }
 
 fn parse_value<T: serde::de::DeserializeOwned>(cmd: &str, p: &Value, k: &str, fallback: T) -> Result<T> {
@@ -3728,6 +3798,57 @@ mod tests {
             "top":0, "bottom":-3, "clearance":10, "retract":2, "stepdown":1,
             "stepover":2, "feed":600, "plunge_feed":150, "spindle_rpm":3000,
             "work_offset":2, "points":[[5,5],[15,5]], "dwell":0.1})
+    }
+
+    #[test]
+    fn changing_setup_zero_preserves_toolpaths_on_the_model() {
+        for kind in ["contour", "pocket", "drill"] {
+            let mut s = Session::default();
+            run(&mut s, "cam.job.create", guided(kind));
+            let setup = s.doc.cam.setup("Top").unwrap().clone();
+            let frame = work_frame(&setup).unwrap();
+            let before = build_path(&s, &setup, &setup.operations[0]).unwrap();
+            let model_points: Vec<_> = before.moves.iter().filter_map(|m| m.target()).map(|p| frame.model(p)).collect();
+            run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": [7, -11, 13]}));
+            let changed = s.doc.cam.setup("Top").unwrap();
+            // Zero 13 mm higher: a plain top of 0 becomes a plain -13 mm, not a nested expression.
+            assert_eq!(changed.operations[0].cut().top.as_str(), "-13 mm", "{kind}");
+            let frame = work_frame(changed).unwrap();
+            let after = build_path(&s, changed, &changed.operations[0]).unwrap();
+            let points: Vec<_> = after.moves.iter().filter_map(|m| m.target()).map(|p| frame.model(p)).collect();
+            assert_eq!(model_points.len(), points.len(), "{kind}");
+            for (a, b) in model_points.iter().zip(&points) {
+                assert!((*a - *b).len() < 1e-8, "{kind}: {a:?} != {b:?}");
+            }
+            run(&mut s, "edit.undo", json!({}));
+            assert_eq!(s.doc.cam.setup("Top").unwrap(), &setup);
+        }
+    }
+
+    #[test]
+    fn changing_setup_zero_preserves_linked_geometry_and_stock() {
+        let mut s = Session::default();
+        sketch_outside_gcode(&mut s, json!({"name": "Top", "stock": {"min": [-4,-4,-5], "max": [44,34,1]}}));
+        let model_points = |s: &Session| {
+            let setup = s.doc.cam.setup("Top").unwrap();
+            let frame = work_frame(setup).unwrap();
+            build_path(s, setup, &setup.operations[0]).unwrap().moves.iter().filter_map(|m| m.target()).map(|p| frame.model(p)).collect::<Vec<_>>()
+        };
+        let before = model_points(&s);
+        let original_geometry = s.doc.cam.setup("Top").unwrap().operations[0].geometry().clone();
+        for origin in [[7, -11, 13], [-3, 4, 2], [0, 0, 0]] {
+            run(&mut s, "cam.setup", json!({"name": "Top", "work_origin": origin}));
+            let after = model_points(&s);
+            assert_eq!(before.len(), after.len());
+            for (a, b) in before.iter().zip(after) {
+                assert!((*a - b).len() < 1e-8);
+            }
+            let setup = s.doc.cam.setup("Top").unwrap();
+            assert_eq!(setup.operations[0].geometry(), &original_geometry);
+            let stock = setup.stock.unwrap();
+            let lo = work_frame(setup).unwrap().model(Vec3::new(stock.min[0], stock.min[1], stock.min[2]));
+            assert!((lo - Vec3::new(-4.0, -4.0, -5.0)).len() < 1e-8);
+        }
     }
 
     #[test]
